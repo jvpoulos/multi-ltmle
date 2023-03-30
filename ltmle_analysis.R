@@ -208,12 +208,17 @@ obs.ID <- list("ID_1"=as.numeric(rownames(Odat[Odat$month_number==9,])),
 
 treatments <- lapply(1:t.end, function(t) as.data.frame(dummify(obs.treatment[[t]]))) # t-length list
 
-# store antidiabetic drug fill and preperiod conditions for dynamic rule (same lengths as obs.treatment)
+# store antidiabetic drug fill, metabolic test, and preperiod conditions for dynamic rule (same lengths as obs.treatment)
 
 obs.fill <- list("L_1"=ifelse(Odat$monthly_ever_rx_antidiab==1 & Odat$month_number <=9,1,0)[Odat$month_number==9], 
                        "L_2"=ifelse(Odat$monthly_ever_rx_antidiab==1 & Odat$month_number <=18,1,0)[Odat$month_number==18], 
                        "L_3"=ifelse(Odat$monthly_ever_rx_antidiab==1 & Odat$month_number <=27,1,0)[Odat$month_number==27], 
                        "L_4"=ifelse(Odat$monthly_ever_rx_antidiab==1 & Odat$month_number <=36,1,0)[Odat$month_number==36])
+
+obs.test <- list("L_1"=ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=9,1,0)[Odat$month_number==9], 
+                 "L_2"=ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=18,1,0)[Odat$month_number==18], 
+                 "L_3"=ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=27,1,0)[Odat$month_number==27], 
+                 "L_4"=ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=36,1,0)[Odat$month_number==36])
 
 obs.mdd.bpd <- list("V_1"=ifelse(Odat$smi_condition%in%c("bipolar","mdd"),1,0)[Odat$month_number==9], 
                  "V_2"=ifelse(Odat$smi_condition%in%c("bipolar","mdd"),1,0)[Odat$month_number==18], 
@@ -252,20 +257,24 @@ obs.Y <- data.frame("Y_1"=ifelse((!is.na(Odat$days_to_diabetes) & Odat$days_to_d
 
 drug.levels <- c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERIDONE","ZIPRASIDONE")
 
-static <- lapply(1:t.end, function(t) factor(rep_len("ARIPIPRAZOLE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Static: Everyone gets aripiprazole and stays on it
-dynamic <- lapply(1:t.end, function(t) factor(rep_len("OLANZAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Dynamic: Start with olanzapine, then switch to aripiprazole (bipolar/MDD) or haloperidol (schizophrenia) if an antidiabetic drug is filled
+static <- lapply(1:t.end, function(t) factor(rep_len("OLANZAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) and stays on it
 for(t in 1:t.end){
-  dynamic[[t]][obs.fill[[t]]==1] <- ifelse(obs.mdd.bpd[[t]][obs.fill[[t]]==1]==1, "ARIPIPRAZOLE", ifelse(obs.schiz[[t]][obs.fill[[t]]==1]==1, "HALOPERIDOL", "OLANZAPINE"))
+  static[[t]] <- ifelse(obs.mdd.bpd[[t]]==1, "OLANZAPINE", ifelse(obs.schiz[[t]]==1, "HALOPERIDOL", "OLANZAPINE"))
 }
 
-stochastic <- obs.treatment # reduce probability of olanzapine and increase probability of aripiprazole
-for(t in 1:t.end){
-  stochastic.probs <- as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ARIPIPRAZOLE")+0)*matrix(c(0.7,0.05,0.1,0.05,0.05,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="HALOPERIDOL")+0)*matrix(c(0.05,0.7,0.1,0.05,0.05,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
+dynamic <- lapply(1:t.end, function(t) factor(rep_len("ARIPIPRAZOLE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Dynamic: Start with Arip., then switch to olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) if an antidiabetic drug is filled OR metabolic testing occurred (Lipid or glucose lab test)
+for(t in 2:t.end){
+  dynamic[[t]][obs.fill[[t]]==1] <- ifelse(obs.mdd.bpd[[t]][obs.fill[[t]]==1]==1, "OLANZAPINE", ifelse(obs.schiz[[t]][obs.fill[[t]]==1]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
+}
+
+stochastic <- obs.treatment # stochastic:  t=1 is same as observed, reduce probability of Arip./Quet./Risp./Zipra and increase probability of halo. and olanz.
+for(t in 2:t.end){
+  stochastic.probs <- as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ARIPIPRAZOLE")+0)*matrix(c(0.75,0.05,0.05,0.05,0.05,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="HALOPERIDOL")+0)*matrix(c(0.05,0.75,0.05,0.05,0.05,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="OLANZAPINE")+0)*matrix(c(0.05,0.05,0.75,0.05,0.05,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="QUETIAPINE")+0)*matrix(c(0.05,0.05,0.1,0.7,0.05,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="RISPERIDONE")+0)*matrix(c(0.05,0.05,0.1,0.05,0.7,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ZIPRASIDONE")+0)*matrix(c(0.05,0.05,0.1,0.05,0.05,0.7),length(obs.treatment[[t]]),J,byrow = TRUE) + c(0.005, 0.005,-0.01,0,0,0)
+    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="QUETIAPINE")+0)*matrix(c(0.05,0.05,0.05,0.75,0.05,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="RISPERIDONE")+0)*matrix(c(0.05,0.05,0.05,0.05,0.75,0.05),length(obs.treatment[[t]]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ZIPRASIDONE")+0)*matrix(c(0.05,0.05,0.05,0.05,0.05,0.75),length(obs.treatment[[t]]),J,byrow = TRUE) + c(-0.01, 0.01,0.01,-0.01,-0.01,-0.01)
   stochastic[[t]] <- Multinom(1, stochastic.probs)
   levels(stochastic[[t]]) <- drug.levels
 }
@@ -342,7 +351,7 @@ Chat_tmle_bin <- list()
 
 if(estimator=="tmle"){
   
-  colnames(tv)[colnames(tv) %in% c("monthly_er_mhsa","monthly_er_nonmhsa","monthly_ever_rx_antidiab")] <- c("L1","L2","L3")
+  colnames(tv)[colnames(tv) %in% c("monthly_er_mhsa","monthly_ever_mt_gluc_or_lip","monthly_ever_rx_antidiab")] <- c("L1","L2","L3")
   
   tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
   
@@ -717,7 +726,7 @@ lmtp_results <- list()
 
 Ahat_lmtp <- list()
 
-if(estimator=="lmtp"){ # NOT TESTED
+if(estimator=="lmtp"){ # FOLLOW TMLE - Don't need to scale
   
   # define treatment and covariates
   baseline <- c("V1_0", "V2_0", "V3_0", paste0("L",c(1,2,3),"_",0))
