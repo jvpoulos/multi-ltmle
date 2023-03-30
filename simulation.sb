@@ -1,0 +1,14 @@
+#!/bin/bash
+#SBATCH --job-name="lmtp"
+#SBATCH -e lmtp.err
+#SBATCH -p priority
+#SBATCH -c 20
+#SBATCH --mem=250GB
+#SBATCH -t 5-00:00:00
+#SBATCH --array=1-4
+
+# Load R
+module load gcc/6.2.0 R/4.0.1 git2/1.1.0
+
+#Run the job
+Rscript simulation.R 'lmtp' ${SLURM_ARRAY_TASK_ID} 'TRUE' 'FALSE'
