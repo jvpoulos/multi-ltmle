@@ -195,10 +195,6 @@ if(scale.continuous){
 
 ## treatment rule info (make consistent with simulation.R)
 
-# summarize overall censoring (by drug filled)
-print(summary(as.factor(Odat$censoring_cause_4cats)))
-print(aggregate(ifelse((!is.na(Odat$days_to_censored) & Odat$days_to_censored <=1095), 1, 0), by=list(factor(Odat$drug_group)), FUN=mean))
-
 # store observed treatment assignment
 obs.treatment <- list("A_1"=factor(Odat$drug_group[Odat$month_number==9]),
                             "A_2"=factor(Odat$drug_group[Odat$month_number==18]),
@@ -423,7 +419,7 @@ if(estimator=="tmle"){
   ##  fit initial treatment model
   
   # multinomial
-  if(read.models==TRUE){
+  if(weights.loc!='none'){
     initial_model_for_A <-  readRDS(paste0(output_dir, 
                                            "initial_model_for_A_",
                                            "estimator_",estimator,
@@ -490,7 +486,7 @@ if(estimator=="tmle"){
                                              metalearner = metalearner_A_bin,
                                              keep_extra=FALSE)
   
-  if(read.models==TRUE){
+  if(weights.loc!='none'){
     initial_model_for_A_bin <-  readRDS(paste0(output_dir, 
                                            "initial_model_for_A_bin_",
                                            "estimator_",estimator,
@@ -553,7 +549,7 @@ if(estimator=="tmle"){
                                          metalearner = metalearner_A_bin,
                                          keep_extra=FALSE)
   
-  if(read.models==TRUE){
+  if(weights.loc!='none'){
     initial_model_for_C <-  readRDS(paste0(output_dir, 
                                            "initial_model_for_C_",
                                            "estimator_",estimator,
@@ -630,7 +626,7 @@ if(estimator=="tmle"){
   # backward in time: T.end, ..., 1
   # fit on thoese uncesnored until t-1
   
-  tmle_rules <- list("static"=static_olanz_on,
+  tmle_rules <- list("static"=static_mtp,
                      "dynamic"=dynamic_mtp,
                      "stochastic"=stochastic_mtp)
   
@@ -737,7 +733,7 @@ if(estimator=="lmtp"){ # NOT TESTED
   
   # define treatment rules
   
-  lmtp_rules <- list("static"=static_olanz_on,
+  lmtp_rules <- list("static"=static_mtp,
                      "dynamic"=dynamic_mtp,
                      "stochastic"=stochastic_mtp) 
   

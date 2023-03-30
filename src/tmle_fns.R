@@ -62,19 +62,38 @@ static_olanz_on <- function(row,lags=TRUE) {
   return(shifted)
 }
 
+static_mtp <- function(row){ 
+  # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) and stays on it
+  if(row$t==1){ # first-, second-, and third-order lags are 0
+    if(row$schiz==1){
+      shifted <- static_halo_on(row,lags=TRUE)
+    }else{
+      shifted <- static_olanz_on(row,lags=TRUE)
+    }
+  }else if(row$t>1){
+    lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
+    if(row$schiz==1){
+      shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
+    }else{
+      shifted <- unlist(c(static_olanz_on(row,lags = FALSE),lags)) # switch to olanz
+    }
+  }
+  return(shifted)
+}
+
 dynamic_mtp <- function(row){ 
-  # Dynamic: Start with Arip., then switch to olanz. (bipolar/MDD) or haloperidol (schizophrenia) if an antidiabetic drug is filled
+  # Dynamic: Start with Arip., then switch to olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) if an antidiabetic drug is filled OR metabolic testing occurred (Lipid or glucose lab test)
   if(row$t==1){ # first-, second-, and third-order lags are 0
     shifted <- static_arip_on(row,lags=TRUE)
   }else if(row$t>1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
-    if(row$L3==1){
+    if((row$L2 | row$L3)==1){
       if(row$schiz==1){
         shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
       }else{
         shifted <- unlist(c(static_olanz_on(row,lags = FALSE),lags)) # switch to olanz
       }
-    }else if(row$L3==0){
+    }else if((row$L2 | row$L3)==0){
       shifted <- unlist(c(static_arip_on(row,lags=FALSE),lags))  # otherwise stay on arip
     }
   }

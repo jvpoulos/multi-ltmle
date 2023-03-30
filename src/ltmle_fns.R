@@ -26,13 +26,30 @@ static_olanz_on <- function(row) {
   return(shifted)
 }
 
-dynamic_mtp <- function(row){
-  # Dynamic: Start with Arip., then switch to olanz. (bipolar/MDD) or haloperidol (schizophrenia) if an antidiabetic drug is filled
+static_mtp <- function(row){
+  # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) and stays on it
   treats <- row[grep("A[0-9]",colnames(row), value=TRUE)]
   shifted <- ifelse(names(treats)%in%grep("A1_0",colnames(row), value=TRUE),1,0)
   names(shifted) <- names(treats)
   shifted <- sapply(2:4, function(t){ #t.end
-      if(!is.na(row[paste0("L3_",t)]) & row[paste0("L3_",t)] == 1){
+    if(!is.na(row[["V2_0"]]) & row[["V2_0"]] == 3){ # check if schizophrenia
+      shifted[paste0("A2_",t)] <- 1 # switch to halo
+    }else{
+      shifted[paste0("A3_",t)] <- 1 # switch to olanz
+    }
+    return(shifted)})
+  shifted <- rowSums(shifted)
+  shifted[shifted>1] <- 1
+  return(shifted)
+}
+
+dynamic_mtp <- function(row){
+  # Dynamic: Start with Arip., then switch to olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) if an antidiabetic drug is filled OR metabolic testing occurred (Lipid or glucose lab test)
+  treats <- row[grep("A[0-9]",colnames(row), value=TRUE)]
+  shifted <- ifelse(names(treats)%in%grep("A1_0",colnames(row), value=TRUE),1,0)
+  names(shifted) <- names(treats)
+  shifted <- sapply(2:4, function(t){ #t.end
+      if(!is.na(row[paste0("L2_","L3_",t)]) & row[paste0("L2_","L3_",t)] == 1){
       if(!is.na(row[["V2_0"]]) & row[["V2_0"]] == 3){ # check if schizophrenia
         shifted[paste0("A2_",t)] <- 1 # switch to halo
       }else{

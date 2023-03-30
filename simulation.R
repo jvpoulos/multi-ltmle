@@ -125,18 +125,18 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
          sd = 10.2,
          minval = 19.9, maxval = 64.5,
          min.low = 19.9, max.low = 36.79, min.high = 53.27, max.high = 64.5	) +
-    node("L1",                                      # preperiod_er_mhsa (count) (varies by race)
+    node("L1",                                      # er_mhsa (count) (varies by race)
          t = 0,
          distr = "NegBinom",
          mu = ifelse(V1[0] == 1, (0.1-0.02), ifelse(V1[0] == 2, (0.1+0.02), ifelse(V1[0] == 3, (0.1-0.01), 0.1))))  +
-    node("L2",                                      # preperiod_er_nonmhsa (count) (varies by race)
-         t = 0,
-         distr = "NegBinom",
-         mu = ifelse(V1[0] == 1, (0.4-0.1), ifelse(V1[0] == 2, (0.4+0.1), ifelse(V1[0] == 3, (0.4+0.05), 0.4))))  +
-    node("L3",                                      # preperiod_ever_mt_gluc_or_lip (binary) (varies by race)
+    node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by race)
          t = 0,
          distr = "rbern",
          prob = ifelse(V1[0] == 1, (0.183-0.05), ifelse(V1[0] == 2, (0.183+0.05), ifelse(V1[0] == 3, (0.183+0.025), 0.183)))) + 
+    node("L3",                                      # ever_rx_antidiab (binary) (varies by race)
+         t = 0,
+         distr = "rbern",
+         prob = ifelse(V1[0] == 1, (0.05-0.04), ifelse(V1[0] == 2, (0.05+0.04), ifelse(V1[0] == 3, (0.05+0.02), 0.05)))) + 
     node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
          t = 0, 
          distr = "rbern",
@@ -158,11 +158,11 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
          t = 1:t.end,
          distr = "NegBinom",
          mu= plogis(L1[t-1] + .0017 * L2[t-1] + .2 * L3[t-1] + A[(t-1)]*.1)) + 
-    node("L2",                                      # er_nonmhsa(count)
+    node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by race)
          t = 1:t.end,
-         distr = "NegBinom",
-         mu= plogis(L2[t-1] + .0003 * (L1[t]-L1[t-1]) + .0005 * (L3[t-1]) + A[(t-1)]*.01)) +
-    node("L3",                                      # preperiod_ever_mt_gluc_or_lip (binary) (varies by race)
+         distr = "rbern",
+         prob= plogis(L2[t-1] + .0017 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + A[(t-1)]*.05)) +
+    node("L3",                                      # ever_rx_antidiab (binary) (varies by race)
          t = 1:t.end,
          distr = "rbern",
          prob= plogis(L3[t-1] + .0017 * (L1[t] - L1[t-1]) + .2 * (L2[t] - L2[t-1]) + A[(t-1)]*.05)) +
@@ -194,7 +194,7 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     dev.off()
   }
   
-  int.static <-c(node("A", t = 1:t.end, distr = "rconst", # Static: Everyone gets olanz. and stays on it
+  int.static <-c(node("A", t = 1:t.end, distr = "rconst", # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia)  and stays on it
                       const = 3),
                  node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
   
@@ -376,7 +376,7 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     tmle_dat[,c("A.lag", "A.lag2", "A.lag3")][tmle_dat[,c("A.lag", "A.lag2", "A.lag3")]==0] <- NA # no treatment assignment at baseline
     
     tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2), dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
-    tmle_dat[c("V3","L1","L2","L1.lag","L2.lag","L1.lag2","L2.lag2","L1.lag3","L2.lag3")] <- scale(tmle_dat[c("V3","L1","L2","L1.lag","L2.lag","L1.lag2","L2.lag2","L1.lag3","L2.lag3")]) # scale continuous variables
+    tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
     
     colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "Y.lag", "Y.lag2", "Y.lag3", "L1.lag", "L1.lag2","L1.lag3","L2.lag", "L2.lag2","L2.lag3", "L3.lag", "L3.lag2","L3.lag3","A.lag","A.lag2", "A.lag3","white", "black", "latino", "other", "mdd", "bipolar", "schiz", 
                             "A1", "A2", "A3", "A4", "A5", "A6", "A1.lag", "A2.lag", "A3.lag", "A4.lag", "A5.lag", "A6.lag","A1.lag2", "A2.lag2", "A3.lag2", "A4.lag2", "A5.lag2", "A6.lag2","A1.lag3", "A2.lag3", "A3.lag3", "A4.lag3", "A5.lag3", "A6.lag3")
@@ -551,7 +551,7 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     # backward in time: T.end, ..., 1
     # fit on thoese uncesnored until t-1
     
-    tmle_rules <- list("static"=static_olanz_on,
+    tmle_rules <- list("static"=static_mtp,
                        "dynamic"=dynamic_mtp,
                        "stochastic"=stochastic_mtp)
     
@@ -656,13 +656,13 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     lmtp_dat[,cnodes][is.na(lmtp_dat[,cnodes])] <- 1
     lmtp_dat[,cnodes] <- ifelse(lmtp_dat[,cnodes]==1, 0, 1) # C=0 indicates censored
     
-    lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE), grep("L2",colnames(lmtp_dat), value=TRUE))] <- scale(lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE), grep("L2",colnames(lmtp_dat), value=TRUE))] ) # center and scale continuous/count vars
+    lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] <- scale(lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] ) # center and scale continuous/count vars
     
     lmtp_dat <- lmtp_dat[mixedorder(substring(colnames(lmtp_dat), nchar(colnames(lmtp_dat))))] # columns in time-ordering of model: A < C < Y
     
     # define treatment rules
     
-    lmtp_rules <- list("static"=static_olanz_on,
+    lmtp_rules <- list("static"=static_mtp,
                        "dynamic"=dynamic_mtp,
                        "stochastic"=stochastic_mtp) 
     
@@ -723,13 +723,13 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
                             Odat[ynodes], stringsAsFactors=TRUE)
     colnames(ltmle_dat)[grep("X",colnames(ltmle_dat))] <- colnames(Odat[cnodes])
     
-    ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE), grep("L2",colnames(ltmle_dat), value=TRUE))] <- scale(ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE), grep("L2",colnames(ltmle_dat), value=TRUE))]) # center and scale continuous/count vars
+    ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))] <- scale(ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))]) # center and scale continuous/count vars
     
     ltmle_dat <- ltmle_dat[mixedorder(substring(colnames(ltmle_dat), nchar(colnames(ltmle_dat))))] # columns in time-ordering of model: A < C < Y
     
     # define treatment rules
     
-    ltmle_rules <- list("static"=static_olanz_on,
+    ltmle_rules <- list("static"=static_mtp,
                         "dynamic"=dynamic_mtp,
                         "stochastic"=stochastic_mtp) 
     
@@ -764,10 +764,7 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     results_CIW_ltmle[[treatment.rule]] <- results_CI_ltmle[[treatment.rule]][[2]] - results_CI_ltmle[[treatment.rule]][[1]]  # wrt to est at T
   }
   
-  return(list(#"true_Y"=Y.true, "observed_Y"=Y.observed,
-             # "observed_treatment" = obs.treatment, "observed_treatment_dummies" = treatments, "observed_treatment_rule" = obs.treatment.rule, "observed_rules"=obs.rules, "time_censored"=time.censored,
-            #  "tmle_contrasts"=tmle_contrasts, "tmle_contrasts_bin"=tmle_contrasts_bin, 
-              "Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
+  return(list("Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
               "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,
               "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,
@@ -801,7 +798,7 @@ J <- 6 # number of treatments
 
 t.end <- 4 # number of time points after t=0
 
-R <- 105 # number of simulation runs
+R <- 200 # number of simulation runs
 
 gbound <- c(0.01,0.99) # define bounds to be used for the propensity score
 

@@ -17,14 +17,21 @@ static_olanz_on <- function(data, trt) {
   return(factor(rep(3, length(data[[trt]])), levels=1:6))
 }
 
+static_mtp <- function(data, trt) {
+  # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) and stays on it
+  ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, # check if schizophrenia
+         static_halo_on(data, trt), # switch to halo
+         static_olanz_on(data, trt))  # otherwise stay on arip
+}
+
 dynamic_mtp <- function(data, trt) {
-  # Dynamic: Start with Arip., then switch to olanz. (bipolar/MDD) or haloperidol (schizophrenia) if an antidiabetic drug is filled
+  # Dynamic: Start with Arip., then switch to olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) if an antidiabetic drug is filled OR metabolic testing occurred (Lipid or glucose lab test)
   if (trt == "A_1") {
     # if its the first time point, start with olanzapine
     static_arip_on(data, trt)
   } else {
     # otherwise check if the time varying covariate equals 1
-    ifelse(!is.na(data[[sub("A", "L3", trt)]]) & data[[sub("A", "L3", trt)]] == 1,
+    ifelse(!is.na(data[[sub("A", "L2","L3", trt)]]) & data[[sub("A", "L2", "L3", trt)]] == 1,
            ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, # check if schizophrenia
                   static_halo_on(data, trt), # switch to halo
                   static_olanz_on(data, trt)), # switch to olanz

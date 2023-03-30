@@ -36,6 +36,8 @@ Contents
 
 * ***src/misc_fns***: includes misc. functions, including a function to bound predicted probabilities; functions generate different distributions; and a forest plot function. 
 
+* ***src/SL_fns***: pres-specified super learner functions for *ltmle* software. 
+
 * ***src/tmle_calculation_long.R***: function for generating counterfactual means under each treatment rule in longitudial data. Inputs initial Y estimates, bounded cumulative treatment/censoring probabilities, observed treatment, and observed outcomes. Outputs treatment-rule specific means.
 
 * ***src/tmleContrastLong.R***: function for calculating contrasts across all treatment rules in longitudinal data. Inputs treatment-rule-specific means, the contrast matrix, and logical flags. Outputs ATE and variance estimates. 
@@ -78,4 +80,4 @@ Instructions
 
 2. For real data longtidunal analysis (T>1), run in bash script: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ['tmle', 'lmtp'], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights or 'none', and `[arg4]` is a logical flag if super learner estimation is to be used; e.g, 
 
-`Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE'`  
+`Rscript ltmle_analysis.R 'tmle' 'all' '20230329/' 'TRUE'`  
