@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.0001, 0.9999), n.folds=10, estimator=c("lmtp","ltmle","tmle"), treatment.rule = c("static","dynamic","stochastic","all"), use.SL=TRUE){
+simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0001, 0.9999), n.folds=10, estimator=c("lmtp","ltmle","tmle", "tmle-lstm", "iptw", "gcomp","sdr"), treatment.rule = c("static","dynamic","stochastic","all"), use.SL=TRUE){
   
   # libraries
   library(simcausal)
@@ -25,9 +25,16 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
   library(weights)
   library(gtools)
   
-  if(estimator=="tmle"){
+  if(estimator%in%c("tmle", "tmle-lstm")){
     source('./src/misc_fns.R')
     source('./src/tmle_fns.R')
+  }
+  
+  if(estimator=='tmle-lstm'){
+    library(tensorflow)
+    library(keras)
+    print(is_keras_available())
+    print(tf_version())
   }
   
   if(estimator=="lmtp"){
@@ -48,15 +55,15 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     stop("J must be 6")
   }
   
-  if(t.end<3 && t.end >10){
-    stop("t.end must be at least 3 and no more than 10")
+  if(t.end<4 && t.end >36){
+    stop("t.end must be at least 3 and no more than 36")
   }
   
-  if(t.end!=4 & estimator!="tmle"){
+  if(t.end!=36 & estimator!="tmle"){
     stop("need to manually change t.end in shift functions in lmtp_fns.R or ltmle.R, and the number of lags in tmle_dat, and IC in tmle_fns")
   }
   
-  if(t.end!=4 & estimator=="tmle"){
+  if(t.end!=36 & estimator=="tmle"){
     stop("need to manually change order of lags in shift functions tmle_fns.R")
   }
   
@@ -78,19 +85,12 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
                        "g"=c("SL.ranger.50","SL.ranger.500","SL.glmnet.lasso","SL.glmnet.75"))
   }
   
-  if(estimator=="tmle"){
-    learner_stack_A_bin <- make_learner_stack(list("Lrnr_ranger",num.trees=50),list("Lrnr_ranger",num.trees=500),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial"))  
-    learner_stack_A <- make_learner_stack(list("Lrnr_ranger",num.trees=50),list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "multinomial")) 
-    learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:logistic"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial"))
-    learner_stack_Y_cont <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:squarederror"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "gaussian")) 
-  }
+  if(estimator%in%c("tmle","iptw","gcomp")){
+    learner_stack_A <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective="multi:softprob", eval_metric="mlogloss",num_class=J), list("Lrnr_ranger",num.trees=100),list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "multinomial"))  
+    learner_stack_A_bin <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100),list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial"))  
+    learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100), list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial")) 
+    learner_stack_Y_cont <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:squarederror"), list("Lrnr_ranger",num.trees=100), list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "gaussian"))
   
-  if(estimator=="lmtp"){
-    learner_stack_A <- make_learner_stack(list("Lrnr_ranger",num.trees=50),list("Lrnr_ranger",num.trees=500),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75)) 
-    learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25),list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.50), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75))
-  }
-
-  if(estimator=="tmle"){
     # metalearner defaults (https://tlverse.org/sl3/reference/default_metalearner.html)
     metalearner_Y <- make_learner(Lrnr_solnp,learner_function=metalearner_logistic_binomial, eval_function=loss_loglik_binomial)
     metalearner_Y_cont <- make_learner(Lrnr_solnp,learner_function=metalearner_linear, eval_function=loss_squared_error)
@@ -98,6 +98,18 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     metalearner_A_bin <- make_learner(Lrnr_solnp,learner_function=metalearner_logistic_binomial, eval_function=loss_loglik_binomial)
   }
   
+  if(estimator=="tmle-lstm"){
+    learner_stack_A <- make_learner_stack(list("Lrnr_lstm_keras",batch_size=8, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='softmax', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2)) #loss="categorical_crossentropy"
+    learner_stack_A_bin <- make_learner_stack(list("Lrnr_lstm_keras",batch_size=8, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='sigmoid', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2))# loss="binary_crossentropy
+    learner_stack_Y <-  make_learner_stack(list("Lrnr_lstm_keras",batch_size=8, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='sigmoid', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2))# loss="binary_crossentropy"
+    learner_stack_Y_cont <-  make_learner_stack(list("Lrnr_lstm_keras",batch_size=8, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='linear', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2))# loss="mse"
+  }
+  
+  if(estimator%in% c("lmtp", "sdr")){
+    learner_stack_A <- make_learner_stack(list("Lrnr_ranger",num.trees=50),list("Lrnr_ranger",num.trees=500),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75)) 
+    learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25),list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.50), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75))
+  }
+
   #####################################
   # Define data generating process #
   #####################################
@@ -157,55 +169,55 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
     node("L1",                                      # er_mhsa (count)
          t = 1:t.end,
          distr = "NegBinom",
-         mu= plogis(L1[t-1] + .0017 * L2[t-1] + .2 * L3[t-1] + A[(t-1)]*.1)) + 
+         mu= plogis(L1[t-1] + .0017 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)] %in% c(1,4,6), 1, 0))) + 
     node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by race)
          t = 1:t.end,
          distr = "rbern",
-         prob= plogis(L2[t-1] + .0017 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + A[(t-1)]*.05)) +
+         prob= ifelse(L2[t-1]==1,1, plogis(-4 + .0017 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + ifelse(A[(t-1)] %in% c(1,4,6), 1, 0)))) +
     node("L3",                                      # ever_rx_antidiab (binary) (varies by race)
          t = 1:t.end,
          distr = "rbern",
-         prob= plogis(L3[t-1] + .0017 * (L1[t] - L1[t-1]) + .2 * (L2[t] - L2[t-1]) + A[(t-1)]*.05)) +
+         prob= ifelse(L3[t-1]==1,1, plogis(-4 + .0017 * (L1[t] - L1[t-1]) + .2 * (L2[t] - L2[t-1]) + ifelse(A[(t-1)] %in% c(1,4,6), 1, 0)))) +
     node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
          t = 1, 
          distr = "Multinom",
-        probs =  c(0.18-(L3[t]*0.05),0.12+(L3[t]*0.1),0.2+(L3[t]*0.1),0.2-(L3[t]*0.05),0.2-(L3[t]*0.05),0.1-(L3[t]*0.05))) + 
+        probs =  c(0.18-(L3[t]*0.01),0.12+(L3[t]*0.1),0.2+(L3[t]*0.1),0.2-(L3[t]*0.01),0.2+(L3[t]*0.01),0.1-(L3[t]*0.01))) + 
     node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
          t = 2:t.end, 
          distr = "Multinom",
-         probs =  StochasticFun(A[(t-1)], d=c(0+(L3[t]*0.1),0+(L3[t]*0.1),0-(L3[t]*0.05),0-(L3[t]*0.05),0-(L3[t]*0.05),0-(L3[t]*0.05)))) + 
+         probs =  StochasticFun(A[(t-1)], d=c(0-(L3[t]*0.001),0+(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.001),0+(L3[t]*0.01),0-(L3[t]*0.001)))) + 
     node("C",                                      # monthly_censored_indicator
          t = 1:t.end,
          distr = "rbern",
-         prob =ifelse((V3[0]+t)>65,1, plogis(-4 + 0.01 * L1[t] + 0.01 *L2[t] - 0.65 * L3[t] + A[t]*0.005)), # deterministic: AGE out at 65 (medicaid -> medicare)
+         prob =ifelse((V3[0]+(t/12))>65,1, plogis(-2 + 0.01 * L1[t-1] + 0.01 * L1[t] + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.65 * L3[t-1] + 0.65 * L3[t] + ifelse(A[(t)] %in% c(1,4,6), 0.5, 0) + ifelse(A[(t-1)] %in% c(1,4,6), 0.5, 0))), # deterministic: AGE out at 65 (medicaid -> medicare)
          EFU = TRUE) + # right-censoring (EFU) 
     node("Y",                                      # diabetes
          t = 1:t.end,
          distr = "rbern",
-         prob = plogis(-3.5 + Y[t-1] + 0.01 * L1[t] + 0.01 *L2[t] - 0.65 * L3[t] + .005 * A[t] + A[(t-1)]*.075 + .05 * A[t]*A[(t-1)]),
+         prob = plogis(-6 + 0.01 * L1[t-1] + 0.01 * L1[t] + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.65 * L3[t-1] + 0.65 * L3[t] + ifelse(A[(t)] %in% c(1,4,6), 0.5, 0) + ifelse(A[(t-1)] %in% c(1,4,6), 0.5, 0)),
          EFU = TRUE)
   
   # specify intervention rules
-  Dset <- set.DAG(D, vecfun=c("DynamicFun","StochasticFun")) # locks DAG, consistency checks
+  Dset <- set.DAG(D, vecfun=c("StochasticFun")) # locks DAG, consistency checks
 
   if(r==1){
     png(paste0(output_dir,"DAG_plot.png"))
-    plotDAG(Dset, excludeattrs=c("A_0","C_0","Y_0"), xjitter=0.8) # plot DAG
+    plotDAG(Dset, excludeattrs=c("A_0","C_0","Y_0"), xjitter=0.8, tmax = 3) # plot DAG
     dev.off()
   }
   
-  int.static <-c(node("A", t = 1:t.end, distr = "rconst", # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia)  and stays on it
-                      const = 3),
+  int.static <-c(node("A", t = 1:t.end, distr = "rconst", # Static: Everyone gets olanz. (if bipolar=2), haloperidol (if schizophrenia=3), risp. (if MDD=1) and stays on it
+                      const = ifelse(V2[0]==3, 2, ifelse(V2[0]==1, 5, 3))),
                  node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
   
-  int.dynamic <- c(node("A", t = 1, distr = "rconst", # Dynamic: Start with Arip., then switch to olanz. (bipolar/MDD) or haloperidol (schizophrenia) if an antidiabetic drug is filled
+  int.dynamic <- c(node("A", t = 1, distr = "rconst", # Dynamic: Start with Arip., then switch to olanz. (bipolar=2), haloperidol (schizophrenia=3), risp (MDD=1) if an antidiabetic drug is filled
                         const= 1),
-                   node("A", t = 2:t.end, distr = "Multinom",
-                        probs=DynamicFun(condition1=L3[t-1], condition2=V2[0], cat = 3, pstart=c(0.25,0,0,0.3,0.3,0.15), pswitch_a=c(0,1,0,0,0,0), pswitch_b=c(0,0,1,0,0,0))),
+                   node("A", t = 2:t.end, distr = "rconst",
+                        const=ifelse(L3[t] ==1, ifelse(V2[0]==3, 2, ifelse(V2[0]==2, 3, ifelse(V2[0]==1, 5, 0))), 1)),
                    node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
-  
-  int.stochastic <- c(node("A", t = 2:t.end, distr = "Multinom", # stochastic:  t=1 is same as observed, reduce probability of Arip./Quet./Risp./Zipra and increase probability of halo. and olanz.
-                           probs = StochasticFun(A[(t-1)], d=c(-0.01, 0.01,0.01,-0.01,-0.01,-0.01))), 
+                                  
+  int.stochastic <- c(node("A", t = 2:t.end, distr = "Multinom", # stochastic:  t=1 is same as observed, reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
+                           probs = StochasticFun(A[(t-1)], d=c(-0.01, 0.01,0.01,-0.01,0.01,-0.01))), 
                       node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
   
   D.dyn1 <- Dset + action("A_th1", nodes = int.static) 
@@ -267,7 +279,7 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
   obs.treatment.rule[["stochastic"]] <- (dat[["A_th3"]]$A_th3[,anodes] ==  obs.treatment)+0 # in observed data, everyone follows stochastic rule at t=1
   
   # re-arrange so it is in same structure as QAW list
-  obs.rules <- lapply(1:(t.end), function(t) sapply(obs.treatment.rule, "[", , t))
+  obs.rules <- lapply(1:t.end, function(t) sapply(obs.treatment.rule, "[", , t))
   for(t in 2:t.end){ # cumulative sum across lists
     obs.rules[[t]] <- obs.rules[[t]] + obs.rules[[t-1]]
   }
@@ -275,50 +287,44 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
   
   if(r==1){
     
-    print(sapply(obs.rules,colMeans)*100)
+    print(sapply(obs.rules,colMeans, na.rm=TRUE)*100)
     
     png(paste0(output_dir,paste0("treatment_adherence_",n, ".png")))
-    plotSurvEst(surv = list("Static"=sapply(obs.rules,colMeans)[1,], "Dynamic"=sapply(obs.rules,colMeans)[2,], "Stochastic"=sapply(obs.rules,colMeans)[3,]),
+    plotSurvEst(surv = list("Static"=sapply(obs.rules,colMeans, na.rm=TRUE)[1,], "Dynamic"=sapply(obs.rules,colMeans, na.rm=TRUE)[2,], "Stochastic"=sapply(obs.rules,colMeans, na.rm=TRUE)[3,]),
                 ylab = "Share of patients who continued to follow each rule", 
-                main = "Treatment rule adherence (simulated data)")
+                xlab = "Month",
+                main = "Treatment rule adherence (simulated data)",
+                legend.xyloc = "topright", xaxt="n")
+    axis(1, at = seq(1, t.end, by = 5))
     dev.off()
   }
   
   # store observed Ys
   Y.observed <- list()
-  Y.observed[["static"]] <- c(mean(Odat[,ynodes]$Y_1[which(obs.rules[[1]][,"static"]==1)], na.rm=TRUE),
-                              mean(Odat[,ynodes]$Y_2[which(obs.rules[[2]][,"static"]==1)], na.rm=TRUE),
-                              mean(Odat[,ynodes]$Y_3[which(obs.rules[[3]][,"static"]==1)], na.rm=TRUE),
-                              mean(Odat[,ynodes]$Y_4[which(obs.rules[[4]][,"static"]==1)], na.rm=TRUE))
-  Y.observed[["dynamic"]] <- c(mean(Odat[,ynodes]$Y_1[which(obs.rules[[1]][,"dynamic"]==1)], na.rm=TRUE),
-                               mean(Odat[,ynodes]$Y_2[which(obs.rules[[2]][,"dynamic"]==1)], na.rm=TRUE),
-                               mean(Odat[,ynodes]$Y_3[which(obs.rules[[3]][,"dynamic"]==1)], na.rm=TRUE),
-                               mean(Odat[,ynodes]$Y_4[which(obs.rules[[4]][,"dynamic"]==1)], na.rm=TRUE))
-  Y.observed[["stochastic"]] <- c(mean(Odat[,ynodes]$Y_1[which(obs.rules[[1]][,"stochastic"]==1)], na.rm=TRUE),
-                                  mean(Odat[,ynodes]$Y_2[which(obs.rules[[2]][,"stochastic"]==1)], na.rm=TRUE),
-                                  mean(Odat[,ynodes]$Y_3[which(obs.rules[[3]][,"stochastic"]==1)], na.rm=TRUE),
-                                  mean(Odat[,ynodes]$Y_4[which(obs.rules[[4]][,"stochastic"]==1)], na.rm=TRUE))
-  Y.observed[["overall"]] <- c(mean(Odat[,ynodes]$Y_1, na.rm=TRUE),
-                               mean(Odat[,ynodes]$Y_2, na.rm=TRUE),
-                               mean(Odat[,ynodes]$Y_3, na.rm=TRUE),
-                               mean(Odat[,ynodes]$Y_4, na.rm=TRUE))
+  Y.observed[["static"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)][which(obs.rules[[t]][,"static"]==1)], na.rm=TRUE))
+  Y.observed[["dynamic"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)][which(obs.rules[[t]][,"dynamic"]==1)], na.rm=TRUE))
+  Y.observed[["stochastic"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)][which(obs.rules[[t]][,"stochastic"]==1)], na.rm=TRUE))
+  Y.observed[["overall"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)], na.rm=TRUE))
   
   if(r==1){
     png(paste0(output_dir,paste0("survival_plot_truth_",n, ".png")))
     plotSurvEst(surv = list("Static"=1-Y.true[["static"]], "Dynamic"=1-Y.true[["dynamic"]], "Stochastic"=1-Y.true[["stochastic"]]),
                 ylab = "Share of patients without diabetes diagnosis", 
+                xlab = "Month",
                 main = "Counterfactual outcomes (simulated data)",
-                ylim = c(0.7,1),
-                legend.xyloc = "bottomleft")
+             #   ylim = c(0.7,1),
+                legend.xyloc = "topright", xindx = 1:t.end, xaxt="n")
+    axis(1, at = seq(1, t.end, by = 5))
     dev.off()
     
     png(paste0(output_dir,paste0("survival_plot_observed_",n, ".png")))
     plotSurvEst(surv = list("Static"=1-Y.observed[["static"]], "Dynamic"=1-Y.observed[["dynamic"]], "Stochastic"=1-Y.observed[["stochastic"]]),
                 ylab = "Share of patients without diabetes diagnosis", 
+                xlab = "Month",
                 main = "Observed outcomes (simulated data)",
-                ylim = c(0.7,1),
-                legend.xyloc = "bottomleft")
-    lines(1:4, 1-Y.observed[["overall"]], type = "l", lty = 2)
+               # ylim = c(0.7,1),
+                legend.xyloc = "topright", xaxt="n")
+    axis(1, at = seq(1, t.end, by = 5))
     dev.off()
   }
   
@@ -350,7 +356,7 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
   CP_tmle_bin <- list()
   CIW_tmle_bin <- list()
   
-  if(estimator=="tmle"){
+  if(estimator%in%c("tmle", "tmle-lstm")){
     tmle_dat <- DF.to.long(Odat)
     
     tmle_dat <- 
@@ -496,7 +502,11 @@ simLong <- function(r, J=6, n=6000, t.end=2, gbound=c(0.01,0.99), ybound=c(0.000
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("A","Y")]
       
       # define cross-validation appropriatte for dependent data
-      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      if(estimator=="tmle"){
+        folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      }else if (estimator=="tmle-lstm"){
+        folds <- origami::make_folds(tmle_dat, fold_fun=folds_rolling_window, window_size = 1000, validation_size = 500, gap = 0, batch = 500)
+      }
       
       # define task and candidate learners
       initial_model_for_C_task <- make_sl3_Task(data=tmle_dat_sub,
@@ -781,7 +791,7 @@ settings <- expand.grid("n"=c(20000),
                         treatment.rule = c("static","dynamic","stochastic")) 
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # command line arguments
+args <- commandArgs(trailingOnly = TRUE) # command line arguments # c('tmle',1,'TRUE','FALSE')
 estimator <- as.character(args[1])
 thisrun <- settings[as.numeric(args[2]),]
 use.SL <- as.logical(args[3])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
@@ -796,7 +806,7 @@ treatment.rule <- ifelse(estimator=="tmle", "all", as.character(thisrun[,2])) # 
 # define parameters
 J <- 6 # number of treatments
 
-t.end <- 4 # number of time points after t=0
+t.end <- 36 # number of time points after t=0
 
 R <- 200 # number of simulation runs
 
@@ -804,7 +814,7 @@ gbound <- c(0.01,0.99) # define bounds to be used for the propensity score
 
 ybound <- c(0.0001, 0.9999) # define bounds to be used for the Y predictions
 
-n.folds <- 5
+n.folds <- 10
 
 # Setup parallel processing
 if(doMPI){

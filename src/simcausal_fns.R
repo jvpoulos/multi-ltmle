@@ -40,24 +40,8 @@ Multinom <- function(n,probs){
   return(as.factor(drop(x)))
 }
 
-# # dynamic treatment rule function
-DynamicFun <- function(condition1, condition2, cat, pstart, pswitch_a, pswitch_b){ 
-  # condition 1: time-varying covariate that determines switch (e.g., antidiabetic prescription fill)
-  # condition 2: baseline covariate that determines which drug to switch to (e.g., schizophrenia diagnosis)
-  # cat: category level for condition 2 (e.g., 3= schizophrenia) 
-  # pstart: starting multinomial probs.
-  # pswitch_a, pswitch_b: switching multinomial probs. determined by condition2
-  condition1[is.na(condition1)] <- 0
-  condition2[is.na(condition2)] <- 0
-  condition2 <- ifelse(condition2==cat,1,0)
-  n <- length(condition1)
-  J <- ncol(pstart)
-  res <- (matrix(condition1,n,J)*matrix(condition2,n,J)*pswitch_a + matrix(condition1,n,J)*(1-matrix(condition2,n,J))*pswitch_a) + (1-matrix(condition1,n,J))*pstart
-  return(res)
-}
-
 # stochastic treatment rule function
-StochasticFun <- function(condition, d) { # Stochastic: reduce probability of olanzapine and increase probability of aripiprazole and haloperidol
+StochasticFun <- function(condition, d) {
   condition[is.na(condition)] <- 0
   n <- length(condition)
   if(!is.matrix(d)){

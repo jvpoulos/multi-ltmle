@@ -44,7 +44,7 @@ Contents
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
-	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE, 'lmtp' for TMLE estimation with the *lmtp* package, or 'ltmle' with the *ltmle* package. 
+	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE using a standard super learner ensemble, 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs, 'lmtp' for TMLE with the *lmtp* package, 'ltmle' for TMLE with the *ltmle* package, 'iptw' for inverse probability of treatment weighting, 'gcomp' for g-computation, and 'sdr' for sequentially doubly-robust regression with the *lmtp* package. 
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
@@ -52,9 +52,9 @@ Contents
 
 	+ *J*: number of treatments; must be J=6.
 
-	+ *n*: sample size. Defaults to 6000.
+	+ *n*: sample size. Defaults to 20000.
 
-	+ *t.end*: number of time periods, between 3 and 10. Defaults to 4 (must be 4 if estimator='tmle').  
+	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
 	+ *R*: number of simulation runs. Default is 1000. 
 
@@ -74,10 +74,10 @@ Contents
 Instructions
 ------
 
-1. For simulations in longitudinal setting, run in bash script: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ['tmle', 'lmtp','ltmle'], `[arg2]` is a number specifying the treatment rule [1-3, except if 'tmle', 1 should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
+1. Run in bash script: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ['tmle', 'lmtp','ltmle'], `[arg2]` is a number specifying the treatment rule [1-3, except if 'tmle', 1 should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
 
 `Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'`
 
-2. For real data longtidunal analysis (T>1), run in bash script: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ['tmle', 'lmtp'], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights or 'none', and `[arg4]` is a logical flag if super learner estimation is to be used; e.g, 
+2. Run in bash script: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ['tmle', 'lmtp'], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights or 'none', and `[arg4]` is a logical flag if super learner estimation is to be used; e.g, 
 
 `Rscript ltmle_analysis.R 'tmle' 'all' '20230329/' 'TRUE'`  

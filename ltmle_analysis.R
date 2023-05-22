@@ -193,7 +193,7 @@ if(scale.continuous){
   tv[,continuous.tv.vars] <- scale(tv[,continuous.tv.vars]) # scale continuous vars
 }
 
-## treatment rule info (make consistent with simulation.R)
+## treatment rule info ## ALL 36 months
 
 # store observed treatment assignment
 obs.treatment <- list("A_1"=factor(Odat$drug_group[Odat$month_number==9]),

@@ -12,8 +12,8 @@ library(gtable)
 
 # Define parameters
 J <- 6
-n <- 10000
-R <- 105
+n <- 20000
+R <- 200
 
 treatment.rules <- c("static","dynamic","stochastic")
 
@@ -24,10 +24,7 @@ n.rules <-as.numeric(length(treatment.rules))
 
 # Load results data
 
-# filenames <- c(list.files(path="outputs/20230303", pattern = ".rds", full.names = TRUE), # lmtp reference and stochastic
-#                list.files(path="outputs/20230309", pattern = ".rds", full.names = TRUE), # lmtp static
-#                list.files(path="outputs/20230323", pattern = ".rds", full.names = TRUE)) # lmtp dynamic
-filenames <- list.files(path="outputs/20230327", pattern = ".rds", full.names = TRUE)
+filenames <- list.files(path="outputs/20230330", pattern = ".rds", full.names = TRUE)
   
 filenames <- filenames[grep(paste0("J_",J),filenames)]
 filenames <- filenames[grep(paste0("R_",R),filenames)]
@@ -38,7 +35,7 @@ if(any( duplicated(substring(filenames, 18)))){
   filenames <- filenames[-which(duplicated(substring(filenames, 18)))]
 }
 
-omit.result <- c("result.12","result.14","result.26","result.78")
+omit.result <- c("result.15","result.30","result.31","result.35","result.85","result.96","result.115","result.133")
 R <- R-length(omit.result)
 
 results <- list() # structure is: [[filename]][[metric]]
