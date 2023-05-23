@@ -48,12 +48,12 @@ StochasticFun <- function(condition, d) {
     d <- matrix(d,n,length(d),byrow = TRUE)
   }
   J <- ncol(d)
- res <- as.matrix((matrix(condition,n,J)==1)+0)*matrix(c(0.75,0.05,0.05,0.05,0.05,0.05),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==2)+0)*matrix(c(0.05,0.75,0.05,0.05,0.05,0.05),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==3)+0)*matrix(c(0.05,0.05,0.75,0.05,0.05,0.05),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==4)+0)*matrix(c(0.05,0.05,0.05,0.75,0.05,0.05),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==5)+0)*matrix(c(0.05,0.05,0.05,0.05,0.75,0.05),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==6)+0)*matrix(c(0.05,0.05,0.05,0.05,0.05,0.75),n,J,byrow = TRUE) + d
+ res <- as.matrix((matrix(condition,n,J)==1)+0)*matrix(c(0.95,0.01,0.01,0.01,0.01,0.01),n,J,byrow = TRUE) +
+    as.matrix((matrix(condition,n,J)==2)+0)*matrix(c(0.01,0.95,0.01,0.01,0.01,0.01),n,J,byrow = TRUE) +
+    as.matrix((matrix(condition,n,J)==3)+0)*matrix(c(0.01,0.01,0.95,0.01,0.01,0.01),n,J,byrow = TRUE) +
+    as.matrix((matrix(condition,n,J)==4)+0)*matrix(c(0.01,0.01,0.01,0.95,0.01,0.01),n,J,byrow = TRUE) +
+    as.matrix((matrix(condition,n,J)==5)+0)*matrix(c(0.01,0.01,0.01,0.01,0.95,0.01),n,J,byrow = TRUE) +
+    as.matrix((matrix(condition,n,J)==6)+0)*matrix(c(0.01,0.01,0.01,0.01,0.01,0.95),n,J,byrow = TRUE) + d
   if(any(is.na(res))){
     res[is.na(res)] <- .Machine$double.eps # placeholder 
   }

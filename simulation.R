@@ -130,29 +130,29 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
          distr = "rcat.factor",
          probs = c(ifelse(V1[0] == 1, (7740-1000)/38762, ifelse(V1[0] == 2, (7740+1000)/38762, (7740+500)/38762)),
                    ifelse(V1[0] == 1, (9721-2000)/38762, ifelse(V1[0] == 2, (9721+2000)/38762, (9721+1000)/38762)))) +
-    node("V3",                                      # age (continuous)
+    node("V3",                                      # age (continuous) (varies by  smi condition)
          t = 0,
          distr = "RnormTrunc",
-         mean = 44.5, 
-         sd = 10.2,
+         mean = ifelse(V2[0]==3, 46.5, ifelse(V2[0]==2 ,44.5, 44)), 
+         sd = ifelse(V2[0]==3, 9.2, ifelse(V2[0]==2, 10.2, 10.5)),
          minval = 19.9, maxval = 64.5,
-         min.low = 19.9, max.low = 36.79, min.high = 53.27, max.high = 64.5	) +
-    node("L1",                                      # er_mhsa (count) (varies by race)
+         min.low = 19.9, max.low = 36.79, min.high = 53.27, max.high = 64.5) +
+    node("L1",                                      # er_mhsa (count) (varies by smi condition)
          t = 0,
          distr = "NegBinom",
-         mu = ifelse(V1[0] == 1, (0.1-0.02), ifelse(V1[0] == 2, (0.1+0.02), ifelse(V1[0] == 3, (0.1-0.01), 0.1))))  +
-    node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by race)
+         mu = ifelse(V2[0] == 3, 0.5, ifelse(V2[0] == 2, 0.2, 0.1)))  +
+    node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by smi condition)
          t = 0,
          distr = "rbern",
-         prob = ifelse(V1[0] == 1, (0.183-0.05), ifelse(V1[0] == 2, (0.183+0.05), ifelse(V1[0] == 3, (0.183+0.025), 0.183)))) + 
-    node("L3",                                      # ever_rx_antidiab (binary) (varies by race)
+         prob = ifelse(V2[0] == 3, 0.19, ifelse(V2[0] == 2, 0.18, 0.17))) + 
+    node("L3",                                      # ever_rx_antidiab (binary) (varies by smi condition)
          t = 0,
          distr = "rbern",
-         prob = ifelse(V1[0] == 1, (0.05-0.04), ifelse(V1[0] == 2, (0.05+0.04), ifelse(V1[0] == 3, (0.05+0.02), 0.05)))) + 
-    node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
+         prob = ifelse(V2[0] == 3, 0.1, ifelse(V2[0] == 2, 0.08, 0.07))) + 
+    node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
          t = 0, 
-         distr = "rbern",
-         prob =  0) + 
+         distr = "Multinom",
+           probs =  c((1/6)-(L3[t]*0.1), ifelse(V2[0]==3, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), ifelse(V2[0]==2, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), 1/6-(L3[t]*0.1),  ifelse(V2[0]==1, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), (1/6)-(L3[t]*0.1))) + 
     node("C",                                     # monthly_censored_indicator (no censoring at baseline)
          t = 0,
          distr = "rbern",
@@ -164,37 +164,33 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
          prob= 0,
          EFU = TRUE) 
   
-  # distributions at later time-points (t = 1, . . . , T)
+    # distributions at later time-points (t = 1, . . . , T)
   D <- D.base +
     node("L1",                                      # er_mhsa (count)
          t = 1:t.end,
          distr = "NegBinom",
-         mu= plogis(L1[t-1] + .0017 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)] %in% c(1,4,6), 1, 0))) + 
-    node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by race)
+         mu= plogis(.01 *L1[t-1] + .01 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5))))) + 
+    node("L2",                                      # ever_mt_gluc_or_lip (binary)
          t = 1:t.end,
          distr = "rbern",
-         prob= ifelse(L2[t-1]==1,1, plogis(-4 + .0017 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + ifelse(A[(t-1)] %in% c(1,4,6), 1, 0)))) +
-    node("L3",                                      # ever_rx_antidiab (binary) (varies by race)
+         prob= ifelse(L2[t-1]==1,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5)))))) +
+    node("L3",                                      # ever_rx_antidiab (binary)
          t = 1:t.end,
          distr = "rbern",
-         prob= ifelse(L3[t-1]==1,1, plogis(-4 + .0017 * (L1[t] - L1[t-1]) + .2 * (L2[t] - L2[t-1]) + ifelse(A[(t-1)] %in% c(1,4,6), 1, 0)))) +
+         prob= ifelse(L3[t-1]==1,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + .01 * L2[t] + 0.01 * L2[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5)))))) +
     node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
-         t = 1, 
+         t = 1:t.end, 
          distr = "Multinom",
-        probs =  c(0.18-(L3[t]*0.01),0.12+(L3[t]*0.1),0.2+(L3[t]*0.1),0.2-(L3[t]*0.01),0.2+(L3[t]*0.01),0.1-(L3[t]*0.01))) + 
-    node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
-         t = 2:t.end, 
-         distr = "Multinom",
-         probs =  StochasticFun(A[(t-1)], d=c(0-(L3[t]*0.001),0+(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.001),0+(L3[t]*0.01),0-(L3[t]*0.001)))) + 
+         probs = StochasticFun(A[(t-1)], d=c(0-(L3[t]*0.01),0+(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.01)))) +
     node("C",                                      # monthly_censored_indicator
          t = 1:t.end,
          distr = "rbern",
-         prob =ifelse((V3[0]+(t/12))>65,1, plogis(-2 + 0.01 * L1[t-1] + 0.01 * L1[t] + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.65 * L3[t-1] + 0.65 * L3[t] + ifelse(A[(t)] %in% c(1,4,6), 0.5, 0) + ifelse(A[(t-1)] %in% c(1,4,6), 0.5, 0))), # deterministic: AGE out at 65 (medicaid -> medicare)
+         prob =ifelse((V3[0]+(t/12))>65,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] + ifelse(A[(t-1)]==6, 0.5, ifelse(A[(t-1)]==4, 0, ifelse(A[(t-1)]==1, -0.5, -1.5))) + ifelse(A[(t)]==6, 0, ifelse(A[(t)]==4, -0.5, ifelse(A[(t)]==1, -1, -1.5))))), # deterministic: AGE out at 65 (medicaid -> medicare)
          EFU = TRUE) + # right-censoring (EFU) 
     node("Y",                                      # diabetes
          t = 1:t.end,
          distr = "rbern",
-         prob = plogis(-6 + 0.01 * L1[t-1] + 0.01 * L1[t] + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.65 * L3[t-1] + 0.65 * L3[t] + ifelse(A[(t)] %in% c(1,4,6), 0.5, 0) + ifelse(A[(t-1)] %in% c(1,4,6), 0.5, 0)),
+         prob = plogis(-4 + Y[t-1] + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] + ifelse(A[(t-1)]==6, 0.5, ifelse(A[(t-1)]==4, 0, ifelse(A[(t-1)]==1, -0.5, -1))) + ifelse(A[(t)]==6, 0, ifelse(A[(t)]==4, -0.5, ifelse(A[(t)]==1, -1, -1.5)))),
          EFU = TRUE)
   
   # specify intervention rules
@@ -202,21 +198,21 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
 
   if(r==1){
     png(paste0(output_dir,"DAG_plot.png"))
-    plotDAG(Dset, excludeattrs=c("A_0","C_0","Y_0"), xjitter=0.8, tmax = 3) # plot DAG
+    plotDAG(Dset, excludeattrs=c("C_0","Y_0"), xjitter=0.8, tmax = 3) # plot DAG
     dev.off()
   }
   
-  int.static <-c(node("A", t = 1:t.end, distr = "rconst", # Static: Everyone gets olanz. (if bipolar=2), haloperidol (if schizophrenia=3), risp. (if MDD=1) and stays on it
+  int.static <-c(node("A", t = 0:t.end, distr = "rconst", # Static: Everyone gets olanz. (if bipolar=2), haloperidol (if schizophrenia=3), risp. (if MDD=1) and stays on it
                       const = ifelse(V2[0]==3, 2, ifelse(V2[0]==1, 5, 3))),
                  node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
   
-  int.dynamic <- c(node("A", t = 1, distr = "rconst", # Dynamic: Start with Arip., then switch to olanz. (bipolar=2), haloperidol (schizophrenia=3), risp (MDD=1) if an antidiabetic drug is filled
+  int.dynamic <- c(node("A", t = 0, distr = "rconst", # Dynamic: Start with Arip., then switch to olanz. (bipolar=2), haloperidol (schizophrenia=3), risp (MDD=1) if an antidiabetic drug is filled
                         const= 1),
-                   node("A", t = 2:t.end, distr = "rconst",
+                   node("A", t = 1:t.end, distr = "rconst",
                         const=ifelse(L3[t] ==1, ifelse(V2[0]==3, 2, ifelse(V2[0]==2, 3, ifelse(V2[0]==1, 5, 0))), 1)),
                    node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
                                   
-  int.stochastic <- c(node("A", t = 2:t.end, distr = "Multinom", # stochastic:  t=1 is same as observed, reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
+  int.stochastic <- c(node("A", t = 1:t.end, distr = "Multinom", # Stochastic: t=0 is same as observed reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
                            probs = StochasticFun(A[(t-1)], d=c(-0.01, 0.01,0.01,-0.01,0.01,-0.01))), 
                       node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
   
@@ -294,6 +290,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
                 ylab = "Share of patients who continued to follow each rule", 
                 xlab = "Month",
                 main = "Treatment rule adherence (simulated data)",
+          #      ylim = c(0,0.6),
                 legend.xyloc = "topright", xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
@@ -312,8 +309,8 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
                 ylab = "Share of patients without diabetes diagnosis", 
                 xlab = "Month",
                 main = "Counterfactual outcomes (simulated data)",
-             #   ylim = c(0.7,1),
-                legend.xyloc = "topright", xindx = 1:t.end, xaxt="n")
+               ylim = c(0.5,1),
+                legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
     
@@ -322,9 +319,10 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
                 ylab = "Share of patients without diabetes diagnosis", 
                 xlab = "Month",
                 main = "Observed outcomes (simulated data)",
-               # ylim = c(0.7,1),
-                legend.xyloc = "topright", xaxt="n")
+                ylim = c(0.5,1),
+                legend.xyloc = "bottomleft", xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
+    lines(1:t.end, 1-Y.observed[["overall"]], type = "l", lty = 2)
     dev.off()
   }
   
@@ -378,8 +376,8 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
              A.lag2 = dplyr::lag(A, n = 2, default = NA),
              A.lag3 = dplyr::lag(A, n = 3, default = NA))
     
-    tmle_dat <- data.frame(tmle_dat[tmle_dat$t>0,]) # discard baseline (V's are constant and baseline L's are in the lags)
-    tmle_dat[,c("A.lag", "A.lag2", "A.lag3")][tmle_dat[,c("A.lag", "A.lag2", "A.lag3")]==0] <- NA # no treatment assignment at baseline
+    tmle_dat <- data.frame(tmle_dat[tmle_dat$t>0,]) # discard baseline (V's are constant and baseline A and  L's are in the lags)
+    # tmle_dat[,c("A.lag", "A.lag2", "A.lag3")][tmle_dat[,c("A.lag", "A.lag2", "A.lag3")]==0] <- NA # no treatment assignment at baseline
     
     tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2), dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
     tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
@@ -410,8 +408,11 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("Y","C")]
       
-      # define cross-validation folds
-      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      if(estimator=="tmle"){
+        folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      }else if (estimator=="tmle-lstm"){ # define cross-validation appropriate for dependent data
+        folds <- origami::make_folds(tmle_dat, fold_fun=folds_rolling_window, window_size = 1000, validation_size = 500, gap = 0, batch = 500)
+      }
       
       # define task and candidate learners
       
@@ -456,7 +457,11 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("C","Y")]
       
       # define cross-validation
-      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      if(estimator=="tmle"){
+        folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      }else if (estimator=="tmle-lstm"){ # define cross-validation appropriate for dependent data
+        folds <- origami::make_folds(tmle_dat, fold_fun=folds_rolling_window, window_size = 1000, validation_size = 500, gap = 0, batch = 500)
+      }
       
       # define task and candidate learners
       
@@ -501,10 +506,9 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("A","Y")]
       
-      # define cross-validation appropriatte for dependent data
       if(estimator=="tmle"){
         folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
-      }else if (estimator=="tmle-lstm"){
+      }else if (estimator=="tmle-lstm"){ # define cross-validation appropriatte for dependent data
         folds <- origami::make_folds(tmle_dat, fold_fun=folds_rolling_window, window_size = 1000, validation_size = 500, gap = 0, batch = 500)
       }
       
@@ -787,7 +791,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.01,0.99), ybound=c(0.0
 #####################
 
 # define settings for simulation
-settings <- expand.grid("n"=c(20000), 
+settings <- expand.grid("n"=c(60000), 
                         treatment.rule = c("static","dynamic","stochastic")) 
 
 options(echo=TRUE)
@@ -808,7 +812,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 200 # number of simulation runs
+R <- 100 # number of simulation runs
 
 gbound <- c(0.01,0.99) # define bounds to be used for the propensity score
 
