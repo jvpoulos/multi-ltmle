@@ -44,7 +44,7 @@ Contents
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
-	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE using a standard super learner ensemble, 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs, 'lmtp' for TMLE with the *lmtp* package, 'ltmle' for TMLE with the *ltmle* package, 'iptw' for inverse probability of treatment weighting, 'gcomp' for g-computation, and 'sdr' for sequentially doubly-robust regression with the *lmtp* package. 
+	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE,  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; and  'ltmle' for TMLE with the *ltmle* package. 
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
@@ -52,7 +52,7 @@ Contents
 
 	+ *J*: number of treatments; must be J=6.
 
-	+ *n*: sample size. Defaults to 20000.
+	+ *n*: sample size. Defaults to 10000.
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 

@@ -17,33 +17,40 @@ static_olanz_on <- function(data, trt) {
   return(factor(rep(3, length(data[[trt]])), levels=1:6))
 }
 
+static_risp_on <- function(data, trt) {
+  #  multinomial treatment is set to 5 (risperidone) at all time points for all observations
+  return(factor(rep(5, length(data[[trt]])), levels=1:6))
+}
+
 static_mtp <- function(data, trt) {
-  # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) and stays on it
+  # Static: Everyone gets olanz. (if bipolar=2), haloperidol (if schizophrenia=3), risp. (if MDD=1) and stays on it
   ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, # check if schizophrenia
          static_halo_on(data, trt), # switch to halo
-         static_olanz_on(data, trt))  # otherwise stay on arip
+         ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 1,
+                static_risp_on(data, trt),
+         static_olanz_on(data, trt)))
 }
 
 dynamic_mtp <- function(data, trt) {
-  # Dynamic: Start with Arip., then switch to olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) if an antidiabetic drug is filled OR metabolic testing occurred (Lipid or glucose lab test)
-  if (trt == "A_1") {
-    # if its the first time point, start with olanzapine
+  # Dynamic: Start with Arip., then switch to olanz. (bipolar=2), haloperidol (schizophrenia=3), risp (MDD=1) if an antidiabetic drug is filled
+  if (trt == "A_0") {
     static_arip_on(data, trt)
   } else {
     # otherwise check if the time varying covariate equals 1
     ifelse(!is.na(data[[sub("A", "L2","L3", trt)]]) & data[[sub("A", "L2", "L3", trt)]] == 1,
-           ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, # check if schizophrenia
+           ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, 
                   static_halo_on(data, trt), # switch to halo
-                  static_olanz_on(data, trt)), # switch to olanz
+                  ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 2, # switch to olanz
+                  static_olanz_on(data, trt), static_risp_on(data, trt))),  # switch to risp
            static_arip_on(data, trt))  # otherwise stay on arip
   }
 }
 
 stochastic_mtp <- function(data, trt) {
-  # stochastic:  t=1 is same as observed, reduce probability of Arip./Quet./Risp./Zipra and increase probability of halo. and olanz.
-  if (trt == "A_1") {
+  # Stochastic: t=0 is same as observed, reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
+  if (trt == "A_0") {
     data[[trt]] # do nothing
-  } else if (trt %in% paste0("A_", seq(2,4))){ #t.end
-    Multinom(length(data[[trt]]), StochasticFun(data[[trt]], d=c(-0.01, 0.01,0.01,-0.01,-0.01,-0.01)))
+  }else{
+    Multinom(length(data[[trt]]), StochasticFun(data[[trt]], d=c(-0.01, 0.01,0.01,-0.01, 0.01,-0.01)))
   }
 }
