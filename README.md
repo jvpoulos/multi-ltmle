@@ -44,7 +44,7 @@ Contents
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
-	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE,  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; and  'ltmle' for TMLE with the *ltmle* package. 
+	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE,  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. 
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
@@ -62,7 +62,7 @@ Contents
 
 	+ *use.SL*: logical flag. When TRUE, use Super Learner for treatment and outcome model estimation; if FALSE, use GLM. 
 
-	+ *n.folds*: number of cross-validation folds for Super Learner. Defaults to 10 and is ignored if *use.SL* is FALSE. 
+	+ *n.folds*: number of cross-validation folds for Super Learner. Defaults to 10 (must be at at least 3). 
 
 * ***long_sim_plots.R*** combine output from ***simulation.R*** and plot.
 

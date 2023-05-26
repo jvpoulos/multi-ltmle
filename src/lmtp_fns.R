@@ -36,8 +36,9 @@ dynamic_mtp <- function(data, trt) {
   if (trt == "A_0") {
     static_arip_on(data, trt)
   } else {
+    print(data[[sub("A", "L3", trt)]])
     # otherwise check if the time varying covariate equals 1
-    ifelse(!is.na(data[[sub("A", "L2","L3", trt)]]) & data[[sub("A", "L2", "L3", trt)]] == 1,
+    ifelse(!is.na(data[[sub("A", "L3", trt)]]) & data[[sub("A", "L3", trt)]] == 1,
            ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, 
                   static_halo_on(data, trt), # switch to halo
                   ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 2, # switch to olanz

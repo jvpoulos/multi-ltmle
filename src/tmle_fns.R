@@ -128,7 +128,6 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
     tmle_dat_sub$Y <- Y_pred[as.numeric(names(Y_pred)) %in% tmle_dat_sub$ID]
   }
   
-  # define cross-validation appropriatte for dependent data
   folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
   
   # define task and candidate learners
