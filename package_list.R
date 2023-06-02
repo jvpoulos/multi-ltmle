@@ -2,7 +2,7 @@
 # Install packages   #
 ######################
 
-packages <- c("devtools","ggplot2","nnet","tmle","MASS","tidyverse","data.table","SuperLearner","Rsolnp","reshape2","origami","tictoc","weights","grid","car","latex2exp","progressr","future","keras","lmtle","gtools")
+packages <- c("devtools","ggplot2","nnet","tmle","MASS","tidyverse","data.table","SuperLearner","Rsolnp","reshape2","origami","tictoc","weights","grid","car","latex2exp","progressr","future","lmtle","gtools")
 
 super.learner <- TRUE
 dependencies <- FALSE # data.table, stringi, HMisc dependencies might be needed for SuperLearner libraries
@@ -21,8 +21,8 @@ if(dependencies){
 
 # development packages
 devtools::install_github("nt-williams/lmtp@sl3")
-remotes::install_github("tlverse/sl3")
-#remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras, v1.4.2 solnp
+#remotes::install_github("tlverse/sl3")
+remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
 
 
 devtools::install_github('osofr/gridisl', build_vignettes = FALSE)

@@ -62,36 +62,62 @@ static_olanz_on <- function(row,lags=TRUE) {
   return(shifted)
 }
 
-static_mtp <- function(row){ 
-  # Static: Everyone gets olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) and stays on it
+static_risp_on <- function(row,lags=TRUE) {
+  if(lags){
+    treats <- row[grep("A[0-9]",colnames(row), value=TRUE)]
+  }else{
+    treats <- row[grep("A[0-9]$",colnames(row), value=TRUE)]
+  }
+  #  binary treatment is set to risperidone at all time points for all observations
   if(row$t==1){ # first-, second-, and third-order lags are 0
+    shifted <- ifelse(names(treats)%in%grep("^A5$",colnames(row), value=TRUE),1,0)
+    names(shifted) <- names(treats)
+  }else if(row$t==2){ #second- and third-order lags are zero
+    shifted <- ifelse(names(treats)%in%c(grep("^A5$",colnames(row), value=TRUE),grep("^A3.lag$",colnames(row), value=TRUE)),1,0)
+    names(shifted) <- names(treats)
+  }else if (row$t>2){ #turn on all lags
+    shifted <- ifelse(names(treats)%in%grep("A5",colnames(row), value=TRUE),1,0)
+    names(shifted) <- names(treats)
+  }
+  return(shifted)
+}
+
+static_mtp <- function(row){ 
+  # Static: Everyone gets olanz. (if bipolar=2), haloperidol (if schizophrenia=3), risp. (if MDD=1) and stays on it
+  if(row$t==0){ # first-, second-, and third-order lags are 0
     if(row$schiz==1){
       shifted <- static_halo_on(row,lags=TRUE)
-    }else{
+    }else if(row$bipolar==1){
       shifted <- static_olanz_on(row,lags=TRUE)
+    }else if(row$mdd==1){
+      shifted <- static_risp_on(row,lags=TRUE)
     }
-  }else if(row$t>1){
+  }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
     if(row$schiz==1){
       shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
-    }else{
+    }else if(row$bipolar==1){
       shifted <- unlist(c(static_olanz_on(row,lags = FALSE),lags)) # switch to olanz
+    }else if(row$mdd==1){
+      shifted <- unlist(c(static_risp_on(row,lags = FALSE),lags)) # switch to olanz
     }
   }
   return(shifted)
 }
 
 dynamic_mtp <- function(row){ 
-  # Dynamic: Start with Arip., then switch to olanz. (if bipolar/MDD) or haloperidol (if schizophrenia) if an antidiabetic drug is filled OR metabolic testing occurred (Lipid or glucose lab test)
-  if(row$t==1){ # first-, second-, and third-order lags are 0
+  # Dynamic: Start with Arip., then switch to olanz. (bipolar=2), haloperidol (schizophrenia=3), risp (MDD=1) if an antidiabetic drug is filled
+  if(row$t==0){ # first-, second-, and third-order lags are 0
     shifted <- static_arip_on(row,lags=TRUE)
-  }else if(row$t>1){
+  }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
     if((row$L2 | row$L3)==1){
       if(row$schiz==1){
         shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
-      }else{
+      }else if(row$bipolar==1){
         shifted <- unlist(c(static_olanz_on(row,lags = FALSE),lags)) # switch to olanz
+      }else if(row$mdd==1){
+        shifted <- unlist(c(static_risp_on(row,lags = FALSE),lags)) # switch to olanz
       }
     }else if((row$L2 | row$L3)==0){
       shifted <- unlist(c(static_arip_on(row,lags=FALSE),lags))  # otherwise stay on arip
@@ -101,12 +127,12 @@ dynamic_mtp <- function(row){
 }
 
 stochastic_mtp <- function(row){
-  # stochastic:  t=1 is same as observed, reduce probability of Arip./Quet./Risp./Zipra and increase probability of halo. and olanz.
-  if(row$t==1){ # do nothing first period
+  # Stochastic: t=0 is same as observed, reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
+  if(row$t==0){ # do nothing first period
     shifted <- row[grep("A[0-9]",colnames(row), value=TRUE)]  # first and second-order lags are 0
-  }else if(row$t>1){
+  }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
-    random_treat <- Multinom(1, StochasticFun(row[grep("A[0-9]$",colnames(row), value=TRUE)], d=c(-0.01, 0.01,0.01,-0.01,-0.01,-0.01))[which(row[grep("A[0-9]$",colnames(row), value=TRUE)]==1),])
+    random_treat <- Multinom(1, StochasticFun(row[grep("A[0-9]$",colnames(row), value=TRUE)], d=c(-0.01, 0.01,0.01,-0.01, 0.01,-0.01))[which(row[grep("A[0-9]$",colnames(row), value=TRUE)]==1),])
     shifted <- row[grep("A[0-9]$",colnames(row), value=TRUE)]
     shifted[shifted>0] <- 0
     shifted[as.numeric(random_treat)] <- 1
@@ -120,7 +146,7 @@ stochastic_mtp <- function(row){
 ###################################################################
 
 sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_Y_sl, ybound, Y_pred=NULL){
-
+  
   tmle_dat_sub <- tmle_dat[tmle_dat$t==t & !is.na(tmle_dat$Y),] # drop rows with missing Y
   
   if(!is.null(Y_pred)){ # for t<T
@@ -134,7 +160,7 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
   initial_model_for_Y_task <- make_sl3_Task(data=tmle_dat_sub,
                                             covariates = tmle_covars_Y, 
                                             outcome = "Y",
-                                             outcome_type=ifelse(!is.null(Y_pred), "continuous", "binomial"), 
+                                            outcome_type=ifelse(!is.null(Y_pred), "continuous", "binomial"), 
                                             folds = folds) 
   # train
   initial_model_for_Y_sl_fit <- initial_model_for_Y_sl$train(initial_model_for_Y_task)
@@ -152,7 +178,7 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
 # estimate each treatment rule-specific mean                      #
 ###################################################################
 
-getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound){
+getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end){
   # C_preds_bounded: cumulative bounded censoring predictions, 1=Censored
   
   initial_model_for_Y_preds <- initial_model_for_Y$preds # t length list
@@ -185,16 +211,16 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
   }else{
     weights <- clever_covariates/rowSums(obs.treatment[initial_model_for_Y_data$ID,]*boundProbs(g_preds_bounded*C_preds_bounded, bounds = gbound)) # denominator: clever covariate used as weight in regression
   }
-
+  
   # targeting step - refit outcome model using clever covariates
-  if(unique(initial_model_for_Y$data$t)<4){
+  if(unique(initial_model_for_Y$data$t)<t.end){ # use actual Y for t=T
     updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(QAW$QA ~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
   }else{
     updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(initial_model_for_Y$data$Y~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
   }
   
   Qstar <- lapply(1:ncol(clever_covariates), function(i) predict(updated_model_for_Y[[i]], type="response")) # newdata = data.frame("offset(qlogis(QAW[, (i + 1)]))"=offset(qlogis(QAW[,(i+1)])),
-                                                                                                                             #    "(weights)"=weights[,i]))
+  #    "(weights)"=weights[,i]))
   names(Qstar) <- colnames(obs.rules)
   
   return(list("clever_covariates"=clever_covariates,"weights"=weights,"updated_model_for_Y"=updated_model_for_Y, "Qstar"=Qstar, "ID"=initial_model_for_Y_data$ID))
@@ -212,16 +238,23 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
   
   # calcuate final TMLE estimate
   tmle_final <- lapply(1:n.rules, function(x) mean(tmle_contrasts[[(t.end)]]$Qstar[[x]])) # interested in Y at end of follow-up
-  
+
   # calculate influence curve
   Y <- initial_model_for_Y[[t.end]]$data$Y[-which(initial_model_for_Y[[t.end]]$data$ID %in% time.censored$ID)] # Y_T is actual Y at end of follow-up
   Y[is.na(Y)] <- 0 # set Y=0 if unmeasured at time t
   
-  infcurv <- lapply(1:n.rules, function(x) tmle_contrasts[[t.end]]$weights[,x][-which(tmle_contrasts[[t.end]]$ID %in% time.censored$ID)] *(Y - tmle_contrasts[[t.end]]$Qstar[[x]]) + 
-                      tmle_contrasts[[(t.end-1)]][,x]$weights[,x][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[t.end]]$Qstar[[x]] - tmle_contrasts[[(t.end-1)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)]) + 
-                      tmle_contrasts[[(t.end-2)]][,x]$weights[,x][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[(t.end-1)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[(t.end-2)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)]) + 
-                      tmle_contrasts[[(t.end-3)]][,x]$weights[,x]*(tmle_contrasts[[(t.end-2)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[(t.end-3)]][,x]$Qstar[[x]]) + 
-                      tmle_contrasts[[(t.end)]]$Qstar[[x]] - tmle_final[[x]]) # final TMLE estimate
+  infcurv <- lapply(1:n.rules, function(x)  
+    tmle_contrasts[[(t.end)]]$Qstar[[x]] - tmle_final[[x]] + # final TMLE estimate 
+      tmle_contrasts[[t.end]]$weights[,x][-which(tmle_contrasts[[t.end]]$ID %in% time.censored$ID)] *(Y - tmle_contrasts[[t.end]]$Qstar[[x]]) + # final time period (use real Y)
+      tmle_contrasts[[1]][,x]$weights[,x]*(tmle_contrasts[[2]][,x]$Qstar[[x]][-which(tmle_contrasts[[2]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[1]][,x]$Qstar[[x]]) + # first time period
+      sapply((t.end-1):2, function(t)
+        tmle_contrasts[[t]][,x]$weights[,x][-which(tmle_contrasts[[t]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[t+1]]$Qstar[[x]] - tmle_contrasts[[t]][,x]$Qstar[[x]][-which(tmle_contrasts[[t]][,x]$ID %in% time.censored$ID)])
+      ))
+  # infcurv <- lapply(1:n.rules, function(x) tmle_contrasts[[t.end]]$weights[,x][-which(tmle_contrasts[[t.end]]$ID %in% time.censored$ID)] *(Y - tmle_contrasts[[t.end]]$Qstar[[x]]) +
+  #                     tmle_contrasts[[(t.end-1)]][,x]$weights[,x][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[t.end]]$Qstar[[x]] - tmle_contrasts[[(t.end-1)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)]) +
+  #                     tmle_contrasts[[(t.end-2)]][,x]$weights[,x][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[(t.end-1)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[(t.end-2)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)]) +
+  #                     tmle_contrasts[[(t.end-3)]][,x]$weights[,x]*(tmle_contrasts[[(t.end-2)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[(t.end-3)]][,x]$Qstar[[x]]) +
+  #                     tmle_contrasts[[(t.end)]]$Qstar[[x]] - tmle_final[[x]]) # final TMLE estimate
   
   CI <- lapply(1:n.rules, function(x) CI(est=tmle_final[[x]], infcurv = infcurv[[x]], alpha=0.05))
   

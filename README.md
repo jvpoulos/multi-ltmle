@@ -2,7 +2,7 @@
 
 Longitudinal TMLE (LTMLE) with multi-valued treatments. 
 
-N.b.: We cannot provide the actual Centers for Medicare & Medicaid Services (CMS) data used in the application because they are protected. The simulated data provided in this repo are for illustrative purposes.
+N.b.: We cannot provide the actual Centers for Medicare & Medicaid Services (CMS) data used in the application because they are protected. The simulated data provided in a companion repo [multi-tmle](https://github.com/jvpoulos/multi-tmle/) are for illustrative purposes.
 
 Please cite the paper if you use this repo:
 
@@ -30,7 +30,6 @@ Prerequsites
 Contents
 ------
 
-
 * ***package_list.R*** install required **R** packages.
 	+ *doMPI*: logical flag. When TRUE, install packages needed for MPI parallel processing. Defaults to FALSE.
 
@@ -44,11 +43,11 @@ Contents
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
-	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE,  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. 
+	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE,  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates; **not yet implemented**); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. 
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
-	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(0.01,0.99) and c(0.0001, 0.9999), resp.  
+	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(1e-05,1-1e-05).  
 
 	+ *J*: number of treatments; must be J=6.
 
@@ -56,28 +55,34 @@ Contents
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 1000. 
+	+ *R*: number of simulation runs. Default is 20. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 
 	+ *use.SL*: logical flag. When TRUE, use Super Learner for treatment and outcome model estimation; if FALSE, use GLM. 
 
-	+ *n.folds*: number of cross-validation folds for Super Learner. Defaults to 10 (must be at at least 3). 
+	+ *n.folds*: number of cross-validation folds for Super Learner. Defaults to 5 (must be at at least 3). 
 
 * ***long_sim_plots.R*** combine output from ***simulation.R*** and plot.
 
-* ***tmle_itt_analysis.R*** code for ITT analysis on actual CMS data in a static setting (T=1) and J=6 levels of treatment.
-	+ ***tmle_itt_analysis_eda.R*** code for producing descriptive plots and tables for ITT analysis on actual CMS data in the static setting (T=1).
-
 * ***ltmle_analysis.R*** code for analysis on actual CMS data in the longitudinal setting (T>1) and J=6 levels of treatment.
+	+ ***ltmle_analysis_eda.R*** code for producing descriptive plots and tables.
 
 Instructions
 ------
 
-1. Run in bash script: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ['tmle', 'lmtp','ltmle'], `[arg2]` is a number specifying the treatment rule [1-3, except if 'tmle', 1 should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
+1. Install require **R** packages: `Rscript package_list.R`
+
+2. For simulations, run: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ["lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp","tmle", "tmle-lstm"], `[arg2]` is a number specifying the treatment rule [1-3, except if 'tmle', 1 should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
 
 `Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'`
 
-2. Run in bash script: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ['tmle', 'lmtp'], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights or 'none', and `[arg4]` is a logical flag if super learner estimation is to be used; e.g, 
+3. To plot simulation results, run: `Rscript long_sim_plots.R [arg1]`; where `[arg1]` specifies the output path of the simulation results. E.g., 
+	
+	`Rscript long_sim_plots.R 'outputs/20230330'`
 
-`Rscript ltmle_analysis.R 'tmle' 'all' '20230329/' 'TRUE'`  
+4. Download in the local directory simulated data [simdata_from_basevars.RData](https://github.com/jvpoulos/multi-tmle/blob/4286f7899ec0a9fc27474ff88871dbd6cae85dbd/simdata_from_basevars.RData) **To do: time-varying variables and censor**
+
+5. For ITT analysis on simulated data, run: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4] [arg5]`; where `[arg1]` specifies the estimator ["lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp","tmle", "tmle-lstm"], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights (e.g., '20230329/') or 'none', `[arg4]` is a logical flag if super learner estimation is to be used, and , `[arg5]` is a logical flag if simulated data is to be used; e.g, 
+
+`Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'`  
