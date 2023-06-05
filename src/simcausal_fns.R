@@ -22,6 +22,10 @@ NegBinom <- function(n, mu){
   rnbinom(n=n, size=1, mu=mu)
 }
 
+rbern <- function(n, prob) {
+  rbinom(n=n, prob=prob, size=1)
+}
+
 # definition: multinomial
 Multinom <- function(n,probs){
   # probs is vector or matrix

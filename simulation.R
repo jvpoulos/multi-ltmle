@@ -866,10 +866,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(1e-05,1-1e-05), ybound=c
   results_CP_ltmle_tmle <- list()
   results_CIW_ltmle_tmle <- list()
   
-  results_CI_ltmle_iptwp <- list() 
-  results_bias_ltmle_iptwp <- list() 
-  results_CP_ltmle_iptwp <- list()
-  results_CIW_ltmle_iptwp <- list()
+  results_CI_ltmle_iptw <- list() 
+  results_bias_ltmle_iptw <- list() 
+  results_CP_ltmle_iptw <- list()
+  results_CIW_ltmle_iptw <- list()
   
   results_CI_ltmle_gcomp <- list() 
   results_bias_ltmle_gcomp <- list() 

@@ -37,7 +37,7 @@ cl <- parallel::makeCluster(cores, outfile="")
 doParallel::registerDoParallel(cl) # register cluster
 
 # command line args
-args <- commandArgs(trailingOnly = TRUE) # command line arguments c('tmle' 'all' 'none' 'TRUE' 'TRUE')
+args <- commandArgs(trailingOnly = TRUE) # command line arguments args <- c('tmle','all','none','TRUE','TRUE')
 estimator <- as.character(args[1])
 treatment.rule <- ifelse(estimator=="tmle", "all", as.character(args[2])) # tmle calculates calculates counterfactual means under all treatment rules
 weights.loc <- as.character(args[3])
@@ -185,7 +185,9 @@ if(estimator%in% c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
 
 if(use.simulated){
   load("simdata_from_basevars.RData")
-  Odat <- simdata_from_basevars # NEED TV covariates, days to censored
+  source("add_tv_simulated.R") # add time-varying variables
+  
+  Odat <- simdata_from_basevars 
   
   rm(simdata_from_basevars)
 }else{
@@ -264,28 +266,25 @@ tv.unscaled <- cbind("monthly_evcum_psych"=Odat$monthly_evcum_psych,
 tv <- tv.unscaled
 
 if(scale.continuous){
-  continuous.tv.vars <- c("monthly_er_mhsa","monthly_er_nonmhsa","monthly_er_injury","monthly_cond_mhsa",
+  continuous.tv.vars <- c("monthly_olanzeq_dose_total","monthly_er_mhsa","monthly_er_nonmhsa","monthly_er_injury","monthly_cond_mhsa",
                        "monthly_cond_nonmhsa","monthly_cond_injury","monthly_los_mhsa","monthly_los_nonmhsa","monthly_los_injury") 
   
   tv[,continuous.tv.vars] <- scale(tv[,continuous.tv.vars]) # scale continuous vars
 }
 
-## treatment rule info ## ALL 36 months
+## treatment rule info
 
 # store observed treatment assignment
-obs.treatment <- list("A_1"=factor(Odat$drug_group[Odat$month_number==9]),
-                            "A_2"=factor(Odat$drug_group[Odat$month_number==18]),
-                            "A_3"=factor(Odat$drug_group[Odat$month_number==27]),
-                            "A_4"=factor(Odat$drug_group[Odat$month_number==36]))
 
-obs.ID <- list("ID_1"=as.numeric(rownames(Odat[Odat$month_number==9,])), 
-               "ID_2"=as.numeric(rownames(Odat[Odat$month_number==18,])), 
-               "ID_3"=as.numeric(rownames(Odat[Odat$month_number==27,])), 
-               "ID_4"=as.numeric(rownames(Odat[Odat$month_number==36,])))
+obs.treatment <- lapply(1:t.end, function(t) factor(Odat$drug_group[Odat$month_number==t]))
+names(obs.treatment) <- paste0("A_",seq(1,t.end))
+
+obs.ID <- lapply(1:t.end, function(t) as.numeric(rownames(Odat[Odat$month_number==t,])))
+names(obs.ID) <- paste0("ID_",seq(1,t.end))
 
 treatments <- lapply(1:t.end, function(t) as.data.frame(dummify(obs.treatment[[t]]))) # t-length list
 
-# store antidiabetic drug fill, metabolic test, and preperiod conditions for dynamic rule (same lengths as obs.treatment)
+# store antidiabetic drug fill, metabolic test, and preperiod conditions for dynamic rule (same lengths as obs.treatment) # CONTINUE HERE
 
 obs.fill <- list("L_1"=ifelse(Odat$monthly_ever_rx_antidiab==1 & Odat$month_number <=9,1,0)[Odat$month_number==9], 
                        "L_2"=ifelse(Odat$monthly_ever_rx_antidiab==1 & Odat$month_number <=18,1,0)[Odat$month_number==18], 
