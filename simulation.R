@@ -72,7 +72,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(1e-05,1-1e-05), ybound=c
   }
   
   if(estimator=='tmle-lstm'){
-    warning("not tested with tmle-lstm")
+    stop("tmle-lstm not functional")
   }
   
   # load utils
