@@ -1,0 +1,14 @@
+#!/bin/bash
+#SBATCH --job-name="package_list"
+#SBATCH -e package_list.err
+#SBATCH -p mpi
+#SBATCH -n 4
+#SBATCH --mem-per-cpu=1G
+#SBATCH -t 1-00:00:00
+
+# Load R
+module load gcc/6.2.0 R/4.0.1 git2/1.1.0
+module load openmpi/4.1.1
+
+#Run the job
+./package_list.sh

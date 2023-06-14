@@ -1071,7 +1071,7 @@ filename <- paste0(output_dir,
 
 print(paste0('simulation setting: ', "estimator = ", estimator, "treatment.rule = ", treatment.rule, " R = ", R, ", n = ", n,", J = ", J ,", t.end = ", t.end, ", use.SL = ",use.SL))
 
-sim.results <- foreach(r = 1:R, .combine='cbind', .verbose = TRUE) %dopar% {
+sim.results <- foreach(r = 1:R, .combine='cbind', .verbose = TRUE, .errorhandling="stop") %dopar% {
   simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL)
 }
 sim.results
