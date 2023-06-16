@@ -35,15 +35,21 @@ Contents
 
 * ***src/misc_fns***: includes misc. functions, including a function to bound predicted probabilities; functions generate different distributions; and a forest plot function. 
 
-* ***src/SL_fns***: pres-specified super learner functions for *ltmle* software. 
+* ***src/SL_fns***: pre-specified super learner functions and library definitions for *ltmle* software.
 
-* ***src/tmle_calculation_long.R***: function for generating counterfactual means under each treatment rule in longitudial data. Inputs initial Y estimates, bounded cumulative treatment/censoring probabilities, observed treatment, and observed outcomes. Outputs treatment-rule specific means.
+* ***src/lmtp_fns***: define treatment rule functions for *lmtp* software. 
+
+* ***src/ltmle_fns***: define treatment rule functions for *ltmle* software. 
+
+* ***src/tmle_fns***: define treatment rule functions for our implementation. 
+
+* ***src/tmle_calculation_long.R***: function for generating counterfactual means under each treatment rule in longitudinal data. Inputs initial Y estimates, bounded cumulative treatment/censoring probabilities, observed treatment, and observed outcomes. Outputs treatment-rule specific means.
 
 * ***src/tmleContrastLong.R***: function for calculating contrasts across all treatment rules in longitudinal data. Inputs treatment-rule-specific means, the contrast matrix, and logical flags. Outputs ATE and variance estimates. 
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
-	+ *estimator*: Select which estimator to use: 'tmle' for multinomial and multiple binary TMLE,  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates; **not yet implemented**); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. 
+	+ *estimator*: Select which estimator to use: 'tmle' for our TMLE implementation (multinomial and multiple binary),  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates; **not implemented**); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. 
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 

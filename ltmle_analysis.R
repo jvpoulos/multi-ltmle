@@ -103,20 +103,10 @@ filename <- paste0(output_dir,
                    "_n_folds_",n.folds,
                    "_use_SL_", use.SL,".rds")
 
-if(estimator=="tmle"){
-  source('./src/misc_fns.R')
-  source('./src/tmle_fns.R')
-}
-
-if(estimator=="lmtp"){
-  library(lmtp)
-  source('./src/misc_fns.R')
-  source('./src/lmtp_fns.R')
-}
-
 if(estimator%in%c("tmle", "tmle-lstm")){
   source('./src/misc_fns.R')
   source('./src/tmle_fns.R')
+  source('./src/SL3_fns.R')
 }
 
 if(estimator=='tmle-lstm'){
@@ -130,6 +120,7 @@ if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
   library(lmtp)
   source('./src/misc_fns.R')
   source('./src/lmtp_fns.R')
+  source('./src/SL3_fns.R')
 }
 
 if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
@@ -142,43 +133,6 @@ if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
 
 # load utils
 source('./src/simcausal_fns.R')
-
-#####################################
-# SL specifications             #
-#####################################
-
-# stack learners into a model
-
-if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
-  SL.library <- list("Q"=c("SL.xgboost.20","SL.ranger.100","SL.ranger.500","SL.glmnet.lasso","SL.glmnet.25","SL.glmnet.50","SL.glmnet.75"), 
-                     "g"=c("SL.xgboost.20","SL.ranger.100","SL.ranger.500","SL.glmnet.lasso","SL.glmnet.25","SL.glmnet.50","SL.glmnet.75"))
-}
-
-if(estimator%in%c("tmle")){
-  learner_stack_A <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective="multi:softprob", eval_metric="mlogloss",num_class=J), list("Lrnr_ranger",num.trees=100),list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "multinomial"))  
-  learner_stack_A_bin <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100),list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial"))  
-  learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100), list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial")) 
-  learner_stack_Y_cont <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:squarederror"), list("Lrnr_ranger",num.trees=100), list("Lrnr_ranger",num.trees=500), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "gaussian"))
-}
-
-if(estimator=="tmle-lstm"){
-  learner_stack_A <- make_learner_stack(list("Lrnr_lstm_keras",batch_size=32, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='softmax', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2)) #loss="categorical_crossentropy"
-  learner_stack_A_bin <- make_learner_stack(list("Lrnr_lstm_keras",batch_size=32, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='sigmoid', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2))# loss="binary_crossentropy
-  learner_stack_Y <-  make_learner_stack(list("Lrnr_lstm_keras",batch_size=32, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='sigmoid', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2))# loss="binary_crossentropy"
-  learner_stack_Y_cont <-  make_learner_stack(list("Lrnr_lstm_keras",batch_size=32, units=32, dropout=0.5, recurrent_dropout=0.5, activation='tanh', recurrent_activation='sigmoid', recurrent_out='linear', epochs=100,  layers=2, callbacks = list(keras::callback_early_stopping(patience = 10, restore_best_weights=TRUE)), validation_split=0.2))# loss="mse"
-}
-
-if(estimator%in%c("tmle","tmle-lstm")){
-  # metalearner defaults (https://tlverse.org/sl3/reference/default_metalearner.html)
-  metalearner_Y <- make_learner(Lrnr_solnp,learner_function=metalearner_logistic_binomial, eval_function=loss_loglik_binomial)
-  metalearner_Y_cont <- make_learner(Lrnr_solnp,learner_function=metalearner_linear, eval_function=loss_squared_error)
-  metalearner_A <- make_learner(Lrnr_solnp,learner_function=metalearner_linear_multinomial, eval_function=loss_loglik_multinomial)
-  metalearner_A_bin <- make_learner(Lrnr_solnp,learner_function=metalearner_logistic_binomial, eval_function=loss_loglik_binomial)
-}
-
-if(estimator%in% c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
-  learner_stack_A <- learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20), list("Lrnr_ranger",num.trees=100),list("Lrnr_ranger",num.trees=500),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75)) 
-}
 
 #####################################
 # Load data #
@@ -372,12 +326,12 @@ plotSurvEst(surv = list("Static"=sapply(obs.rules,colMeans)[1,], "Dynamic"=sappl
 axis(1, at = seq(1, (t.end+1), by = 5))
 dev.off() 
 
-# store observed Ys ## CONTINUE HERE (look at NAs)
+# store observed Ys
 rules <- c("static","dynamic","stochastic")
-Y.observed <- lapply(1:length(rules), function(i) sapply(1:t.end, function(t) mean(obs.Y[,paste0("Y_",t)][which(obs.rules[[t]][,i]==1)]))) # no Y in t=0
+Y.observed <- lapply(1:length(rules), function(i) sapply(1:t.end, function(t) mean(obs.Y[,paste0("Y_",t)][which(obs.rules[[t+1]][,i]==1)]))) # skip Y in t=0
 names(Y.observed) <- rules
 
-Y.observed[["overall"]] <- sapply(1:t.end, function(t) mean(obs.Y[,paste0("Y_",t)]))
+Y.observed[["overall"]] <- sapply(1:(t.end+1), function(t) mean(obs.Y[,paste0("Y_",t-1)]))
 
 png(paste0(output_dir,paste0("survival_plot_analysis_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
 plotSurvEst(surv = list("Static"=1-Y.observed[["static"]], "Dynamic"=1-Y.observed[["dynamic"]], "Stochastic"=1-Y.observed[["stochastic"]]),

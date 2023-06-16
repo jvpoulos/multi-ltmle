@@ -22,36 +22,42 @@ static_risp_on <- function(data, trt) {
   return(factor(rep(5, length(data[[trt]])), levels=1:6))
 }
 
+static_quet_on <- function(data, trt) {
+  #  multinomial treatment is set to 5 (risperidone) at all time points for all observations
+  return(factor(rep(4, length(data[[trt]])), levels=1:6))
+}
+
 static_mtp <- function(data, trt) {
-  # Static: Everyone gets olanz. (if bipolar=2), haloperidol (if schizophrenia=3), risp. (if MDD=1) and stays on it
+  # Static: Everyone gets quetiap (if bipolar=2), halo (if schizophrenia=3), ari (if MDD=1) and stays on it
   ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, # check if schizophrenia
          static_halo_on(data, trt), # switch to halo
-         ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 1,
-                static_risp_on(data, trt),
-         static_olanz_on(data, trt)))
+         ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 1, # check if MDD
+                static_arip_on(data, trt), # switch to ari
+         static_quet_on(data, trt))) # else bipolar, and switch to quet
 }
 
 dynamic_mtp <- function(data, trt) {
-  # Dynamic: Start with Arip., then switch to olanz. (bipolar=2), haloperidol (schizophrenia=3), risp (MDD=1) if an antidiabetic drug is filled
+  # Dynamic: Everyone starts with quetiap.
+  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR cardiometabolic diagnosis is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
   if (trt == "A_0") {
-    static_arip_on(data, trt)
+    static_quet_on(data, trt)
   } else {
-    print(data[[sub("A", "L3", trt)]])
     # otherwise check if the time varying covariate equals 1
-    ifelse(!is.na(data[[sub("A", "L3", trt)]]) & data[[sub("A", "L3", trt)]] == 1,
-           ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, 
+    ifelse((!is.na(data[[sub("A", "L1", trt)]]) & !is.na(data[[sub("A", "L2", trt)]]) & !is.na(data[[sub("A", "L3", trt)]])) & 
+             (data[[sub("A", "L1", trt)]] == 1 | data[[sub("A", "L2", trt)]] == 1 | data[[sub("A", "L3", trt)]] == 1),
+           ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, # check if schiz.
                   static_halo_on(data, trt), # switch to halo
-                  ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 2, # switch to olanz
-                  static_olanz_on(data, trt), static_risp_on(data, trt))),  # switch to risp
-           static_arip_on(data, trt))  # otherwise stay on arip
+                  ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 2, # check if bipolar
+                  static_risp_on(data, trt), static_arip_on(data, trt))), # switch to risp, or ari if MDD
+           static_quet_on(data, trt))  # otherwise stay on quet.
   }
 }
 
 stochastic_mtp <- function(data, trt) {
-  # Stochastic: t=0 is same as observed, reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
+  # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution
   if (trt == "A_0") {
     data[[trt]] # do nothing
   }else{
-    Multinom(length(data[[trt]]), StochasticFun(data[[trt]], d=c(-0.01, 0.01,0.01,-0.01, 0.01,-0.01)))
+    Multinom(length(data[[trt]]), StochasticFun(data[[trt]], d=c(0,0,0,0,0,0)))
   }
 }

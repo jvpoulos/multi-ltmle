@@ -1,7 +1,6 @@
-#############################
-# Super Learner functions   #
-#############################
-
+###############################################
+# Super Learner functions for ltmle package   #
+###############################################
 
 SL.ranger.100 = function(...) {
   SL.ranger(..., num.trees = 100)
@@ -34,3 +33,6 @@ SL.glmnet.50 = function(...) {
 SL.glmnet.75 = function(...) {
   SL.glmnet(..., alpha = 0.75)
 }
+
+SL.library <- list("Q"=c("SL.xgboost.20","SL.ranger.100","SL.ranger.500","SL.glmnet.lasso","SL.glmnet.25","SL.glmnet.50","SL.glmnet.75"), 
+                   "g"=c("SL.xgboost.20","SL.ranger.100","SL.ranger.500","SL.glmnet.lasso","SL.glmnet.25","SL.glmnet.50","SL.glmnet.75"))

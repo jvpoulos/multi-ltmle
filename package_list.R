@@ -21,9 +21,7 @@ if(dependencies){
 
 # development packages
 devtools::install_github("nt-williams/lmtp@sl3")
-#remotes::install_github("tlverse/sl3")
-remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
-
+remotes::install_github("tlverse/sl3")
 
 devtools::install_github('osofr/gridisl', build_vignettes = FALSE)
 devtools::install_github('osofr/stremr')
@@ -37,10 +35,11 @@ if(doMPI){
 }
 
 # keras CPU/GPU
-use.GPU <- TRUE
+use.GPU <- FALSE
 if(use.GPU){
   install.packages("keras", repos = "http://cran.us.r-project.org")
   install_keras(tensorflow = "gpu") # requires tensorflow-gpu installation # e.g, https://harvardmed.atlassian.net/wiki/spaces/O2/pages/1605009731/Tensorflow+on+O2
+  remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
 }else{
   install.packages("keras", repos = "http://cran.us.r-project.org")
 }

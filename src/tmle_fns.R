@@ -73,7 +73,7 @@ static_risp_on <- function(row,lags=TRUE) {
     shifted <- ifelse(names(treats)%in%grep("^A5$",colnames(row), value=TRUE),1,0)
     names(shifted) <- names(treats)
   }else if(row$t==2){ #second- and third-order lags are zero
-    shifted <- ifelse(names(treats)%in%c(grep("^A5$",colnames(row), value=TRUE),grep("^A3.lag$",colnames(row), value=TRUE)),1,0)
+    shifted <- ifelse(names(treats)%in%c(grep("^A5$",colnames(row), value=TRUE),grep("^A5.lag$",colnames(row), value=TRUE)),1,0)
     names(shifted) <- names(treats)
   }else if (row$t>2){ #turn on all lags
     shifted <- ifelse(names(treats)%in%grep("A5",colnames(row), value=TRUE),1,0)
@@ -82,57 +82,78 @@ static_risp_on <- function(row,lags=TRUE) {
   return(shifted)
 }
 
+static_quet_on <- function(row,lags=TRUE) {
+  if(lags){
+    treats <- row[grep("A[0-9]",colnames(row), value=TRUE)]
+  }else{
+    treats <- row[grep("A[0-9]$",colnames(row), value=TRUE)]
+  }
+  #  binary treatment is set to quetiapine at all time points for all observations
+  if(row$t==1){ # first-, second-, and third-order lags are 0
+    shifted <- ifelse(names(treats)%in%grep("^A4$",colnames(row), value=TRUE),1,0)
+    names(shifted) <- names(treats)
+  }else if(row$t==2){ #second- and third-order lags are zero
+    shifted <- ifelse(names(treats)%in%c(grep("^A4$",colnames(row), value=TRUE),grep("^A4.lag$",colnames(row), value=TRUE)),1,0)
+    names(shifted) <- names(treats)
+  }else if (row$t>2){ #turn on all lags
+    shifted <- ifelse(names(treats)%in%grep("A4",colnames(row), value=TRUE),1,0)
+    names(shifted) <- names(treats)
+  }
+  return(shifted)
+}
+
 static_mtp <- function(row){ 
-  # Static: Everyone gets olanz. (if bipolar=2), haloperidol (if schizophrenia=3), risp. (if MDD=1) and stays on it
+  # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
   if(row$t==0){ # first-, second-, and third-order lags are 0
     if(row$schiz==1){
       shifted <- static_halo_on(row,lags=TRUE)
     }else if(row$bipolar==1){
-      shifted <- static_olanz_on(row,lags=TRUE)
+      shifted <- static_quet_on(row,lags=TRUE)
     }else if(row$mdd==1){
-      shifted <- static_risp_on(row,lags=TRUE)
+      shifted <- static_arip_on(row,lags=TRUE)
     }
   }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
     if(row$schiz==1){
-      shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
+      shifted <- unlist(c(static_risp_on(row,lags = FALSE),lags)) # switch to risp
     }else if(row$bipolar==1){
-      shifted <- unlist(c(static_olanz_on(row,lags = FALSE),lags)) # switch to olanz
+      shifted <- unlist(c(static_quet_on(row,lags = FALSE),lags)) # switch to quet
     }else if(row$mdd==1){
-      shifted <- unlist(c(static_risp_on(row,lags = FALSE),lags)) # switch to olanz
+      shifted <- unlist(c(static_arip_on(row,lags = FALSE),lags)) # switch to arip
     }
   }
   return(shifted)
 }
 
 dynamic_mtp <- function(row){ 
-  # Dynamic: Start with Arip., then switch to olanz. (bipolar=2), haloperidol (schizophrenia=3), risp (MDD=1) if an antidiabetic drug is filled
+  # Dynamic: Everyone starts with quetiap.
+  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR cardiometabolic diagnosis is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
   if(row$t==0){ # first-, second-, and third-order lags are 0
-    shifted <- static_arip_on(row,lags=TRUE)
+    shifted <- static_quet_on(row,lags=TRUE)
   }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
-    if((row$L2 | row$L3)==1){
+    if((row$L1 | row$L2 | row$L3)==1){
       if(row$schiz==1){
         shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
       }else if(row$bipolar==1){
-        shifted <- unlist(c(static_olanz_on(row,lags = FALSE),lags)) # switch to olanz
+        shifted <- unlist(c(static_risp_on(row,lags = FALSE),lags)) # switch to risp
       }else if(row$mdd==1){
-        shifted <- unlist(c(static_risp_on(row,lags = FALSE),lags)) # switch to olanz
+        shifted <- unlist(c(static_arip_on(row,lags = FALSE),lags)) # switch to arip
       }
-    }else if((row$L2 | row$L3)==0){
-      shifted <- unlist(c(static_arip_on(row,lags=FALSE),lags))  # otherwise stay on arip
+    }else if((row$L1 | row$L2 | row$L3)==0){
+      shifted <- unlist(c(static_quet_on(row,lags=FALSE),lags))  # otherwise stay on quetiap.
     }
   }
   return(shifted)
 }
 
 stochastic_mtp <- function(row){
-  # Stochastic: t=0 is same as observed, reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
+  # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution
   if(row$t==0){ # do nothing first period
     shifted <- row[grep("A[0-9]",colnames(row), value=TRUE)]  # first and second-order lags are 0
   }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
-    random_treat <- Multinom(1, StochasticFun(row[grep("A[0-9]$",colnames(row), value=TRUE)], d=c(-0.01, 0.01,0.01,-0.01, 0.01,-0.01))[which(row[grep("A[0-9]$",colnames(row), value=TRUE)]==1),])
+    random_treat <- Multinom(1, StochasticFun(row[grep("A[0-9]$",colnames(row), value=TRUE)], d=c(0,0,0,0,0,0))[which(row[grep("A[0-9]$",colnames(row), value=TRUE)]==1),])
     shifted <- row[grep("A[0-9]$",colnames(row), value=TRUE)]
     shifted[shifted>0] <- 0
     shifted[as.numeric(random_treat)] <- 1
