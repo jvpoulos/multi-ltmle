@@ -127,12 +127,12 @@ static_mtp <- function(row){
 
 dynamic_mtp <- function(row){ 
   # Dynamic: Everyone starts with quetiap.
-  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR cardiometabolic diagnosis is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
+  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
   if(row$t==0){ # first-, second-, and third-order lags are 0
     shifted <- static_quet_on(row,lags=TRUE)
   }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
-    if((row$L1 | row$L2 | row$L3)==1){
+    if((row$L1 >0 | row$L2 >0 | row$L3 >0)){
       if(row$schiz==1){
         shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
       }else if(row$bipolar==1){
@@ -140,7 +140,7 @@ dynamic_mtp <- function(row){
       }else if(row$mdd==1){
         shifted <- unlist(c(static_arip_on(row,lags = FALSE),lags)) # switch to arip
       }
-    }else if((row$L1 | row$L2 | row$L3)==0){
+    }else if((row$L1==0 | row$L2==0 | row$L3==0)){
       shifted <- unlist(c(static_quet_on(row,lags=FALSE),lags))  # otherwise stay on quetiap.
     }
   }
@@ -271,11 +271,6 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
       sapply((t.end-1):2, function(t)
         tmle_contrasts[[t]][,x]$weights[,x][-which(tmle_contrasts[[t]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[t+1]]$Qstar[[x]] - tmle_contrasts[[t]][,x]$Qstar[[x]][-which(tmle_contrasts[[t]][,x]$ID %in% time.censored$ID)])
       ))
-  # infcurv <- lapply(1:n.rules, function(x) tmle_contrasts[[t.end]]$weights[,x][-which(tmle_contrasts[[t.end]]$ID %in% time.censored$ID)] *(Y - tmle_contrasts[[t.end]]$Qstar[[x]]) +
-  #                     tmle_contrasts[[(t.end-1)]][,x]$weights[,x][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[t.end]]$Qstar[[x]] - tmle_contrasts[[(t.end-1)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)]) +
-  #                     tmle_contrasts[[(t.end-2)]][,x]$weights[,x][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[(t.end-1)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[(t.end-2)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)]) +
-  #                     tmle_contrasts[[(t.end-3)]][,x]$weights[,x]*(tmle_contrasts[[(t.end-2)]][,x]$Qstar[[x]][-which(tmle_contrasts[[(t.end-2)]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[(t.end-3)]][,x]$Qstar[[x]]) +
-  #                     tmle_contrasts[[(t.end)]]$Qstar[[x]] - tmle_final[[x]]) # final TMLE estimate
   
   CI <- lapply(1:n.rules, function(x) CI(est=tmle_final[[x]], infcurv = infcurv[[x]], alpha=0.05))
   

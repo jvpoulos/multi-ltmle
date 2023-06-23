@@ -38,13 +38,13 @@ static_mtp <- function(data, trt) {
 
 dynamic_mtp <- function(data, trt) {
   # Dynamic: Everyone starts with quetiap.
-  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR cardiometabolic diagnosis is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
+  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
   if (trt == "A_0") {
     static_quet_on(data, trt)
   } else {
-    # otherwise check if the time varying covariate equals 1
+    # otherwise check if the time varying covariate is positive and nonzero
     ifelse((!is.na(data[[sub("A", "L1", trt)]]) & !is.na(data[[sub("A", "L2", trt)]]) & !is.na(data[[sub("A", "L3", trt)]])) & 
-             (data[[sub("A", "L1", trt)]] == 1 | data[[sub("A", "L2", trt)]] == 1 | data[[sub("A", "L3", trt)]] == 1),
+             (data[[sub("A", "L1", trt)]] >0 | data[[sub("A", "L2", trt)]] >0 | data[[sub("A", "L3", trt)]] >0),
            ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 3, # check if schiz.
                   static_halo_on(data, trt), # switch to halo
                   ifelse(!is.na(data[["V2_0"]]) & data[["V2_0"]] == 2, # check if bipolar

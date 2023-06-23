@@ -1,6 +1,6 @@
-######################
-# simcausal functions#
-######################
+#######################
+# simcausal functions #
+#######################
 
 # definition: left-truncated normal distribution
 

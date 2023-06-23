@@ -37,7 +37,8 @@ cl <- parallel::makeCluster(cores, outfile="")
 doParallel::registerDoParallel(cl) # register cluster
 
 # command line args
-args <- commandArgs(trailingOnly = TRUE) # command line arguments args <- c('tmle','all','none','TRUE','TRUE')
+args <- commandArgs(trailingOnly = TRUE) # command line arguments 
+# args <- c('tmle','all','none','TRUE','TRUE')
 estimator <- as.character(args[1])
 treatment.rule <- ifelse(estimator=="tmle", "all", as.character(args[2])) # tmle calculates calculates counterfactual means under all treatment rules
 weights.loc <- as.character(args[3])
@@ -106,7 +107,7 @@ filename <- paste0(output_dir,
 if(estimator%in%c("tmle", "tmle-lstm")){
   source('./src/misc_fns.R')
   source('./src/tmle_fns.R')
-  source('./src/SL3_fns.R')
+  source('./src/SL3_fns.R', local =TRUE)
 }
 
 if(estimator=='tmle-lstm'){
@@ -120,7 +121,7 @@ if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
   library(lmtp)
   source('./src/misc_fns.R')
   source('./src/lmtp_fns.R')
-  source('./src/SL3_fns.R')
+  source('./src/SL3_fns.R', local =TRUE)
 }
 
 if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
@@ -243,13 +244,16 @@ names(obs.ID) <- paste0("ID_",seq(0,t.end))
 
 treatments <- lapply(1:(t.end+1), function(t) as.data.frame(dummify(obs.treatment[[t]]))) # t-length list
 
-# store antidiabetic drug fill, metabolic test, and preperiod conditions for dynamic rule (same lengths as obs.treatment) 
+# store drug fill, acute care, and preperiod conditions for dynamic rule (same lengths as obs.treatment) 
 
-obs.fill <- lapply(0:t.end, function(t) ifelse(Odat$monthly_ever_rx_antidiab==1 & Odat$month_number <=t,1,0)[Odat$month_number==t])
+obs.fill <- lapply(0:t.end, function(t) ifelse((Odat$monthly_ever_rx_antidiab==1 | Odat$monthly_ever_rx_cm_nondiab==1) & Odat$month_number <=t,1,0)[Odat$month_number==t]) # any antidiabetic or non-diabetic cardiometabolic drug is filled
 names(obs.fill) <- paste0("L_",seq(0,t.end))  
 
-obs.test <- lapply(0:t.end, function(t) ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=t,1,0)[Odat$month_number==t])
+obs.test <- lapply(0:t.end, function(t) ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=t,1,0)[Odat$month_number==t]) # lipid or glucose lab tests
 names(obs.test) <- paste0("L_",seq(0,t.end))  
+
+obs.care <- lapply(0:t.end, function(t) ifelse((Odat$monthly_los_mhsa>0 | Odat$monthly_er_mhsa>0) & Odat$month_number <=t,1,0)[Odat$month_number==t]) # any acute care (inpatient or ED visits) for MH is observed
+names(obs.care) <- paste0("L_",seq(0,t.end))  
 
 obs.bipolar <- lapply(0:t.end, function(t) ifelse(Odat$smi_condition=="bipolar" & Odat$month_number <=t,1,0)[Odat$month_number==t])
 names(obs.bipolar) <- paste0("V_",seq(0,t.end))  
@@ -279,25 +283,25 @@ colnames(obs.Y) <- paste0("Y_",seq(0,t.end))
 
 drug.levels <- c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERIDONE","ZIPRASIDONE")
 
-static <- lapply(1:(t.end+1), function(t) factor(rep_len("OLANZAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Static: Everyone gets olanz. (if bipolar), haloperidol (if schizophrenia), risp. (if MDD) and stays on it
+static <- lapply(1:(t.end+1), function(t) factor(rep_len("OLANZAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
 for(t in 1:(t.end+1)){
-  static[[t]] <- ifelse(obs.bipolar[[t]]==1, "OLANZAPINE", ifelse(obs.schiz[[t]]==1, "HALOPERIDOL", "RISPERIDONE"))
+  static[[t]] <- ifelse(obs.bipolar[[t]]==1, "QUETIAPINE", ifelse(obs.schiz[[t]]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
 }
 
-dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("ARIPIPRAZOLE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) #Dynamic: Start with Arip., then switch to olanz. (bipolar), haloperidol (schizophrenia), risp (MDD) if an antidiabetic drug is filled
-dynamic[[1]] <- "ARIPIPRAZOLE"
+dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("QUETIAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels))   # Dynamic: Everyone starts with quetiap.
+# If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
 for(t in 2:(t.end+1)){
-  dynamic[[t]][obs.fill[[t]]==1] <- ifelse(obs.bipolar[[t]][obs.fill[[t]]==1]==1, "OLANZAPINE", ifelse(obs.schiz[[t]][obs.fill[[t]]==1]==1, "HALOPERIDOL", "RISPERIDONE"))
+  dynamic[[t]][(obs.fill[[t]]>0 | obs.test[[t]]>0 | obs.care[[t]]>0)] <- ifelse(obs.bipolar[[t]][(obs.fill[[t]]>0 | obs.test[[t]]>0 | obs.care[[t]]>0)]==1, "RISPERIDONE", ifelse(obs.schiz[[t]][(obs.fill[[t]]>0 | obs.test[[t]]>0 | obs.care[[t]]>0)]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
 }
 
-stochastic <- obs.treatment # stochastic:   t=0 is same as observed, reduce probability of Arip./Quet./Zipra and increase probability of halo., olanz, risp.
+stochastic <- obs.treatment # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution.
 for(t in 2:(t.end+1)){
   stochastic.probs <- as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ARIPIPRAZOLE")+0)*matrix(c(0.95,0.01,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="HALOPERIDOL")+0)*matrix(c(0.01,0.95,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="OLANZAPINE")+0)*matrix(c(0.01,0.01,0.95,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="QUETIAPINE")+0)*matrix(c(0.01,0.01,0.01,0.95,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="RISPERIDONE")+0)*matrix(c(0.01,0.01,0.01,0.01,0.95,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ZIPRASIDONE")+0)*matrix(c(0.01,0.01,0.01,0.01,0.01,0.95),length(obs.treatment[[t]]),J,byrow = TRUE) + c(-0.01, 0.01,0.01,-0.01, 0.01,-0.01)
+    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ZIPRASIDONE")+0)*matrix(c(0.01,0.01,0.01,0.01,0.01,0.95),length(obs.treatment[[t]]),J,byrow = TRUE)
   stochastic[[t]] <- Multinom(1, stochastic.probs)
   levels(stochastic[[t]]) <- drug.levels
 }
@@ -309,13 +313,17 @@ obs.treatment.rule[["stochastic"]] <- lapply(1:(t.end+1), function(t) (stochasti
 
 # re-arrange so it is in same structure as QAW list
 obs.rules <- lapply(1:(t.end+1), function(t) sapply(obs.treatment.rule, "[", t))
-obs.rules <- lapply(1:(t.end+1), function(t) mapply(cbind, obs.rules[[t]]))
 for(t in 2:(t.end+1)){ # cumulative sum across lists
-  obs.rules[[t]] <- obs.rules[[t]][intersect(obs.ID[[t]],obs.ID[[t-1]]),] + obs.rules[[t-1]][intersect(obs.ID[[t]],obs.ID[[t-1]]),]
+  obs.rules[[t]] <- lapply(1:length(obs.rules[[t]]), function(i) obs.rules[[t]][[i]][intersect(obs.ID[[t]],obs.ID[[t-1]])] + obs.rules[[t-1]][[i]][intersect(obs.ID[[t]],obs.ID[[t-1]])])
 }
-obs.rules <- lapply(1:(t.end+1), function(t) (obs.rules[[t]]==t) +0)
 
-print(sapply(obs.rules,colMeans))
+for(t in 1:(t.end+1)){
+  obs.rules[[t]] <- lapply(1:length(obs.rules[[t]]), function(i)(obs.rules[[t]][[i]]==t) +0)
+}
+
+obs.rules <- lapply(1:length(obs.rules), function(t) setNames(obs.rules[[t]], names(obs.treatment.rule) ))
+
+## CONTINUE HERE
 
 # plot treatment adherence
 png(paste0(output_dir,paste0("treatment_adherence_analysis_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))

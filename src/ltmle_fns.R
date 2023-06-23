@@ -63,12 +63,12 @@ static_mtp <- function(row){
 
 dynamic_mtp <- function(row){
   # Dynamic: Everyone starts with quetiap.
-  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR cardiometabolic diagnosis is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
+  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
   treats <- row[grep("A[0-9]",colnames(row), value=TRUE)]
   shifted <- ifelse(names(treats)%in%grep("A4_0",colnames(row), value=TRUE),1,0)
   names(shifted) <- names(treats)
   shifted <- sapply(1:36, function(t){ #t.end
-      if(!is.na(row[paste0("L1_", "L2_","L3_",t)]) & any(row[paste0("L1_","L2_","L3_",t)] == 1)){
+      if(!is.na(row[paste0("L1_", "L2_","L3_",t)]) & any(row[paste0("L1_","L2_","L3_",t)] >0)){
       if(!is.na(row[["V2_0"]]) & row[["V2_0"]] == 3){ # check if schizophrenia
         shifted[paste0("A2_",t)] <- 1 # switch to halo
       }else if(!is.na(row[["V2_0"]]) & row[["V2_0"]] == 2){ # check if bipolar

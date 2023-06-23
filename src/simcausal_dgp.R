@@ -1,0 +1,82 @@
+#####################################
+# Define data generating process #
+#####################################
+
+# initialize the DAG
+D <- DAG.empty()
+
+# baseline data (t = 0) and follow-up data (t = 1, . . . , T)  created using structural equations
+
+# distributions at baseline (t=0): no intervention
+D.base <- D +
+  node("V1",                                      # race -> 1 = "white", 2  = "black", 3  = "latino", 4  = "other"
+       t = 0,
+       distr = "rcat.factor",
+       probs = c(25349/38762,6649/38762,4187/38762)) +
+  node("V2",                                      # smi_condition -> 1 = "mdd", 2 = "bipolar", 3 ="schiz" (varies by race)
+       t = 0,
+       distr = "rcat.factor",
+       probs = c(ifelse(V1[0] == 1, (7740-1000)/38762, ifelse(V1[0] == 2, (7740+1000)/38762, (7740+500)/38762)),
+                 ifelse(V1[0] == 1, (9721-2000)/38762, ifelse(V1[0] == 2, (9721+2000)/38762, (9721+1000)/38762)))) +
+  node("V3",                                      # age (continuous) (varies by  smi condition)
+       t = 0,
+       distr = "RnormTrunc",
+       mean = ifelse(V2[0]==3, 46.5, ifelse(V2[0]==2 ,44.5, 44)), 
+       sd = ifelse(V2[0]==3, 9.2, ifelse(V2[0]==2, 10.2, 10.5)),
+       minval = 19.9, maxval = 64.5,
+       min.low = 19.9, max.low = 36.79, min.high = 53.27, max.high = 64.5) +
+  node("L1",                                      # er_mhsa (count) (varies by smi condition)
+       t = 0,
+       distr = "NegBinom",
+       mu = ifelse(V2[0] == 3, 0.5, ifelse(V2[0] == 2, 0.2, 0.1)))  +
+  node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by smi condition)
+       t = 0,
+       distr = "rbern",
+       prob = ifelse(V2[0] == 3, 0.19, ifelse(V2[0] == 2, 0.18, 0.17))) + 
+  node("L3",                                      # ever_rx_antidiab (binary) (varies by smi condition)
+       t = 0,
+       distr = "rbern",
+       prob = ifelse(V2[0] == 3, 0.1, ifelse(V2[0] == 2, 0.08, 0.07))) + 
+  node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
+       t = 0, 
+       distr = "Multinom",
+       probs =  c((1/6)-(L3[t]*0.1), ifelse(V2[0]==3, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), ifelse(V2[0]==2, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), 1/6-(L3[t]*0.1),  ifelse(V2[0]==1, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), (1/6)-(L3[t]*0.1))) + 
+  node("C",                                     # monthly_censored_indicator (no censoring at baseline)
+       t = 0,
+       distr = "rbern",
+       prob = 0,
+       EFU = TRUE) +
+  node("Y",                                      # diabetes
+       t = 0,
+       distr = "rbern",
+       prob= 0,
+       EFU = TRUE) 
+
+# distributions at later time-points (t = 1, . . . , T)
+D <- D.base +
+  node("L1",                                      # er_mhsa (count)
+       t = 1:t.end,
+       distr = "NegBinom",
+       mu= plogis(.01 *L1[t-1] + .01 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5))))) + 
+  node("L2",                                      # ever_mt_gluc_or_lip (binary)
+       t = 1:t.end,
+       distr = "rbern",
+       prob= ifelse(L2[t-1]==1,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5)))))) +
+  node("L3",                                      # ever_rx_antidiab (binary)
+       t = 1:t.end,
+       distr = "rbern",
+       prob= ifelse(L3[t-1]==1,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + .01 * L2[t] + 0.01 * L2[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5)))))) +
+  node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
+       t = 1:t.end, 
+       distr = "Multinom",
+       probs = StochasticFun(A[(t-1)], d=c(0-(L3[t]*0.01),0+(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.01)))) +
+  node("C",                                      # monthly_censored_indicator
+       t = 1:t.end,
+       distr = "rbern",
+       prob =ifelse((V3[0]+(t/12))>65,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] + ifelse(A[(t-1)]==6, 0.5, ifelse(A[(t-1)]==4, 0, ifelse(A[(t-1)]==1, -0.5, -1.5))) + ifelse(A[(t)]==6, 0, ifelse(A[(t)]==4, -0.5, ifelse(A[(t)]==1, -1, -1.5))))), # deterministic: AGE out at 65 (medicaid -> medicare)
+       EFU = TRUE) + # right-censoring (EFU) 
+  node("Y",                                      # diabetes
+       t = 1:t.end,
+       distr = "rbern",
+       prob = plogis(-4 + Y[t-1] + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] + ifelse(A[(t-1)]==6, 0.5, ifelse(A[(t-1)]==4, 0, ifelse(A[(t-1)]==1, -0.5, -1))) + ifelse(A[(t)]==6, 0, ifelse(A[(t)]==4, -0.5, ifelse(A[(t)]==1, -1, -1.5)))),
+       EFU = TRUE)

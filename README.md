@@ -35,6 +35,10 @@ Contents
 
 * ***src/misc_fns***: includes misc. functions, including a function to bound predicted probabilities; functions generate different distributions; and a forest plot function. 
 
+* ***src/simcausal_fns***: defines distribution functions for *simcausal* software.
+
+* ***src/simcausal_dgp***: defines data generating process for *simcausal* software.
+
 * ***src/SL_fns***: pre-specified super learner functions and library definitions for *ltmle* software.
 
 * ***src/lmtp_fns***: define treatment rule functions for *lmtp* software. 
@@ -61,7 +65,7 @@ Contents
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 20. 
+	+ *R*: number of simulation runs. Default is 25. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 
