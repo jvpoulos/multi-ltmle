@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name="tmle"
 #SBATCH -e tmle.err
-#SBATCH -p priority
-#SBATCH -c 20
-#SBATCH --mem=250GB
+#SBATCH -p highmem
+#SBATCH -c 16
+#SBATCH --mem=325GB
 #SBATCH -t 5-00:00:00
 #SBATCH --array=1
 

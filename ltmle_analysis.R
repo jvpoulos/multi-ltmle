@@ -323,20 +323,18 @@ for(t in 1:(t.end+1)){
 
 obs.rules <- lapply(1:length(obs.rules), function(t) setNames(obs.rules[[t]], names(obs.treatment.rule) ))
 
-## CONTINUE HERE
-
 # plot treatment adherence
 png(paste0(output_dir,paste0("treatment_adherence_analysis_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
-plotSurvEst(surv = list("Static"=sapply(obs.rules,colMeans)[1,], "Dynamic"=sapply(obs.rules,colMeans)[2,], "Stochastic"=sapply(obs.rules,colMeans)[3,]),
+plotSurvEst(surv = list("Static"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[1]])), "Dynamic"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[2]])), "Stochastic"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[3]]))),
               ylab = "Share of patients who continued to follow each rule", 
               main = paste("Treatment rule adherence", data.label), 
             xaxt="n", ylim = c(0,1))
-axis(1, at = seq(1, (t.end+1), by = 5))
+axis(1, at = seq(1, (t.end+1), by = 3))
 dev.off() 
 
 # store observed Ys
 rules <- c("static","dynamic","stochastic")
-Y.observed <- lapply(1:length(rules), function(i) sapply(1:t.end, function(t) mean(obs.Y[,paste0("Y_",t)][which(obs.rules[[t+1]][,i]==1)]))) # skip Y in t=0
+Y.observed <- lapply(1:length(rules), function(i) sapply(1:t.end, function(t) mean(obs.Y[,paste0("Y_",t)][which(obs.rules[[t+1]][[i]]==1)]))) # skip Y in t=0
 names(Y.observed) <- rules
 
 Y.observed[["overall"]] <- sapply(1:(t.end+1), function(t) mean(obs.Y[,paste0("Y_",t-1)]))
@@ -349,10 +347,11 @@ plotSurvEst(surv = list("Static"=1-Y.observed[["static"]], "Dynamic"=1-Y.observe
               ylim = c(0.7,1),
             legend.xyloc = "bottomleft")
 lines(1:(t.end+1), 1-Y.observed[["overall"]], type = "l", lty = 2)
-axis(1, seq(1, (t.end+1), by=5))
+axis(1, seq(1, (t.end+1), by=3))
 dev.off()
 
 ## Manual TMLE (ours)
+
 initial_model_for_A <- list()
 initial_model_for_A_bin <- list()
 initial_model_for_C  <- list() 
@@ -373,36 +372,23 @@ Chat_tmle_bin <- list()
 
 if(estimator=="tmle"){
   
-  colnames(tv)[colnames(tv) %in% c("monthly_er_mhsa","monthly_ever_mt_gluc_or_lip","monthly_ever_rx_antidiab")] <- c("L1","L2","L3")
-  
   tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
   
-  tmle_dat$Y <- NA
-  tmle_dat$Y[tmle_dat$month_number ==9] <- obs.Y$Y_1[which(tmle_dat$month_number ==9)]
-  tmle_dat$Y[tmle_dat$month_number ==18] <- obs.Y$Y_2[which(tmle_dat$month_number ==18)]
-  tmle_dat$Y[tmle_dat$month_number ==27] <- obs.Y$Y_3[which(tmle_dat$month_number ==27)]
-  tmle_dat$Y[tmle_dat$month_number ==36] <- obs.Y$Y_4[which(tmle_dat$month_number ==36)]
-
+  tmle_dat$L1 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
   
-  tmle_dat$A <- NA
-  tmle_dat$A[tmle_dat$month_number ==9] <- obs.treatment$A_1
-  tmle_dat$A[tmle_dat$month_number ==18] <- obs.treatment$A_2
-  tmle_dat$A[tmle_dat$month_number ==27] <- obs.treatment$A_3
-  tmle_dat$A[tmle_dat$month_number ==36] <- obs.treatment$A_4
+  tmle_dat$L2 <- unlist(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
   
-  tmle_dat$ID <- NA
-  tmle_dat$ID[tmle_dat$month_number ==9] <- obs.ID$ID_1
-  tmle_dat$ID[tmle_dat$month_number ==18] <- obs.ID$ID_2
-  tmle_dat$ID[tmle_dat$month_number ==27] <- obs.ID$ID_3
-  tmle_dat$ID[tmle_dat$month_number ==36] <- obs.ID$ID_4
+  tmle_dat$L3 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
   
-  tmle_dat$C <- NA
-  tmle_dat$C[tmle_dat$month_number ==9] <- obs.censored$C_1[which(tmle_dat$month_number ==9)]
-  tmle_dat$C[tmle_dat$month_number ==18] <- obs.censored$C_2[which(tmle_dat$month_number ==18)]
-  tmle_dat$C[tmle_dat$month_number ==27] <- obs.censored$C_3[which(tmle_dat$month_number ==27)]
-  tmle_dat$C[tmle_dat$month_number ==36] <- obs.censored$C_4[which(tmle_dat$month_number ==36)]
+  tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
   
-  tmle_dat <- tmle_dat[tmle_dat[,"month_number"] %in% c(9,18,27,36),] # keep follow-up months
+  tmle_dat$Y <- unlist(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
+  
+  tmle_dat$A <- unlist(sapply(0:t.end, function(t) obs.treatment[[paste0("A_", t)]]))
+  
+  tmle_dat$ID <- unlist(sapply(0:t.end, function(t) obs.ID[[paste0("ID_", t)]]))
+  
+  tmle_dat$C <- unlist(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
   
   tmle_dat <- 
     tmle_dat %>%
@@ -427,7 +413,7 @@ if(estimator=="tmle"){
 
   treat.names <-  c("A1","A2","A3","A4","A5","A6","A1.lag","A2.lag","A3.lag","A4.lag","A5.lag","A6.lag","A1.lag2","A2.lag2","A3.lag2","A4.lag2","A5.lag2","A6.lag2","A1.lag3","A2.lag3","A3.lag3","A4.lag3","A5.lag3","A6.lag3")
   
-  colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[73:96]] <- treat.names
+  colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[78:101]] <- treat.names
   
   tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
   tmle_covars_Y <- c(colnames(L), colnames(tv), treat.names, "Y.lag", "Y.lag2", "Y.lag3") #incl lagged Y
@@ -439,14 +425,8 @@ if(estimator=="tmle"){
   tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
   tmle_dat$A <- factor(tmle_dat$A)
   
-  tmle_dat$t <- NA
-  tmle_dat$t[which(tmle_dat$month_number ==9)] <- 1
-  tmle_dat$t[which(tmle_dat$month_number ==18)] <- 2
-  tmle_dat$t[which(tmle_dat$month_number ==27)] <- 3
-  tmle_dat$t[which(tmle_dat$month_number ==36)] <- 4
-  
-  paste0("TMLE data dimension: ", dim(tmle_dat)) # 36 months
-  
+  tmle_dat$t <- tmle_dat$month_number
+
   ##  fit initial treatment model
   
   # multinomial
@@ -464,7 +444,7 @@ if(estimator=="tmle"){
                                            metalearner = metalearner_A,
                                            keep_extra=FALSE)
     
-    initial_model_for_A <- lapply(1:t.end, function(t){ # going forward in time
+    initial_model_for_A <- lapply(0:t.end, function(t){ # going forward in time
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("Y","C")]
       
@@ -526,7 +506,7 @@ if(estimator=="tmle"){
                                            "_use_SL_", use.SL,".rds"))
   }else{
     
-    initial_model_for_A_bin <- lapply(1:t.end, function(t){
+    initial_model_for_A_bin <- lapply(0:t.end, function(t){
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("C","Y")]
       
@@ -589,7 +569,7 @@ if(estimator=="tmle"){
                                            "_use_SL_", use.SL,".rds"))
   }else{
     
-    initial_model_for_C <- lapply(1:t.end, function(t){
+    initial_model_for_C <- lapply(0:t.end, function(t){
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("A","Y")]
       
@@ -803,6 +783,6 @@ results <- list("tmle_contrasts"=tmle_contrasts, "tmle_contrasts_bin"=tmle_contr
 saveRDS(results, filename)
 
 ## Summary stats and results plots
-source('./ltmle_analysis_eda.R')
+# source('./ltmle_analysis_eda.R')
 
 stopCluster(cl)
