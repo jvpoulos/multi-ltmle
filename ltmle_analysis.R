@@ -19,6 +19,7 @@ options(sl3.verbose = FALSE)
 library(car)
 library(data.table) 
 library(gtools)
+library(tidyverse)
 
 # set up parallel
 library(parallel)
@@ -159,11 +160,16 @@ if(use.simulated){
   data.label <- "(CMS data)"
 }
 
+# make data balanced 38762*37 = 1434194
+
+Odat <- Odat %>%  
+  complete(nesting(hcp_patient_id), month_number = full_seq(month_number, period = 1)) ## need to put in wide format so it has 38762 rows
+
 # baseline covariates
 
-L.unscaled <- cbind(dummify(factor(Odat$state_character),show.na = FALSE)[,-c(6)],
-                    dummify(factor(Odat$race_defined_character),show.na = FALSE)[,-c(3)], 
-                    dummify(factor(Odat$smi_condition))[,-c(1)], # omit bipolar
+L.unscaled <- cbind(dummify(factor(Odat$state_character),show.na = FALSE),
+                    dummify(factor(Odat$race_defined_character),show.na = FALSE), 
+                    dummify(factor(Odat$smi_condition)), 
                     "year"=Odat$year, 
                     "female"=Odat$female, 
                     "payer_index_mdcr"=dummify(factor(Odat$payer_index))[,2],
@@ -188,6 +194,7 @@ L.unscaled <- cbind(dummify(factor(Odat$state_character),show.na = FALSE)[,-c(6)
                     "preperiod_los_injury"=Odat$preperiod_los_injury) 
 
 colnames(L.unscaled)[which(colnames(L.unscaled)=="West Virginia")] <- "West_Virginia"
+colnames(L.unscaled)[which(colnames(L.unscaled)=="South Dakota")] <- "South_Dakota"
 
 L <- L.unscaled
 
@@ -285,14 +292,14 @@ drug.levels <- c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERI
 
 static <- lapply(1:(t.end+1), function(t) factor(rep_len("OLANZAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
 for(t in 1:(t.end+1)){
-  static[[t]] <- ifelse(obs.bipolar[[t]]==1, "QUETIAPINE", ifelse(obs.schiz[[t]]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
+  static[[t]] <- ifelse(!is.na(obs.bipolar[[t]]) & obs.bipolar[[t]]==1, "QUETIAPINE", ifelse(!is.na(obs.schiz[[t]]) & obs.schiz[[t]]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
 }
 
 dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("QUETIAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels))   # Dynamic: Everyone starts with quetiap.
 # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
 for(t in 2:(t.end+1)){
-  dynamic[[t]][(obs.fill[[t]]>0 | obs.test[[t]]>0 | obs.care[[t]]>0)] <- ifelse(obs.bipolar[[t]][(obs.fill[[t]]>0 | obs.test[[t]]>0 | obs.care[[t]]>0)]==1, "RISPERIDONE", ifelse(obs.schiz[[t]][(obs.fill[[t]]>0 | obs.test[[t]]>0 | obs.care[[t]]>0)]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
-}
+  dynamic[[t]][(!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0)] <- ifelse(!is.na(obs.bipolar[[t]]) & obs.bipolar[[t]][!is.na(obs.bipolar[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "RISPERIDONE", ifelse(!is.na(obs.schiz[[t]]) & obs.schiz[[t]][!is.na(obs.schiz[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
+} # continue here
 
 stochastic <- obs.treatment # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution.
 for(t in 2:(t.end+1)){
@@ -372,6 +379,8 @@ Chat_tmle_bin <- list()
 
 if(estimator=="tmle"){
   
+  # tmle_dat <- DF.to.long(Odat) # need to put back to long format
+  
   tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
   
   tmle_dat$L1 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
@@ -413,7 +422,7 @@ if(estimator=="tmle"){
 
   treat.names <-  c("A1","A2","A3","A4","A5","A6","A1.lag","A2.lag","A3.lag","A4.lag","A5.lag","A6.lag","A1.lag2","A2.lag2","A3.lag2","A4.lag2","A5.lag2","A6.lag2","A1.lag3","A2.lag3","A3.lag3","A4.lag3","A5.lag3","A6.lag3")
   
-  colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[78:101]] <- treat.names
+  colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[(length(colnames(tmle_dat))-length(treat.names)+1):length(colnames(tmle_dat))]] <- treat.names
   
   tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
   tmle_covars_Y <- c(colnames(L), colnames(tv), treat.names, "Y.lag", "Y.lag2", "Y.lag3") #incl lagged Y
@@ -482,11 +491,13 @@ if(estimator=="tmle"){
   
   g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist))) 
   
-  g_preds_cuml <- list()
+  g_preds_cuml <- vector("list", length(g_preds))
+  
   g_preds_cuml[[1]] <- g_preds[[1]]
-  g_preds_cuml[[2]] <- g_preds[[1]][which(g_preds_ID[[1]]%in%g_preds_ID[[2]]),]*g_preds[[2]] # preds are diff. dimensions b/c of censoring
-  g_preds_cuml[[3]] <- g_preds[[1]][which(g_preds_ID[[1]]%in%g_preds_ID[[3]]),]*g_preds[[2]][which(g_preds_ID[[2]]%in%g_preds_ID[[3]]),]*g_preds[[3]]
-  g_preds_cuml[[t.end]] <- g_preds[[1]][which(g_preds_ID[[1]]%in%g_preds_ID[[t.end]]),]*g_preds[[2]][which(g_preds_ID[[2]]%in%g_preds_ID[[t.end]]),]*g_preds[[3]][which(g_preds_ID[[3]]%in%g_preds_ID[[t.end]]),]*g_preds[[t.end]]
+  
+  for (i in 2:length(g_preds)) {
+    g_preds_cuml[[i]] <- g_preds[[i]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] * g_preds_cuml[[i-1]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),]
+  }
   
   g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
   
@@ -544,11 +555,13 @@ if(estimator=="tmle"){
   
   g_preds_bin_ID <- lapply(1:length(initial_model_for_A_bin), function(i) unlist(lapply(initial_model_for_A_bin[[i]]$data$ID, unlist)))
   
-  g_preds_bin_cuml <- list()
+  g_preds_bin_cuml <- vector("list", length(g_preds_bin))
+  
   g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
-  g_preds_bin_cuml[[2]] <- g_preds_bin[[1]][which(g_preds_bin_ID[[1]]%in%g_preds_bin_ID[[2]]),]*g_preds_bin[[2]] # preds are diff. dimensions b/c of censoring
-  g_preds_bin_cuml[[3]] <- g_preds_bin[[1]][which(g_preds_bin_ID[[1]]%in%g_preds_bin_ID[[3]]),]*g_preds_bin[[2]][which(g_preds_bin_ID[[2]]%in%g_preds_bin_ID[[3]]),]*g_preds_bin[[3]]
-  g_preds_bin_cuml[[t.end]] <- g_preds_bin[[1]][which(g_preds_bin_ID[[1]]%in%g_preds_bin_ID[[t.end]]),]*g_preds_bin[[2]][which(g_preds_bin_ID[[2]]%in%g_preds_bin_ID[[t.end]]),]*g_preds_bin[[3]][which(g_preds_bin_ID[[3]]%in%g_preds_bin_ID[[t.end]]),]*g_preds_bin[[t.end]]
+  
+  for (i in 2:length(g_preds_bin)) {
+    g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),]
+  }  
   
   g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
   
@@ -606,12 +619,13 @@ if(estimator=="tmle"){
   
   C_preds_ID <- lapply(1:length(initial_model_for_C), function(i) unlist(lapply(initial_model_for_C[[i]]$data$ID, unlist))) 
   
-  C_preds_cuml <- list()
-  C_preds_cuml[[1]] <- C_preds[[1]]
-  C_preds_cuml[[2]] <- C_preds[[1]][which(C_preds_ID[[1]]%in%C_preds_ID[[2]])]*C_preds[[2]] # preds are diff. dimensions b/c of censoring
-  C_preds_cuml[[3]] <- C_preds[[1]][which(C_preds_ID[[1]]%in%C_preds_ID[[3]])]*C_preds[[2]][which(C_preds_ID[[2]]%in%C_preds_ID[[3]])]*C_preds[[3]]
-  C_preds_cuml[[t.end]] <- C_preds[[1]][which(C_preds_ID[[1]]%in%C_preds_ID[[t.end]])]*C_preds[[2]][which(C_preds_ID[[2]]%in%C_preds_ID[[t.end]])]*C_preds[[3]][which(C_preds_ID[[3]]%in%C_preds_ID[[t.end]])]*C_preds[[t.end]]
+  C_preds_cuml <- vector("list", length(C_preds))
   
+  C_preds_cuml[[1]] <- C_preds[[1]]
+  
+  for (i in 2:length(C_preds)) {
+    C_preds_cuml[[i]] <- C_preds[[i]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])] * C_preds_cuml[[i-1]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])]
+  }    
   C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
   
   ## sequential g-formula
@@ -630,7 +644,7 @@ if(estimator=="tmle"){
   
   initial_model_for_Y <- list()
   initial_model_for_Y_bin <- list() # updated Y's are used as outcomes for t<T
-  initial_model_for_Y[[t.end]] <- sequential_g(t=t.end, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<4)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl, ybound) # for t=T fit on measured Y
+  initial_model_for_Y[[t.end]] <- sequential_g(t=t.end, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t.end)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl, ybound) # for t=T fit on measured Y
   initial_model_for_Y_bin[[t.end]] <- initial_model_for_Y[[t.end]] # same
   
   # Update equations, calculate point estimate and variance
@@ -643,30 +657,17 @@ if(estimator=="tmle"){
   
   tmle_contrasts <-list()
   tmle_contrasts_bin <- list()
-  tmle_contrasts[[t.end]] <- getTMLELong(initial_model_for_Y=initial_model_for_Y[[t.end]], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t.end]], C_preds_bounded=C_preds_cuml_bounded[[t.end]], obs.treatment=treatments[[t.end]], obs.rules=obs.rules[[t.end]], gbound=gbound)
-  tmle_contrasts_bin[[t.end]] <- getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t.end]], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t.end]], C_preds_bounded=C_preds_cuml_bounded[[t.end]], obs.treatment=treatments[[t.end]], obs.rules=obs.rules[[t.end]], gbound=gbound)
+  tmle_contrasts[[t.end]] <- getTMLELong(initial_model_for_Y=initial_model_for_Y[[t.end]], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t.end+1]], C_preds_bounded=C_preds_cuml_bounded[[t.end+1]], obs.treatment=treatments[[t.end+1]], obs.rules=obs.rules[[t.end+1]], gbound=gbound, ybound=ybound, t.end=t.end)
+  tmle_contrasts_bin[[t.end]] <- getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t.end]], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t.end+1]], C_preds_bounded=C_preds_cuml_bounded[[t.end+1]], obs.treatment=treatments[[t.end+1]], obs.rules=obs.rules[[t.end+1]], gbound=gbound, ybound=ybound, t.end=t.end)
   
-  # T.end-1
-  initial_model_for_Y[[(t.end-1)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=(t.end-1), tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<3)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred = tmle_contrasts[[t.end]]$Qstar[[i]]))
-  initial_model_for_Y_bin[[(t.end-1)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=(t.end-1), tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<3)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y,  initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred =tmle_contrasts_bin[[t.end]]$Qstar[[i]]))
-  
-  tmle_contrasts[[t.end-1]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y[[t.end-1]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t.end-1]], C_preds_bounded=C_preds_cuml_bounded[[t.end-1]], obs.treatment=treatments[[t.end-1]], obs.rules=obs.rules[[t.end-1]], gbound=gbound))
-  tmle_contrasts_bin[[t.end-1]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t.end-1]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t.end-1]], C_preds_bounded=C_preds_cuml_bounded[[t.end-1]], obs.treatment=treatments[[t.end-1]], obs.rules=obs.rules[[t.end-1]], gbound=gbound))
-  
-  # T.end-2
-  initial_model_for_Y[[(t.end-2)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=(t.end-2), tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<2)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y,  initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred = tmle_contrasts[[t.end-1]]$Qstar[[i]])) 
-  initial_model_for_Y_bin[[(t.end-2)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=(t.end-2), tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<2)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y,  initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred =tmle_contrasts_bin[[t.end-1]]$Qstar[[i]]))
-  
-  tmle_contrasts[[t.end-2]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y[[t.end-2]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t.end-2]], C_preds_bounded=C_preds_cuml_bounded[[t.end-2]], obs.treatment=treatments[[t.end-2]], obs.rules=obs.rules[[t.end-2]], gbound=gbound))
-  tmle_contrasts_bin[[t.end-2]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t.end-2]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t.end-2]], C_preds_bounded=C_preds_cuml_bounded[[t.end-2]], obs.treatment=treatments[[t.end-2]], obs.rules=obs.rules[[t.end-2]], gbound=gbound))
-  
-  # T.end-3
-  initial_model_for_Y[[(t.end-3)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=(t.end-3), tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID,], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y,  initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred = tmle_contrasts[[t.end-2]]$Qstar[[i]])) 
-  initial_model_for_Y_bin[[(t.end-3)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=(t.end-3), tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID,], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y,  initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred =tmle_contrasts_bin[[t.end-2]]$Qstar[[i]]))
-  
-  tmle_contrasts[[t.end-3]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y[[t.end-3]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t.end-3]], C_preds_bounded=C_preds_cuml_bounded[[t.end-3]], obs.treatment=treatments[[t.end-3]], obs.rules=obs.rules[[t.end-3]], gbound=gbound))
-  tmle_contrasts_bin[[t.end-3]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t.end-3]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t.end-3]], C_preds_bounded=C_preds_cuml_bounded[[t.end-3]], obs.treatment=treatments[[t.end-3]], obs.rules=obs.rules[[t.end-3]], gbound=gbound))
-  
+  for(t in (t.end-1):1){
+    initial_model_for_Y[[(t)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=t, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred = tmle_contrasts[[t+1]]$Qstar[[i]]))
+    initial_model_for_Y_bin[[(t)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=t, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y,  initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred =tmle_contrasts_bin[[t+1]]$Qstar[[i]]))
+    
+    tmle_contrasts[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
+    tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
+  }
+
   saveRDS(initial_model_for_Y, paste0(output_dir, 
                                       "initial_model_for_Y_",
                                       "estimator_",estimator,
@@ -682,31 +683,31 @@ if(estimator=="tmle"){
                                       "_use_SL_", use.SL,".rds"))
   # plot estimated survival curves
   
-  tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
-  tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
+  tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
+  tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
   
   png(paste0(output_dir,paste0("survival_plot_tmle_estimates_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
   plotSurvEst(surv = list("Static"= tmle_estimates[1,], "Dynamic"= tmle_estimates[2,], "Stochastic"= tmle_estimates[3,]),  
               ylab = "Estimated share of patients without diabetes diagnosis", 
               main = "LTMLE (ours, multinomial) outcomes (CMS data)",
-              ylim = c(0.6,1))
+              ylim = c(0.5,1))
   dev.off()
   
   png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
   plotSurvEst(surv = list("Static"= tmle_bin_estimates[1,], "Dynamic"= tmle_bin_estimates[2,], "Stochastic"= tmle_bin_estimates[3,]),  
               ylab = "Estimated outcomes (CMS data)", 
               main = "Estimated share of patients without diabetes diagnosis",
-              ylim = c(0.6,1))
+              ylim = c(0.5,1))
   dev.off()
   
   # calc share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025
   
-  prob_share <- lapply(1:t.end, function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) round(colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE),2)))
-  for(t in 1:t.end){
+  prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) round(colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE),2)))
+  for(t in 1:(t.end+1)){
     colnames(prob_share[[t]]) <- colnames(obs.rules[[(t.end)]])
   }
   
-  names(prob_share) <- c("t=1","t=2","t=3","t=4")
+  names(prob_share) <- paste0("t=",seq(0,t.end))
   
   prob_share.bin <- sapply(1:ncol(obs.rules[[(t.end)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t.end)]][which(obs.rules[[(t.end)]][na.omit(tmle_dat[tmle_dat$t==(t.end),])$ID,][,i]==1),]<0.025, na.rm=TRUE))
   colnames(prob_share.bin) <- colnames(obs.rules[[(t.end)]])
@@ -725,8 +726,6 @@ if(estimator=="tmle"){
 }
 
 lmtp_results <- list()
-
-Ahat_lmtp <- list()
 
 if(estimator=="lmtp"){ # FOLLOW TMLE - Don't need to scale
   
@@ -766,8 +765,6 @@ if(estimator=="lmtp"){ # FOLLOW TMLE - Don't need to scale
                                               .SL_folds = n.folds)
   
   # store results
-  
-  Ahat_lmtp <- lmtp_results[[treatment.rule]]$density_ratios # need to convert to propensity score
   
   results_bias_lmtp[[treatment.rule]] <- lmtp_results[[treatment.rule]]$theta - Y.true[[treatment.rule]][t.end] # LMTP  point and variance estimates
   results_CP_lmtp[[treatment.rule]] <- as.numeric((lmtp_results[[treatment.rule]]$low < Y.true[[treatment.rule]][t.end]) & (lmtp_results[[treatment.rule]]$high > Y.true[[treatment.rule]][t.end]))
