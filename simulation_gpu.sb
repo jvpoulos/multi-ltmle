@@ -1,0 +1,26 @@
+#!/bin/bash
+#SBATCH --job-name="tmle-lstm"
+#SBATCH -e tmle-lstm.err
+#SBATCH -p gpu_quad --gres=gpu:2
+#SBATCH -c 20
+#SBATCH -t 5-00:00:00
+#SBATCH --array=1
+
+ulimit -l unlimited
+
+module load gcc/6.2.0 R/4.0.1
+
+#Load the cuda module
+module load python/3.6.0
+
+source tensor_gpu/bin/activate
+module load cuda/10.2
+
+nvcc -V
+nvidia-smi
+
+# Log GPU utilization
+/n/cluster/bin/job_gpu_monitor.sh &
+
+#Run the job
+Rscript simulation.R 'tmle-lstm' ${SLURM_ARRAY_TASK_ID} 'TRUE' 'FALSE'

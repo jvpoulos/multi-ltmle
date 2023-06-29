@@ -163,8 +163,11 @@ if(use.simulated){
 # make data balanced 38762*37 = 1434194
 
 Odat <- Odat %>%  
-  complete(nesting(hcp_patient_id), month_number = full_seq(month_number, period = 1)) ## need to put in wide format so it has 38762 rows
+  complete(nesting(hcp_patient_id), month_number = full_seq(month_number, period = 1))
 
+# Odat <- reshape(Odat, varying=colnames(Odat)[-c("hcp_patient_id","month_number","days_to_censored",grep("preperiod", colnames(Odat)),"calculated_age")], 
+#                 idvar="hcp_patient_id", timevar="month_number", times=0:t.end, direction="wide", sep="_") # need to put in wide format so it has 38762 rows
+# 
 # baseline covariates
 
 L.unscaled <- cbind(dummify(factor(Odat$state_character),show.na = FALSE),
@@ -298,17 +301,21 @@ for(t in 1:(t.end+1)){
 dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("QUETIAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels))   # Dynamic: Everyone starts with quetiap.
 # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
 for(t in 2:(t.end+1)){
-  dynamic[[t]][(!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0)] <- ifelse(!is.na(obs.bipolar[[t]]) & obs.bipolar[[t]][!is.na(obs.bipolar[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "RISPERIDONE", ifelse(!is.na(obs.schiz[[t]]) & obs.schiz[[t]][!is.na(obs.schiz[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
-} # continue here
+  dynamic[[t]][(!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0)] <- ifelse(obs.bipolar[[t]][!is.na(obs.bipolar[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "RISPERIDONE", ifelse(obs.schiz[[t]][!is.na(obs.schiz[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
+}
 
 stochastic <- obs.treatment # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution.
 for(t in 2:(t.end+1)){
+  obs.treatment[[t]][is.na(obs.treatment[[t]])] <- 0
   stochastic.probs <- as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ARIPIPRAZOLE")+0)*matrix(c(0.95,0.01,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="HALOPERIDOL")+0)*matrix(c(0.01,0.95,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="OLANZAPINE")+0)*matrix(c(0.01,0.01,0.95,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="QUETIAPINE")+0)*matrix(c(0.01,0.01,0.01,0.95,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="RISPERIDONE")+0)*matrix(c(0.01,0.01,0.01,0.01,0.95,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ZIPRASIDONE")+0)*matrix(c(0.01,0.01,0.01,0.01,0.01,0.95),length(obs.treatment[[t]]),J,byrow = TRUE)
+  if(any(is.na(stochastic.probs))){
+    stochastic.probs[is.na(stochastic.probs)]<- .Machine$double.eps # placeholder 
+  }
   stochastic[[t]] <- Multinom(1, stochastic.probs)
   levels(stochastic[[t]]) <- drug.levels
 }
@@ -377,9 +384,7 @@ Ahat_tmle_bin <- list()
 prob_share_bin <- list()
 Chat_tmle_bin <- list()
 
-if(estimator=="tmle"){
-  
-  # tmle_dat <- DF.to.long(Odat) # need to put back to long format
+if(estimator=="tmle"){ # needs to be in long format
   
   tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
   
@@ -778,8 +783,5 @@ results <- list("tmle_contrasts"=tmle_contrasts, "tmle_contrasts_bin"=tmle_contr
             "lmtp_results"=lmtp_results[[treatment.rule]],"Ahat_lmtp"=Ahat_lmtp)
 
 saveRDS(results, filename)
-
-## Summary stats and results plots
-# source('./ltmle_analysis_eda.R')
 
 stopCluster(cl)

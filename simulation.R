@@ -888,7 +888,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 25 # number of simulation runs
+R <- 1 # number of simulation runs
 
 gbound <- c(1e-05,1-1e-05) # define bounds to be used for the propensity score
 

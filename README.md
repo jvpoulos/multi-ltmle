@@ -77,7 +77,6 @@ Contents
 
 * ***ltmle_analysis.R*** code for analysis on actual CMS data in the longitudinal setting (T>1) and J=6 levels of treatment.
 	+ ***add_tv_simulated.R*** code for quickly generating time-varying variables in the simulated dataset (for illustrative purposes)
-	+ ***ltmle_analysis_eda.R*** code for producing summary statistics tables and results plots.
 
 Instructions
 ------
