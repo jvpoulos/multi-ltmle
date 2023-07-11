@@ -5,10 +5,10 @@
 # stack learners into a model
 
 if(estimator%in%c("tmle")){
-  learner_stack_A <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective="multi:softprob", eval_metric="mlogloss",num_class=J), list("Lrnr_ranger",num.trees=100),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "multinomial"))  
-  learner_stack_A_bin <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial"))  
-  learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "binomial")) 
-  learner_stack_Y_cont <- make_learner_stack(list("Lrnr_xgboost",nrounds=20, objective = "reg:squarederror"), list("Lrnr_ranger",num.trees=100), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75, family = "gaussian"))
+  learner_stack_A <- make_learner_stack(list("Lrnr_xgboost",nrounds=1000, early_stopping_rounds=3, max_depth = 2, eta = 1, verbose = 0, nthread = 2, objective="multi:softprob", eval_metric="mlogloss",num_class=J), list("Lrnr_ranger",num.trees=100),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "multinomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "multinomial"))  
+  learner_stack_A_bin <- make_learner_stack(list("Lrnr_xgboost",nrounds=1000, early_stopping_rounds=3, max_depth = 2, eta = 1, verbose = 0, nthread = 2, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial"))  
+  learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=1000, early_stopping_rounds=3, max_depth = 2, eta = 1, verbose = 0, nthread = 2, objective = "reg:logistic"), list("Lrnr_ranger",num.trees=100), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "binomial"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "binomial")) 
+  learner_stack_Y_cont <- make_learner_stack(list("Lrnr_xgboost",nrounds=1000, early_stopping_rounds=3, max_depth = 2, eta = 1, verbose = 0, nthread = 2, objective = "reg:squarederror"), list("Lrnr_ranger",num.trees=100), list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "gaussian"), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "gaussian"))
 }
 
 if(estimator=="tmle-lstm"){
@@ -27,5 +27,5 @@ if(estimator%in%c("tmle","tmle-lstm")){
 }
 
 if(estimator%in% c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
-  learner_stack_A <- learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=20), list("Lrnr_ranger",num.trees=100),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.25), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.75)) 
+  learner_stack_A <- learner_stack_Y <- make_learner_stack(list("Lrnr_xgboost",nrounds=1000, early_stopping_rounds=3, max_depth = 2, eta = 1, verbose = 0, nthread = 2), list("Lrnr_ranger",num.trees=100),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1), list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5)) 
 }

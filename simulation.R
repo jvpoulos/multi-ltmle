@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(1e-05,1-1e-05), ybound=c(1e-05,1-1e-05), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0,1), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE){
   
   # libraries
   library(simcausal)
@@ -73,8 +73,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(1e-05,1-1e-05), ybound=c
     warning("not tested on use.SL=FALSE")
   }
   
-  if(estimator=='tmle-lstm'){
-    stop("tmle-lstm not functional")
+  if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp","tmle-lstm")){
+    warning("estimator not functional")
   }
   
   # define DGP
@@ -295,14 +295,14 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(1e-05,1-1e-05), ybound=c
     }else if(estimator=="tmle-lstm"){
       tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
       
-      tmle_dat[is.na(tmle_dat)] <- -10 # set NAs to -10 (add masking layer to LSTM) # NEED TO MOVE THIS AFTER RESHAPE
+      tmle_dat[is.na(tmle_dat)] <- -10 # set NAs to -10 (add masking layer to LSTM)
       
       tmle_dat$A <- factor(tmle_dat$A)
       tmle_dat$V1 <- factor(tmle_dat$V1)
       tmle_dat$V2 <- factor(tmle_dat$V2)
       
-      tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # reshape wide so it is T x N
-      tmle_dat <- tmle_dat[,-grep("V",colnames(tmle_dat))] # exclude time-invariant predictors
+      tmle_dat <- reshape(tmle_dat[c("t","ID","L1", "L2","L3","A","Y","C")], idvar = "t", timevar = "ID", direction = "wide") # reshape wide so it is T x N # exclude time-invariant predictors
+      #tmle_dat <- tmle_dat[,-grep("V",colnames(tmle_dat))] # exclude time-invariant predictors
       
       tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("A",colnames(tmle_dat),value = TRUE))  
       tmle_covars_A <- c(grep("L",colnames(tmle_dat),value = TRUE))
@@ -594,15 +594,19 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(1e-05,1-1e-05), ybound=c
     
     # calc share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025
     
-    prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) round(colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE),2)))
+    prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
     for(t in 1:(t.end+1)){
       colnames(prob_share[[t]]) <- colnames(obs.rules[[(t.end)]])
     }
     
     names(prob_share) <- paste0("t=",seq(0,t.end))
     
-    prob_share.bin <- sapply(1:ncol(obs.rules[[(t.end)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t.end)]][which(obs.rules[[(t.end)]][na.omit(tmle_dat[tmle_dat$t==(t.end),])$ID,][,i]==1),]<0.025, na.rm=TRUE))
-    colnames(prob_share.bin) <- colnames(obs.rules[[(t.end)]])
+    prob_share.bin <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
+    for(t in 1:(t.end+1)){
+      colnames(prob_share.bin[[t]]) <- colnames(obs.rules[[(t.end)]])
+    }
+    
+    names(prob_share.bin) <- paste0("t=",seq(0,t.end))
     
     # calc CIs 
     
@@ -616,14 +620,54 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(1e-05,1-1e-05), ybound=c
     
     Chat_tmle  <- C_preds_cuml_bounded
     
-    # calculate bias and CP wrt to est at T
-    bias_tmle  <- sapply(Y.true,"[[",t.end) - sapply(tmle_est_var$est, "[[",1)  # treatment rule x T 
-    CP_tmle <- as.numeric((sapply(tmle_est_var$CI,"[[",1) < sapply(Y.true,"[[",t.end)) & (sapply(tmle_est_var$CI,"[[",2) > sapply(Y.true,"[[",t.end))) 
-    CIW_tmle  <- sapply(tmle_est_var$CI,"[[",2) -sapply(tmle_est_var$CI,"[[",1)  # wrt to est at T
+    # calculate bias, CP, CIW wrt to est at each t
+    bias_tmle  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - tmle_est_var$est[[t]])
+    names(bias_tmle) <- paste0("t=",2:t.end)
     
-    bias_tmle_bin  <- sapply(Y.true,"[[",t.end) - sapply(tmle_est_var_bin$est, "[[",1)  # treatment rule x T
-    CP_tmle_bin <- as.numeric((sapply(tmle_est_var_bin$CI,"[[",1) < sapply(Y.true,"[[",t.end)) & (sapply(tmle_est_var_bin$CI,"[[",2) > sapply(Y.true,"[[",t.end))) # wrt to est at T
-    CIW_tmle_bin  <- sapply(tmle_est_var_bin$CI,"[[",2) -sapply(tmle_est_var_bin$CI,"[[",1)  # wrt to est at T
+    CP_tmle <- lapply(1:(t.end-1), function(t) as.numeric((tmle_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (tmle_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
+    names(CP_tmle) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CP_tmle[[t]]) <- names(bias_tmle[[t]])
+    }
+    
+    CIW_tmle  <- lapply(1:(t.end-1), function(t) tmle_est_var$CI[[t]][2,]- tmle_est_var$CI[[t]][1,])
+    names(CIW_tmle) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CIW_tmle[[t]]) <- names(bias_tmle[[t]])
+    }
+    
+   # binomial version
+    
+    bias_tmle_bin  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - tmle_est_var_bin$est[[t]])
+    names(bias_tmle_bin) <- paste0("t=",2:t.end)
+    
+    CP_tmle_bin <- lapply(1:(t.end-1), function(t) as.numeric((tmle_est_var_bin$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (tmle_est_var_bin$CI[[t]][2,] > sapply(Y.true,"[[",t))))
+    names(CP_tmle_bin) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CP_tmle_bin[[t]]) <- names(bias_tmle_bin[[t]])
+    }
+    
+    CIW_tmle_bin  <- lapply(1:(t.end-1), function(t) tmle_est_var_bin$CI[[t]][2,]- tmle_est_var_bin$CI[[t]][1,])
+    names(CIW_tmle_bin) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CIW_tmle_bin[[t]]) <- names(bias_tmle_bin[[t]])
+    }
+    
+    # bias_gcomp <- 
+    # CP_gcomp <- 
+    # CIW_gcomp <- 
+    # 
+    # bias_iptw <- 
+    # CP_iptw <- 
+    # CIW_iptw <- 
+    # 
+    # bias_iptw_bin <- 
+    # CP_iptw_bin <- 
+    # CIW_iptw_bin <- 
   }
   
   ## LMTP
@@ -888,11 +932,11 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 1 # number of simulation runs
+R <- 5 # number of simulation runs
 
-gbound <- c(1e-05,1-1e-05) # define bounds to be used for the propensity score
+gbound <- c(0.05,1) # define bounds to be used for the propensity score
 
-ybound <- gbound # define bounds to be used for the Y predictions
+ybound <- c(0,1) # define bounds to be used for the Y predictions
 
 n.folds <- 5
 

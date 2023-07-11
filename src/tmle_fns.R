@@ -240,8 +240,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
     updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(initial_model_for_Y$data$Y~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
   }
   
-  Qstar <- lapply(1:ncol(clever_covariates), function(i) predict(updated_model_for_Y[[i]], type="response")) # newdata = data.frame("offset(qlogis(QAW[, (i + 1)]))"=offset(qlogis(QAW[,(i+1)])),
-  #    "(weights)"=weights[,i]))
+  Qstar <- lapply(1:ncol(clever_covariates), function(i) predict(updated_model_for_Y[[i]], type="response"))
   names(Qstar) <- colnames(obs.rules)
   
   return(list("clever_covariates"=clever_covariates,"weights"=weights,"updated_model_for_Y"=updated_model_for_Y, "Qstar"=Qstar, "ID"=initial_model_for_Y_data$ID))
@@ -258,21 +257,53 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
   n.rules <- ncol(tmle_contrasts[[t.end]]$weights)
   
   # calcuate final TMLE estimate
-  tmle_final <- lapply(1:n.rules, function(x) mean(tmle_contrasts[[(t.end)]]$Qstar[[x]])) # interested in Y at end of follow-up
+  tmle_final <- lapply(1:t.end, function(t) sapply(1:n.rules, function(x) ifelse(t<t.end, mean(tmle_contrasts[[t]][,x]$Qstar[[x]]), mean(tmle_contrasts[[t]]$Qstar[[x]]))))
+  
+  for(t in 1:t.end){
+    names(tmle_final[[t]]) <- colnames(tmle_contrasts[[t.end]]$weights)
+  }
 
-  # calculate influence curve
-  Y <- initial_model_for_Y[[t.end]]$data$Y[-which(initial_model_for_Y[[t.end]]$data$ID %in% time.censored$ID)] # Y_T is actual Y at end of follow-up
-  Y[is.na(Y)] <- 0 # set Y=0 if unmeasured at time t
+  # calculate influence curve at each t
+  Y_uncensored <- lapply(1:(t.end-1), function(t) initial_model_for_Y[[t]][,1]$data$Y[!initial_model_for_Y[[t]][,1]$data$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]]) # Y_T is actual Y # same for each treatment rule
+  Y_uncensored[[t.end]] <- initial_model_for_Y[[t.end]]$data$Y[!initial_model_for_Y[[t.end]]$data$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]]
+
+  for(t in 1:t.end){
+    Y_uncensored[[t]][is.na(Y_uncensored[[t]])] <- 0 # replace missing with 0
+  }
   
-  infcurv <- lapply(1:n.rules, function(x)  
-    tmle_contrasts[[(t.end)]]$Qstar[[x]] - tmle_final[[x]] + # final TMLE estimate 
-      tmle_contrasts[[t.end]]$weights[,x][-which(tmle_contrasts[[t.end]]$ID %in% time.censored$ID)] *(Y - tmle_contrasts[[t.end]]$Qstar[[x]]) + # final time period (use real Y)
-      tmle_contrasts[[1]][,x]$weights[,x]*(tmle_contrasts[[2]][,x]$Qstar[[x]][-which(tmle_contrasts[[2]][,x]$ID %in% time.censored$ID)] - tmle_contrasts[[1]][,x]$Qstar[[x]]) + # first time period
-      sapply((t.end-1):2, function(t)
-        tmle_contrasts[[t]][,x]$weights[,x][-which(tmle_contrasts[[t]][,x]$ID %in% time.censored$ID)]*(tmle_contrasts[[t+1]]$Qstar[[x]] - tmle_contrasts[[t]][,x]$Qstar[[x]][-which(tmle_contrasts[[t]][,x]$ID %in% time.censored$ID)])
-      ))
+  infcurv <- list()
+  infcurv[[t.end]] <- sapply(1:n.rules, function(x) # last time period
+    tmle_contrasts[[t.end]]$Qstar[[x]][!tmle_contrasts[[t.end]]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]] - tmle_final[[t.end]][[x]] +
+      tmle_contrasts[[(t.end-1)]][,x]$weights[,x][!tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]] *(Y_uncensored[[t.end]] - tmle_contrasts[[(t.end-1)]][,x]$Qstar[[x]][!tmle_contrasts[[(t.end-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]]) + # final time period (use real Y)
+      tmle_contrasts[[1]][,x]$weights[,x][!tmle_contrasts[[1]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]]*(tmle_contrasts[[2]][,x]$Qstar[[x]][!tmle_contrasts[[2]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]] - tmle_contrasts[[1]][,x]$Qstar[[x]][!tmle_contrasts[[1]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]]) + # first time period
+      rowSums(sapply((t.end-1):2, function(t)
+        tmle_contrasts[[(t-1)]][,x]$weights[,x][!tmle_contrasts[[(t-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]]*(tmle_contrasts[[t]][,x]$Qstar[[x]][!tmle_contrasts[[t]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]] - tmle_contrasts[[(t-1)]][,x]$Qstar[[x]][!tmle_contrasts[[(t-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t.end+1))]])
+      )))
+
+  for(t in (t.end-1):2){   # time periods 2 to t.end-1
+    infcurv[[t]] <- sapply(1:n.rules, function(x)
+      tmle_contrasts[[t]][,x]$Qstar[[x]][!tmle_contrasts[[t]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]] - tmle_final[[t]][[x]] +
+        tmle_contrasts[[(t-1)]][,x]$weights[,x][!tmle_contrasts[[(t-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]] *(Y_uncensored[[t]] - tmle_contrasts[[(t-1)]][,x]$Qstar[[x]][!tmle_contrasts[[(t-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]]) + # final time period (use real Y)
+        tmle_contrasts[[1]][,x]$weights[,x][!tmle_contrasts[[1]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]]*(tmle_contrasts[[2]][,x]$Qstar[[x]][!tmle_contrasts[[2]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]] - tmle_contrasts[[1]][,x]$Qstar[[x]][!tmle_contrasts[[1]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]]) + # first time period
+        ifelse(t>2, rowSums(sapply((t-1):2, function(i)
+          tmle_contrasts[[(i-1)]][,x]$weights[,x][!tmle_contrasts[[(i-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]]*(tmle_contrasts[[i]][,x]$Qstar[[x]][!tmle_contrasts[[i]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]] - tmle_contrasts[[(i-1)]][,x]$Qstar[[x]][!tmle_contrasts[[(i-1)]][,x]$ID %in% time.censored$ID[which(time.censored$time_censored<(t+1))]])
+        )), 0))
+  }
   
-  CI <- lapply(1:n.rules, function(x) CI(est=tmle_final[[x]], infcurv = infcurv[[x]], alpha=0.05))
+  for(t in 2:t.end){
+    colnames(infcurv[[t]]) <- colnames(tmle_contrasts[[t.end]]$weights)
+  }
   
-  return(list("infcurv"=infcurv, "CI"=CI, "est"=tmle_final))
+  CIs <- lapply(2:t.end, function (t) (sapply(1:n.rules, function(x) CI(est=tmle_final[[t]][x], infcurv = infcurv[[t]][,x], alpha=0.05))))
+  names(CIs) <- paste0("t=",2:t.end)
+  
+  vars <- lapply(2:t.end, function (t) (sapply(1:n.rules, function(x) var(infcurv[[t]][,x], na.rm = TRUE))))
+  names(vars) <- paste0("t=",2:t.end)
+  
+  for(t in 2:(t.end-1)){
+    colnames(CIs[[t]]) <- colnames(tmle_contrasts[[t.end]]$weights)
+    names(vars[[t]]) <- colnames(tmle_contrasts[[t.end]]$weights)
+  }
+  
+  return(list("infcurv"=infcurv, "CI"=CIs, "var"=vars,"est"=tmle_final))
 }

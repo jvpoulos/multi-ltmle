@@ -3,7 +3,7 @@
 ######################
 
 # function to bound probabilities to be used when making predictions
-boundProbs <- function(x,bounds=c(0.001,0.999)){
+boundProbs <- function(x,bounds=c(0.05,1)){
   x[x>max(bounds)] <- max(bounds)
   x[x<min(bounds)] <- min(bounds)
   return(x)
@@ -51,8 +51,8 @@ plotSurvEst <- function (surv = list(), xindx = NULL, ylab = "", xlab = "t",
 
 # function to calculate confidence intervals
 CI <- function(est,infcurv,alpha=0.05){
-  n <- length(infcurv)
-  ciwidth <- qnorm(1-(alpha/2)) * sd(infcurv)/sqrt(n)
+  n <- length(na.omit(infcurv))
+  ciwidth <- qnorm(1-(alpha/2)) * sqrt(var(infcurv,na.rm = TRUE)/sqrt(n))
   CI <- c(est-ciwidth, est+ciwidth)
   return(CI)
 }

@@ -53,11 +53,11 @@ Contents
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
-	+ *estimator*: Select which estimator to use: 'tmle' for our TMLE implementation (multinomial and multiple binary),  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates; **not implemented**); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. 
+	+ *estimator*: Select which estimator to use: 'tmle' for our TMLE implementation (multinomial and multiple binary),  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates); 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package ; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. **estimator='tmle' is currently the only functional option**.
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
-	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(1e-05,1-1e-05).  
+	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(0.05,1)  and c(0,1), resp.
 
 	+ *J*: number of treatments; must be J=6.
 
@@ -65,11 +65,11 @@ Contents
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 25. 
+	+ *R*: number of simulation runs. Default is 5. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 
-	+ *use.SL*: logical flag. When TRUE, use Super Learner for treatment and outcome model estimation; if FALSE, use GLM. 
+	+ *use.SL*: logical flag. When TRUE, use Super Learner for treatment and outcome model estimation; if FALSE, use GLM (**use.SL=FALSE not functional**). 
 
 	+ *n.folds*: number of cross-validation folds for Super Learner. Defaults to 5 (must be at at least 3). 
 

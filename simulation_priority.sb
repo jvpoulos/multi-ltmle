@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name="lmtp_tmle"
-#SBATCH -e lmtp_tmle.err
+#SBATCH --job-name="tmle"
+#SBATCH -e tmle.err
 #SBATCH -p priority
 #SBATCH -c 20
-#SBATCH --mem=25GB
+#SBATCH --mem=50GB
 #SBATCH -t 1-00:00:00
 #SBATCH --array=1
 
@@ -11,4 +11,4 @@
 module load gcc/6.2.0 R/4.0.1 git2/1.1.0
 
 #Run the job
-Rscript simulation.R 'lmtp_tmle' ${SLURM_ARRAY_TASK_ID} 'TRUE' 'FALSE'
+Rscript simulation.R 'tmle' ${SLURM_ARRAY_TASK_ID} 'TRUE' 'FALSE'
