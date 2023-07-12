@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0,1), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE){
   
   # libraries
   library(simcausal)
@@ -224,6 +224,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0,1), 
   tmle_contrasts_bin  <- list()
   
   tmle_estimates <- list()
+  iptw_estimates <- list()
+  iptw_estimates_bin <- list()
+  gcomp_estimates <- list()
   Ahat_tmle <- list()
   prob_share <- list()
   Chat_tmle <- list()
@@ -504,7 +507,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0,1), 
     for (i in 2:length(C_preds)) {
       C_preds_cuml[[i]] <- C_preds[[i]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])] * C_preds_cuml[[i-1]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])]
     }    
-    C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
+    C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=ybound))  # winsorized cumulative propensity scores                             
     
     ## sequential g-formula
     ## model is fit on all uncensored and alive (until t-1)
@@ -592,6 +595,43 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0,1), 
       dev.off()
     }
     
+    iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]]))) # static, dynamic, stochastic
+    iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]]))) 
+    
+    if(r==1){
+      png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n, ".png")))
+      plotSurvEst(surv = list("Static"= iptw_estimates[1,], "Dynamic"= iptw_estimates[2,], "Stochastic"= iptw_estimates[3,]),  
+                  ylab = "Estimated share of patients without diabetes diagnosis", 
+                  main = "IPTW (ours, multinomial) estimated counterfactuals",
+                  xlab = "Month",
+                  ylim = c(0.5,1),
+                  legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+      axis(1, at = seq(1, t.end, by = 5))
+      dev.off()
+      
+      png(paste0(output_dir,paste0("survival_plot_iptw_estimates_bin_",n, ".png")))
+      plotSurvEst(surv = list("Static"= iptw_bin_estimates[1,], "Dynamic"= iptw_bin_estimates[2,], "Stochastic"= iptw_bin_estimates[3,]),  
+                  ylab = "Estimated share of patients without diabetes diagnosis", 
+                  main = "IPTW (ours, binomial) estimated counterfactuals",
+                  xlab = "Month",
+                  ylim = c(0.5,1))
+      dev.off()
+    }
+    
+    gcomp_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_gcomp[[x]]))) # static, dynamic, stochastic
+    
+    if(r==1){
+      png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n, ".png")))
+      plotSurvEst(surv = list("Static"= gcomp_estimates[1,], "Dynamic"= gcomp_estimates[2,], "Stochastic"= gcomp_estimates[3,]),  
+                  ylab = "Estimated share of patients without diabetes diagnosis", 
+                  main = "G-comp. (ours) estimated counterfactuals",
+                  xlab = "Month",
+                  ylim = c(0.5,1),
+                  legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+      axis(1, at = seq(1, t.end, by = 5))
+      dev.off()
+    }
+    
     # calc share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025
     
     prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
@@ -612,6 +652,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0,1), 
     
     tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored)
     tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored)
+    
+    iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE)
+    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE)
+    
+    gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE)
     
     # store results
     
@@ -891,11 +936,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0,1), 
   
   return(list("Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
-              "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,
-              "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,
-              "bias_gcomp"= bias_gcomp,"CP_gcomp"= CP_gcomp,"CIW_gcomp"=CIW_gcomp,
-              "bias_iptw"= bias_iptw,"CP_iptw"= CP_iptw,"CIW_iptw"=CIW_iptw,
-              "bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,
+              "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,"tmle_est_var"=tmle_est_var,
+              "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,"tmle_est_var_bin"=tmle_est_var_bin,
+              "yhat_gcomp"= gcomp_estimates, "bias_gcomp"= bias_gcomp,"CP_gcomp"= CP_gcomp,"CIW_gcomp"=CIW_gcomp,"gcomp_est_var"=gcomp_est_var,
+              "yhat_iptw"= iptw_estimates,"bias_iptw"= bias_iptw,"CP_iptw"= CP_iptw,"CIW_iptw"=CIW_iptw,"iptw_est_var"=itptw_est_var,
+              "yhat_iptw_bin"= iptw_estimates_bin,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=itptw_est_var_bin,
               "lmtp_tmle_results"=lmtp_tmle_results[[treatment.rule]],"bias_lmtp_tmle"=results_bias_lmtp_tmle,"CP_lmtp_tmle"=results_CP_lmtp_tmle,"CIW_lmtp_tmle"=results_CIW_lmtp_tmle,
               "lmtp_iptw_results"=lmtp_iptw_results[[treatment.rule]],"bias_lmtp_iptw"=results_bias_lmtp_iptw,"CP_lmtp_iptw"=results_CP_lmtp_iptw,"CIW_lmtp_iptw"=results_CIW_lmtp_iptw,
               "lmtp_gcomp_results"=lmtp_gcomp_results[[treatment.rule]],"bias_lmtp_gcomp"=results_bias_lmtp_gcomp,"CP_lmtp_gcomp"=results_CP_lmtp_gcomp,"CIW_lmtp_gcomp"=results_CIW_lmtp_gcomp,
@@ -917,7 +962,6 @@ options(echo=TRUE)
 args <- commandArgs(trailingOnly = TRUE) # command line arguments
 # args <- c('tmle',1,'TRUE','FALSE')
 estimator <- as.character(args[1])
-print(estimator)
 thisrun <- settings[as.numeric(args[2]),]
 use.SL <- as.logical(args[3])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
 doMPI <- as.logical(args[4])
@@ -934,9 +978,9 @@ t.end <- 36 # number of time points after t=0
 
 R <- 5 # number of simulation runs
 
-gbound <- c(0.05,1) # define bounds to be used for the propensity score
+gbound <- c(0.025,1) # define bounds to be used for the propensity score
 
-ybound <- c(0,1) # define bounds to be used for the Y predictions
+ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
 n.folds <- 5
 

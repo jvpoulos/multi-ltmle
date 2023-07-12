@@ -3,7 +3,7 @@
 #SBATCH -e tmle.err
 #SBATCH -p priority
 #SBATCH -c 20
-#SBATCH --mem=50GB
+#SBATCH --mem=250GB
 #SBATCH -t 1-00:00:00
 #SBATCH --array=1
 

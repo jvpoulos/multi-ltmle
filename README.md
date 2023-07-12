@@ -57,7 +57,7 @@ Contents
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
-	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(0.05,1)  and c(0,1), resp.
+	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(0.025,1)  and c(0.0001,0.9999), resp.
 
 	+ *J*: number of treatments; must be J=6.
 
