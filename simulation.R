@@ -225,7 +225,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
   
   tmle_estimates <- list()
   iptw_estimates <- list()
-  iptw_estimates_bin <- list()
+  iptw_bin_estimates <- list()
   gcomp_estimates <- list()
   Ahat_tmle <- list()
   prob_share <- list()
@@ -507,7 +507,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
     for (i in 2:length(C_preds)) {
       C_preds_cuml[[i]] <- C_preds[[i]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])] * C_preds_cuml[[i-1]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])]
     }    
-    C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=ybound))  # winsorized cumulative propensity scores                             
+    C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=ybound))  # winsorized cumulative bounded censoring predictions, 1=Censored                            
     
     ## sequential g-formula
     ## model is fit on all uncensored and alive (until t-1)
@@ -591,7 +591,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
                   ylab = "Estimated share of patients without diabetes diagnosis", 
                   main = "LTMLE (ours, binomial) estimated counterfactuals",
                   xlab = "Month",
-                  ylim = c(0.5,1))
+                  ylim = c(0.5,1),
+                  legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+      axis(1, at = seq(1, t.end, by = 5))
       dev.off()
     }
     
@@ -609,7 +611,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
       axis(1, at = seq(1, t.end, by = 5))
       dev.off()
       
-      png(paste0(output_dir,paste0("survival_plot_iptw_estimates_bin_",n, ".png")))
+      png(paste0(output_dir,paste0("survival_plot_iptw_bin_estimates_",n, ".png")))
       plotSurvEst(surv = list("Static"= iptw_bin_estimates[1,], "Dynamic"= iptw_bin_estimates[2,], "Stochastic"= iptw_bin_estimates[3,]),  
                   ylab = "Estimated share of patients without diabetes diagnosis", 
                   main = "IPTW (ours, binomial) estimated counterfactuals",
@@ -702,17 +704,60 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
       names(CIW_tmle_bin[[t]]) <- names(bias_tmle_bin[[t]])
     }
     
-    # bias_gcomp <- 
-    # CP_gcomp <- 
-    # CIW_gcomp <- 
-    # 
-    # bias_iptw <- 
-    # CP_iptw <- 
-    # CIW_iptw <- 
-    # 
-    # bias_iptw_bin <- 
-    # CP_iptw_bin <- 
-    # CIW_iptw_bin <- 
+    # gcomp metrics
+    bias_gcomp  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - gcomp_est_var$est[[t]])
+    names(bias_gcomp) <- paste0("t=",2:t.end)
+    
+    CP_gcomp <- lapply(1:(t.end-1), function(t) as.numeric((gcomp_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (gcomp_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
+    names(CP_gcomp) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CP_gcomp[[t]]) <- names(bias_gcomp[[t]])
+    }
+    
+    CIW_gcomp  <- lapply(1:(t.end-1), function(t) gcomp_est_var$CI[[t]][2,]- gcomp_est_var$CI[[t]][1,])
+    names(CIW_gcomp) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CIW_gcomp[[t]]) <- names(bias_gcomp[[t]])
+    }
+    
+    # IPTW metrics
+    bias_iptw  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - iptw_est_var$est[[t]])
+    names(bias_iptw) <- paste0("t=",2:t.end)
+    
+    CP_iptw <- lapply(1:(t.end-1), function(t) as.numeric((iptw_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (iptw_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
+    names(CP_iptw) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CP_iptw[[t]]) <- names(bias_iptw[[t]])
+    }
+    
+    CIW_iptw  <- lapply(1:(t.end-1), function(t) iptw_est_var$CI[[t]][2,]- iptw_est_var$CI[[t]][1,])
+    names(CIW_iptw) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CIW_iptw[[t]]) <- names(bias_iptw[[t]])
+    }
+    
+    # binomial version
+    
+    bias_iptw_bin  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - iptw_est_var_bin$est[[t]])
+    names(bias_iptw_bin) <- paste0("t=",2:t.end)
+    
+    CP_iptw_bin <- lapply(1:(t.end-1), function(t) as.numeric((iptw_est_var_bin$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (iptw_est_var_bin$CI[[t]][2,] > sapply(Y.true,"[[",t))))
+    names(CP_iptw_bin) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CP_iptw_bin[[t]]) <- names(bias_iptw_bin[[t]])
+    }
+    
+    CIW_iptw_bin  <- lapply(1:(t.end-1), function(t) iptw_est_var_bin$CI[[t]][2,]- iptw_est_var_bin$CI[[t]][1,])
+    names(CIW_iptw_bin) <- paste0("t=",2:t.end)
+    
+    for(t in 1:(t.end-1)){
+      names(CIW_iptw_bin[[t]]) <- names(bias_iptw_bin[[t]])
+    }
   }
   
   ## LMTP
@@ -939,8 +984,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
               "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,"tmle_est_var"=tmle_est_var,
               "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,"tmle_est_var_bin"=tmle_est_var_bin,
               "yhat_gcomp"= gcomp_estimates, "bias_gcomp"= bias_gcomp,"CP_gcomp"= CP_gcomp,"CIW_gcomp"=CIW_gcomp,"gcomp_est_var"=gcomp_est_var,
-              "yhat_iptw"= iptw_estimates,"bias_iptw"= bias_iptw,"CP_iptw"= CP_iptw,"CIW_iptw"=CIW_iptw,"iptw_est_var"=itptw_est_var,
-              "yhat_iptw_bin"= iptw_estimates_bin,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=itptw_est_var_bin,
+              "yhat_iptw"= iptw_estimates,"bias_iptw"= bias_iptw,"CP_iptw"= CP_iptw,"CIW_iptw"=CIW_iptw,"iptw_est_var"=iptw_est_var,
+              "yhat_iptw_bin"= iptw_bin_estimates,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=iptw_est_var_bin,
               "lmtp_tmle_results"=lmtp_tmle_results[[treatment.rule]],"bias_lmtp_tmle"=results_bias_lmtp_tmle,"CP_lmtp_tmle"=results_CP_lmtp_tmle,"CIW_lmtp_tmle"=results_CIW_lmtp_tmle,
               "lmtp_iptw_results"=lmtp_iptw_results[[treatment.rule]],"bias_lmtp_iptw"=results_bias_lmtp_iptw,"CP_lmtp_iptw"=results_CP_lmtp_iptw,"CIW_lmtp_iptw"=results_CIW_lmtp_iptw,
               "lmtp_gcomp_results"=lmtp_gcomp_results[[treatment.rule]],"bias_lmtp_gcomp"=results_bias_lmtp_gcomp,"CP_lmtp_gcomp"=results_CP_lmtp_gcomp,"CIW_lmtp_gcomp"=results_CIW_lmtp_gcomp,

@@ -51,7 +51,8 @@ plotSurvEst <- function (surv = list(), xindx = NULL, ylab = "", xlab = "t",
 
 # function to calculate confidence intervals
 CI <- function(est,infcurv,alpha=0.05){
-  n <- length(na.omit(infcurv))
+  infcurv <- na.omit(infcurv)
+  n <- length(infcurv)
   ciwidth <- qnorm(1-(alpha/2)) * sqrt(var(infcurv,na.rm = TRUE)/sqrt(n))
   CI <- c(est-ciwidth, est+ciwidth)
   return(CI)

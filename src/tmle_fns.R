@@ -200,8 +200,7 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
 ###################################################################
 
 getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end){
-  # C_preds_bounded: cumulative bounded censoring predictions, 1=Censored
-  
+
   initial_model_for_Y_preds <- initial_model_for_Y$preds # t length list
   initial_model_for_Y_data <- initial_model_for_Y$data
   initial_model_for_Y_sl_fit <- initial_model_for_Y$fit
@@ -244,7 +243,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
   names(Qstar) <- colnames(obs.rules)
   
   # IPTW estimate
-  Qstar_iptw <- lapply(1:ncol(clever_covariates), function(i) weights[,i]*initial_model_for_Y$data$Y)
+  Qstar_iptw <- lapply(1:ncol(clever_covariates), function(i) boundProbs(weights[,i]*initial_model_for_Y$data$Y, bound=ybound)) 
   names(Qstar_iptw) <- colnames(obs.rules)
   
   # gcomp estimate
@@ -265,11 +264,11 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
   
   # calcuate final TMLE estimate
   if(iptw){
-    tmle_final <- lapply(1:t.end, function(t) sapply(1:n.rules, function(x) ifelse(t<t.end, mean(tmle_contrasts[[t]][,x]$Qstar_IPTW[[x]]), mean(tmle_contrasts[[t]]$Qstar_iptw[[x]]))))
+    tmle_final <- lapply(1:t.end, function(t) sapply(1:n.rules, function(x) ifelse(t<t.end, mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE), mean(tmle_contrasts[[t]]$Qstar_iptw[[x]], na.rm=TRUE))))
   } else if(gcomp){
-    tmle_final <- lapply(1:t.end, function(t) sapply(1:n.rules, function(x) ifelse(t<t.end, mean(tmle_contrasts[[t]][,x]$Qstar[[x]]), mean(tmle_contrasts[[t]]$Qstar_gcomp[[x]]))))
+    tmle_final <- lapply(1:t.end, function(t) sapply(1:n.rules, function(x) ifelse(t<t.end, mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]], na.rm=TRUE), mean(tmle_contrasts[[t]]$Qstar_gcomp[[x]], na.rm=TRUE))))
   } else{
-    tmle_final <- lapply(1:t.end, function(t) sapply(1:n.rules, function(x) ifelse(t<t.end, mean(tmle_contrasts[[t]][,x]$Qstar[[x]]), mean(tmle_contrasts[[t]]$Qstar[[x]]))))
+    tmle_final <- lapply(1:t.end, function(t) sapply(1:n.rules, function(x) ifelse(t<t.end, mean(tmle_contrasts[[t]][,x]$Qstar[[x]], na.rm=TRUE), mean(tmle_contrasts[[t]]$Qstar[[x]], na.rm=TRUE))))
   }
   
   for(t in 1:t.end){
