@@ -24,14 +24,19 @@ Prerequsites
 ------
 
 * **R** (tested on 4.0.1)
+	+ Required **R** packages located in ***package_list.R*** 
 
-* Required **R** packages located in ***package_list.R*** 
+* **python3** (tested on 3.11.2) and **TensorFlow** (tested on 2.12.1) for use of 'tmle-lstm' as an estimator
+	* see documentation: https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/ and https://www.tensorflow.org/install/pip#linux
+		+ start R in virtual environment where python3 and Tensorflow are installed
+	+ *keras* flag in ***package_list.R*** must be set to TRUE
 
 Contents
 ------
 
 * ***package_list.R*** install required **R** packages.
 	+ *doMPI*: logical flag. When TRUE, install packages needed for MPI parallel processing. Defaults to FALSE.
+	+ *keras*: logical flag. When TRUE, install packages needed for Keras/TensorFlow. Defaults to FALSE.
 
 * ***src/misc_fns***: includes misc. functions, including a function to bound predicted probabilities; functions generate different distributions; and a forest plot function. 
 

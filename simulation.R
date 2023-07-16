@@ -25,12 +25,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
   library(weights)
   library(gtools)
   
-  if(estimator%in%c("tmle", "tmle-lstm")){
-    source('./src/misc_fns.R')
-    source('./src/tmle_fns.R')
-    source('./src/SL3_fns.R', local =TRUE)
-  }
-  
   if(estimator=='tmle-lstm'){
     library(tensorflow)
     library(keras)
@@ -38,11 +32,14 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
     print(tf_version())
   }
   
+  if(estimator%in%c("tmle", "tmle-lstm", "lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
+    source('./src/misc_fns.R')
+    source('./src/tmle_fns.R')
+    source('./src/SL3_fns.R', local =TRUE)
+  }
+  
   if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
     library(lmtp)
-    source('./src/misc_fns.R')
-    source('./src/lmtp_fns.R')
-    source('./src/SL3_fns.R', local =TRUE)
   }
   
   if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
@@ -304,12 +301,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
       tmle_dat$V1 <- factor(tmle_dat$V1)
       tmle_dat$V2 <- factor(tmle_dat$V2)
       
-      tmle_dat <- reshape(tmle_dat[c("t","ID","L1", "L2","L3","A","Y","C")], idvar = "t", timevar = "ID", direction = "wide") # reshape wide so it is T x N # exclude time-invariant predictors
-      #tmle_dat <- tmle_dat[,-grep("V",colnames(tmle_dat))] # exclude time-invariant predictors
+      tmle_dat <- reshape(tmle_dat[c("t","ID", "V1", "V2", "V3", "L1", "L2","L3","A","Y","C")], idvar = "t", timevar = "ID", direction = "wide") # reshape wide so it is T x N
       
-      tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("A",colnames(tmle_dat),value = TRUE))  
-      tmle_covars_A <- c(grep("L",colnames(tmle_dat),value = TRUE))
-      tmle_covars_C <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("A",colnames(tmle_dat),value = TRUE))
+      tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("A",colnames(tmle_dat),value = TRUE), grep("V",colnames(tmle_dat),value = TRUE))  
+      tmle_covars_A <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("V",colnames(tmle_dat),value = TRUE))
+      tmle_covars_C <- tmle_covars_A
     }
     
     ##  fit initial treatment model
@@ -346,13 +342,15 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
                     "data"=tmle_dat_sub)) 
       })
     } else if(estimator=="tmle-lstm"){ 
-      folds <- origami::make_folds(tmle_dat[,colnames(tmle_dat)%in%c(tmle_covars_A,grep("A",colnames(tmle_dat),value = TRUE))], fold_fun=folds_rolling_window, window_size = ceiling(t.end*0.5), validation_size = ceiling(t.end*0.1), gap = 0, batch = 1) # define cross-validation appropriate for dependent data
+      folds <- origami::make_folds(tmle_dat[-(grep("Y",colnames(tmle_dat)))], fold_fun=folds_rolling_window, window_size = ceiling(t.end*0.5), validation_size = ceiling(t.end*0.1), gap = 0, batch = 1) # define cross-validation appropriate for dependent data
       
-      initial_model_for_A_task <- make_sl3_Task(tmle_dat[,colnames(tmle_dat)%in%c(tmle_covars_A,grep("A",colnames(tmle_dat),value = TRUE))], 
+      options('datatable.alloccol' = 270003)
+      initial_model_for_A_task <- make_sl3_Task(tmle_dat[-(grep("Y",colnames(tmle_dat)))],
                                                 covariates = tmle_covars_A,
                                                 outcome = grep("A",colnames(tmle_dat),value = TRUE), 
                                                 outcome_type="categorical", 
                                                 folds = folds) 
+
       
       # train
       initial_model_for_A_sl_fit <- initial_model_for_A_sl$train(initial_model_for_A_task)
@@ -1005,7 +1003,7 @@ settings <- expand.grid("n"=c(10000),
 
 options(echo=TRUE)
 args <- commandArgs(trailingOnly = TRUE) # command line arguments
-# args <- c('tmle',1,'TRUE','FALSE')
+# args <- c('tmle-lstm',1,'TRUE','FALSE')
 estimator <- as.character(args[1])
 thisrun <- settings[as.numeric(args[2]),]
 use.SL <- as.logical(args[3])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
@@ -1021,7 +1019,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 5 # number of simulation runs
+R <- 20 # number of simulation runs
 
 gbound <- c(0.025,1) # define bounds to be used for the propensity score
 

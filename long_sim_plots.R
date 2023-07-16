@@ -14,6 +14,7 @@ library(gtable)
 J <- 6
 n <- 10000
 R <- 20
+t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
 
@@ -25,7 +26,7 @@ n.rules <-as.numeric(length(treatment.rules))
 # Load results data
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # c("outputs/20230330")
+args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230712")
 output.path <- as.character(args[1])
 
 filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)
@@ -39,14 +40,11 @@ if(any( duplicated(substring(filenames, 18)))){
   filenames <- filenames[-which(duplicated(substring(filenames, 18)))]
 }
 
-omit.result <- c("result.15","result.30","result.31","result.35","result.85","result.96","result.115","result.133")
-R <- R-length(omit.result)
-
 results <- list() # structure is: [[filename]][[metric]]
 for(f in filenames){
   print(f)
   result.matrix <- readRDS(f)
-  result.matrix <- result.matrix[,!colnames(result.matrix) %in% omit.result]
+  result.matrix <- result.matrix
   # if(isTRUE(grep("lmtp", f)==1)){
   #   estimator <- "lmtp"
   # }
@@ -98,10 +96,11 @@ CIW <- list()
 CIW[["tmle"]] <- lapply(filenames, function(f) results[[f]]$CIW_tmle)
 CIW[["tmle_bin"]] <- lapply(filenames, function(f) results[[f]]$CIW_tmle_bin)
 
-# Create dataframe for plot
-results.df <- data.frame("abs.bias"=abs(unlist(bias)),
+# Create dataframe for plot (SHOULD VARY BY T)
+results.df <- data.frame("abs.bias"=abs(unlist(bias)), # sapply(1:length(1:(t.end-1)), function(t) abs(unlist(bias[["tmle"]][[1]][1,])))
                          "Coverage"=unlist(CP),
                          "CIW"=unlist(CIW))
+                     #   "t"= 2:t.end) # skip first period
                         # "filename"=c(rep(unlist(sapply(1:length(filenames), function(i) rep(filenames[i], length.out=R))), n.estimators)))
 
 #results.df$Estimator <- c(rep("LMTP (super learner)",length.out=length(c(unlist(CP[[1]])))))

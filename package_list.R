@@ -21,25 +21,25 @@ if(dependencies){
 
 # development packages
 devtools::install_github("nt-williams/lmtp@sl3")
-remotes::install_github("tlverse/sl3")
+#remotes::install_github("tlverse/sl3")
+remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
 
 devtools::install_github('osofr/gridisl', build_vignettes = FALSE)
 devtools::install_github('osofr/stremr')
 devtools::install_github('osofr/simcausal', build_vignettes = FALSE)
 
 # doMPI
-doMPI <- TRUE
+doMPI <- FALSE
 if(doMPI){
   install.packages("Rmpi", repos = "http://cran.us.r-project.org")
   install.packages("doMPI", dependencies=TRUE, repos = "http://cran.us.r-project.org")
 }
 
-# keras CPU/GPU
-use.GPU <- FALSE
-if(use.GPU){
-  install.packages("keras", repos = "http://cran.us.r-project.org")
-  install_keras(tensorflow = "gpu") # requires tensorflow-gpu installation # e.g, https://harvardmed.atlassian.net/wiki/spaces/O2/pages/1605009731/Tensorflow+on+O2
-  remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
-}else{
-  install.packages("keras", repos = "http://cran.us.r-project.org")
+# keras/TensorFlow
+keras <- FALSE
+if(keras){
+  install.packages("tensorflow", repos = "http://cran.us.r-project.org")
+
+  library(tensorflow)
+  install_tensorflow(envname = ".venv", version = "2.12.1")
 }
