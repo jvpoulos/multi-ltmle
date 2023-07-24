@@ -40,7 +40,7 @@ D.base <- D +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
        t = 0, 
        distr = "Multinom",
-       probs =  c((1/6)-(L3[t]*0.1), ifelse(V2[0]==3, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), ifelse(V2[0]==2, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), 1/6-(L3[t]*0.1),  ifelse(V2[0]==1, (1/3)+(L3[t]*0.1), (1/6)+(L3[t]*0.1)), (1/6)-(L3[t]*0.1))) + 
+       probs =  c(ifelse(V2[0]==1, 0.1  + L2[t]*0.1 + L3[t]*0.1, 0.1), ifelse(V2[0]==3, 0.1  + L2[t]*0.1 + L3[t]*0.1, 0.1), 0.1, ifelse(V2[0]==2, 0.6, 0.4), ifelse(V2[0]==2, 0.1  + L2[t]*0.1 + L3[t]*0.1, 0.1), 0.1)) + 
   node("C",                                     # monthly_censored_indicator (no censoring at baseline)
        t = 0,
        distr = "rbern",
@@ -57,26 +57,26 @@ D <- D.base +
   node("L1",                                      # er_mhsa (count)
        t = 1:t.end,
        distr = "NegBinom",
-       mu= plogis(.01 *L1[t-1] + .01 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5))))) + 
+       mu= plogis(.01 *L1[t-1] + .01 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -0.25, -0.75))))) + 
   node("L2",                                      # ever_mt_gluc_or_lip (binary)
        t = 1:t.end,
        distr = "rbern",
-       prob= ifelse(L2[t-1]==1,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5)))))) +
+       prob= ifelse(L2[t-1]==1,1, plogis(-2 + .01 * (L1[t] - L1[t-1]) + .2 * L3[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -0.25, -0.75)))))) +
   node("L3",                                      # ever_rx_antidiab (binary)
        t = 1:t.end,
        distr = "rbern",
-       prob= ifelse(L3[t-1]==1,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + .01 * L2[t] + 0.01 * L2[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -1, -1.5)))))) +
+       prob= ifelse(L3[t-1]==1,1, plogis(-2 + .01 * (L1[t] - L1[t-1]) + .01 * L2[t] + 0.01 * L2[t-1] + ifelse(A[(t-1)]==6, 0, ifelse(A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==1, -0.25, -0.75)))))) +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
        t = 1:t.end, 
        distr = "Multinom",
-       probs = StochasticFun(A[(t-1)], d=c(0-(L3[t]*0.01),0+(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.01),0+(L3[t]*0.01),0-(L3[t]*0.01)))) +
+       probs = StochasticFun(A[(t-1)], d=c(ifelse(V2[0]==1, 0.1  + L2[t]*0.1 + L3[t]*0.1, 0), ifelse(V2[0]==3, 0.1 + L2[t]*0.1 + L3[t]*0.1, 0), 0, 0,  ifelse(V2[0]==2, 0.1  + L2[t]*0.1 + L3[t]*0.1, 0), 0))) +
   node("C",                                      # monthly_censored_indicator
        t = 1:t.end,
        distr = "rbern",
-       prob =ifelse((V3[0]+(t/12))>65,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] + ifelse(A[(t-1)]==6, 0.5, ifelse(A[(t-1)]==4, 0, ifelse(A[(t-1)]==1, -0.5, -1.5))) + ifelse(A[(t)]==6, 0, ifelse(A[(t)]==4, -0.5, ifelse(A[(t)]==1, -1, -1.5))))), # deterministic: AGE out at 65 (medicaid -> medicare)
+       prob =ifelse((V3[0]+(t/12))>65,1, plogis(-4 + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==5, -0.5, 0) + ifelse(A[t]==1 | A[t]==2 | A[t]==5, -1, 0))), # deterministic: AGE out at 65 (medicaid -> medicare)
        EFU = TRUE) + # right-censoring (EFU) 
   node("Y",                                      # diabetes
        t = 1:t.end,
        distr = "rbern",
-       prob = plogis(-4 + Y[t-1] + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] + ifelse(A[(t-1)]==6, 0.5, ifelse(A[(t-1)]==4, 0, ifelse(A[(t-1)]==1, -0.5, -1))) + ifelse(A[(t)]==6, 0, ifelse(A[(t)]==4, -0.5, ifelse(A[(t)]==1, -1, -1.5)))),
+       prob = plogis(-4 + Y[t-1] + .01 * (L1[t] - L1[t-1]) + 0.01 *L2[t-1] + 0.01 *L2[t]  + 0.01 * L3[t-1] + 0.01 * L3[t] - ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==5, 1, 0) - ifelse(A[t]==1 | A[t]==2 | A[t]==5, 1, 0)),
        EFU = TRUE)

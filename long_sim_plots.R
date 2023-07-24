@@ -13,7 +13,7 @@ library(gtable)
 # Define parameters
 J <- 6
 n <- 10000
-R <- 20
+R <- 40
 t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
@@ -26,7 +26,7 @@ n.rules <-as.numeric(length(treatment.rules))
 # Load results data
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230717")
+args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230721")
 output.path <- as.character(args[1])
 
 filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)
@@ -40,7 +40,7 @@ if(any( duplicated(substring(filenames, 18)))){
   filenames <- filenames[-which(duplicated(substring(filenames, 18)))]
 }
 
-omit.result <- c("result.16","result.18","result.19","result.20")
+omit.result <- c("result.16","result.18","result.19","result.20","result.21","result.26","result.30","result.34")
 R <- R-length(omit.result)
 
 results <- list() # structure is: [[filename]][[metric]]
@@ -191,11 +191,11 @@ setDT(results.df)[, as.list(summary(CIW)), by = Rule]
 setDT(results.df)[, as.list(summary(abs.bias)), by = Rule]
 
 # reshape and plot
-results.df <- as.data.frame(results.df[results.df$Estimator%in%c("TMLE (Multi.)", "TMLE (Bin.)","G-Comp."),]) # rm IPTW
+results.df <- as.data.frame(results.df[results.df$Estimator%in%c("TMLE (Multi.)", "TMLE (Bin.)","G-Comp.","IPTW (Multi.)"),]) 
 results_long <- reshape2::melt(results.df, id.vars=c("Estimator","Rule", "t"))  # convert to long format
 
 # bias 
-sim.results.bias <- ggplot(data=results_long[results_long$variable=="abs.bias",],
+sim.results.bias <- ggplot(data=results_long[results_long$variable=="abs.bias" & results_long$value <0.25,], # rm extreme outliers
                            aes(x=factor(t), y=value, fill=forcats::fct_rev(Estimator)))  + geom_boxplot(outlier.alpha = 0.3,outlier.size = 1, outlier.stroke = 0.1, lwd=0.25) +
   facet_grid(Rule ~  ., scales = "free")  +  
   xlab("Time") + ylab("Abs. diff. btwn. true and estimated counterfactual outcomes") +  ggtitle(paste0("Absolute bias")) +
@@ -324,4 +324,4 @@ z.width <- gtable_add_cols(z.width, unit(1/5, "line"), max(posR$r))
 grid.newpage()
 grid.draw(z.width)
 
-ggsave(paste0("sim_results/long_simulation_ci_width_estimand","_J_",J,"_n_",n,"_R_",R,".png"), plot = z.width)
+ggsave(paste0("sim_results/long_simulation_ci_width_estimand","_J_",J,"_n_",n,"_R_",R,".png"), plot = z.width, scale=1.75)

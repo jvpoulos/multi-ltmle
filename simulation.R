@@ -193,7 +193,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
                 ylab = "Share of patients without diabetes diagnosis", 
                 xlab = "Month",
                 main = "Counterfactual outcomes (simulated data)",
-        #        ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
@@ -203,7 +202,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
                 ylab = "Share of patients without diabetes diagnosis", 
                 xlab = "Month",
                 main = "Observed outcomes (simulated data)",
-            #    ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     lines(1:t.end, 1-Y.observed[["overall"]], type = "l", lty = 2)
@@ -1019,7 +1017,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 40 # number of simulation runs
+R <- 60 # number of simulation runs
 
 gbound <- c(0.025,1) # define bounds to be used for the propensity score
 
