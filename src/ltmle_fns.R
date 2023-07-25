@@ -62,21 +62,21 @@ static_mtp <- function(row){
 }
 
 dynamic_mtp <- function(row){
-  # Dynamic: Everyone starts with quetiap.
-  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
+  # Dynamic: Everyone starts with risp.
+  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quetiap. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise stay on risp.
   treats <- row[grep("A[0-9]",colnames(row), value=TRUE)]
-  shifted <- ifelse(names(treats)%in%grep("A4_0",colnames(row), value=TRUE),1,0)
+  shifted <- ifelse(names(treats)%in%grep("A5_0",colnames(row), value=TRUE),1,0)
   names(shifted) <- names(treats)
   shifted <- sapply(1:36, function(t){ #t.end
       if(!is.na(row[paste0("L1_", "L2_","L3_",t)]) & any(row[paste0("L1_","L2_","L3_",t)] >0)){
       if(!is.na(row[["V2_0"]]) & row[["V2_0"]] == 3){ # check if schizophrenia
         shifted[paste0("A2_",t)] <- 1 # switch to halo
       }else if(!is.na(row[["V2_0"]]) & row[["V2_0"]] == 2){ # check if bipolar
-        shifted[paste0("A5_",t)] <- 1 # switch to risp
+        shifted[paste0("A4_",t)] <- 1 # switch to quet.
       }else{
-        shifted[paste0("A1_",t)] <- 1 # switch to risp. # switch to ari if MDD
+        shifted[paste0("A1_",t)] <- 1 # switch to ari if MDD
       }}else if(!is.na(row[paste0("L1_","L2_","L3_",t)]) & row[paste0("L1_","L2_","L3_",t)] == 0){
-        shifted[paste0("A4_",t)] <- 1  # otherwise stay on quet.
+        shifted[paste0("A5_",t)] <- 1  # otherwise stay on risp.
       }
     return(shifted)})
   shifted <- rowSums(shifted)

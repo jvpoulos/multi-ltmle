@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE){
   
   # libraries
   library(simcausal)
@@ -91,10 +91,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.025,1), ybound=c(0.000
                       const = ifelse(V2[0]==3, 2, ifelse(V2[0]==1, 1, 4))),
                  node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
   
-  int.dynamic <- c(node("A", t = 0, distr = "rconst",   # Dynamic: Everyone starts with quetiap. # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
-                        const= 4),
+  int.dynamic <- c(node("A", t = 0, distr = "rconst",   # Dynamic: Everyone starts with risp. # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quet. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise, stay on risp.
+                        const= 5),
                    node("A", t = 1:t.end, distr = "rconst",
-                        const=ifelse((L1[t] >0 | L2[t] >0 | L3[t] >0), ifelse(V2[0]==3, 2, ifelse(V2[0]==2, 4, 1)), 4)),
+                        const=ifelse((L1[t] >0 | L2[t] >0 | L3[t] >0), ifelse(V2[0]==3, 2, ifelse(V2[0]==2, 4, 1)), 5)),
                    node("C", t = 1:t.end, distr = "rbern", prob = 0)) # under no censoring
   
   int.stochastic <- c(node("A", t = 1:t.end, distr = "Multinom", # at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution
@@ -1001,7 +1001,7 @@ settings <- expand.grid("n"=c(10000),
 
 options(echo=TRUE)
 args <- commandArgs(trailingOnly = TRUE) # command line arguments
-# args <- c('tmle-lstm',1,'TRUE','FALSE')
+# args <- c('tmle',1,'TRUE','FALSE')
 estimator <- as.character(args[1])
 thisrun <- settings[as.numeric(args[2]),]
 use.SL <- as.logical(args[3])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
@@ -1017,9 +1017,9 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 60 # number of simulation runs
+R <- 100 # number of simulation runs
 
-gbound <- c(0.025,1) # define bounds to be used for the propensity score
+gbound <- c(0.01,1) # define bounds to be used for the propensity score
 
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
@@ -1079,7 +1079,7 @@ filename <- paste0(output_dir,
 # Run simulation #
 #####################
 
-print(paste0('simulation setting: ', "estimator = ", estimator, "treatment.rule = ", treatment.rule, " R = ", R, ", n = ", n,", J = ", J ,", t.end = ", t.end, ", use.SL = ",use.SL))
+print(paste0('simulation setting: ', "estimator = ", estimator, ", treatment.rule = ", treatment.rule, " R = ", R, ", n = ", n,", J = ", J ,", t.end = ", t.end, ", use.SL = ",use.SL))
 
 sim.results <- foreach(r = 1:R, .combine='cbind', .verbose = TRUE, .errorhandling="pass") %dopar% {
   simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL)

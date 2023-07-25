@@ -126,22 +126,22 @@ static_mtp <- function(row){
 }
 
 dynamic_mtp <- function(row){ 
-  # Dynamic: Everyone starts with quetiap.
-  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
+  # Dynamic: Everyone starts with risp.
+  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quetiap. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise stay on risp.
   if(row$t==0){ # first-, second-, and third-order lags are 0
-    shifted <- static_quet_on(row,lags=TRUE)
+    shifted <- static_risp_on(row,lags=TRUE)
   }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
     if((row$L1 >0 | row$L2 >0 | row$L3 >0)){
       if(row$schiz==1){
         shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
       }else if(row$bipolar==1){
-        shifted <- unlist(c(static_risp_on(row,lags = FALSE),lags)) # switch to risp
+        shifted <- unlist(c(static_quet_on(row,lags = FALSE),lags)) # switch to quet.
       }else if(row$mdd==1){
         shifted <- unlist(c(static_arip_on(row,lags = FALSE),lags)) # switch to arip
       }
     }else if((row$L1==0 & row$L2==0 & row$L3==0)){
-      shifted <- unlist(c(static_quet_on(row,lags=FALSE),lags))  # otherwise stay on quetiap.
+      shifted <- unlist(c(static_risp_on(row,lags=FALSE),lags))  # otherwise stay on risp.
     }
   }
   return(shifted)
