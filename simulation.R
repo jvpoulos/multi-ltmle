@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
   
   # libraries
   library(simcausal)
@@ -68,6 +68,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
   
   if(use.SL==FALSE){
     warning("not tested on use.SL=FALSE")
+  }
+  
+  if(scale.continuous==TRUE){
+    warning("real values of certain time-varying covariates needed to characterize treatment rules")
   }
   
   if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp","tmle-lstm")){
@@ -276,8 +280,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
     
     
     tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2), dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
-    tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
     
+    if(scale.continuous){
+      tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
+    }
+
     colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "Y.lag", "Y.lag2", "Y.lag3", "L1.lag", "L1.lag2","L1.lag3","L2.lag", "L2.lag2","L2.lag3", "L3.lag", "L3.lag2","L3.lag3","A.lag","A.lag2", "A.lag3","white", "black", "latino", "other", "mdd", "bipolar", "schiz", 
                             "A1", "A2", "A3", "A4", "A5", "A6", "A1.lag", "A2.lag", "A3.lag", "A4.lag", "A5.lag", "A6.lag","A1.lag2", "A2.lag2", "A3.lag2", "A4.lag2", "A5.lag2", "A6.lag2","A1.lag3", "A2.lag3", "A3.lag3", "A4.lag3", "A5.lag3", "A6.lag3")
     
@@ -291,8 +298,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
     tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
     tmle_dat$A <- factor(tmle_dat$A)
     }else if(estimator=="tmle-lstm"){
-      tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
       
+      if(scale.continuous){
+        tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
+      }
       tmle_dat[is.na(tmle_dat)] <- -10 # set NAs to -10 (add masking layer to LSTM)
       
       tmle_dat$A <- factor(tmle_dat$A)
@@ -503,7 +512,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
     for (i in 2:length(C_preds)) {
       C_preds_cuml[[i]] <- C_preds[[i]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])] * C_preds_cuml[[i-1]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])]
     }    
-    C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=ybound))  # winsorized cumulative bounded censoring predictions, 1=Censored                            
+    C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative bounded censoring predictions, 1=Censored                            
     
     ## sequential g-formula
     ## model is fit on all uncensored and alive (until t-1)
@@ -789,7 +798,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
     lmtp_dat[,cnodes][is.na(lmtp_dat[,cnodes])] <- 1
     lmtp_dat[,cnodes] <- ifelse(lmtp_dat[,cnodes]==1, 0, 1) # C=0 indicates censored
     
-    lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] <- scale(lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] ) # center and scale continuous/count vars
+    if(scale.continuous){
+      lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] <- scale(lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] ) # center and scale continuous/count vars
+    }
     
     # define treatment rules
     
@@ -908,7 +919,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
                             Odat[ynodes], stringsAsFactors=TRUE)
     colnames(ltmle_dat)[grep("X",colnames(ltmle_dat))] <- colnames(Odat[cnodes])
     
-    ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))] <- scale(ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))]) # center and scale continuous/count vars
+    if(scale.continuous){
+      ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))] <- scale(ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))]) # center and scale continuous/count vars
+    }
     
     column_order <- c(baseline, c(sapply(0:t.end, function(i){
       c(paste0("L",c(1,2,3),"_",i), paste0("A",c(1:6),"_",i), paste0("C","_",i), paste0("Y","_",i))
@@ -1019,7 +1032,9 @@ t.end <- 36 # number of time points after t=0
 
 R <- 100 # number of simulation runs
 
-gbound <- c(0.01,1) # define bounds to be used for the propensity score
+scale.continuous <- FALSE # standardize continuous covariates
+
+gbound <- c(0.01,1) # define bounds to be used for the propensity score and censoring prob.
 
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
@@ -1073,16 +1088,17 @@ filename <- paste0(output_dir,
                    "_n_", n,
                    "_J_", J,
                    "_n_folds_",n.folds,
+                   "_scale_continuous_",scale.continuous,
                    "_use_SL_", use.SL,".rds")
 
 #####################
 # Run simulation #
 #####################
 
-print(paste0('simulation setting: ', "estimator = ", estimator, ", treatment.rule = ", treatment.rule, " R = ", R, ", n = ", n,", J = ", J ,", t.end = ", t.end, ", use.SL = ",use.SL))
+print(paste0('simulation setting: ', "estimator = ", estimator, ", treatment.rule = ", treatment.rule, " R = ", R, ", n = ", n,", J = ", J ,", t.end = ", t.end, ", use.SL = ",use.SL, ", scale.continuous = ",scale.continuous))
 
 sim.results <- foreach(r = 1:R, .combine='cbind', .verbose = TRUE, .errorhandling="pass") %dopar% {
-  simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL)
+  simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
 }
 sim.results
 

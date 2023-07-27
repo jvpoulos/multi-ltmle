@@ -140,7 +140,7 @@ dynamic_mtp <- function(row){
       }else if(row$mdd==1){
         shifted <- unlist(c(static_arip_on(row,lags = FALSE),lags)) # switch to arip
       }
-    }else if((row$L1==0 & row$L2==0 & row$L3==0)){
+    }else{
       shifted <- unlist(c(static_risp_on(row,lags=FALSE),lags))  # otherwise stay on risp.
     }
   }

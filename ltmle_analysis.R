@@ -46,11 +46,11 @@ weights.loc <- as.character(args[3])
 use.SL <- as.logical(args[4])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
 use.simulated <- as.logical(args[5])  # When TRUE, use simulated data; if FALSE, use real data.
 
-scale.continuous <- TRUE # standardize continuous covariates
+scale.continuous <- FALSE # standardize continuous covariates
 
-gbound <- c(1e-05,1-1e-05) # define bounds to be used for the propensity score
+gbound <- c(0.01,1) # define bounds to be used for the propensity score
 
-ybound <- gbound # define bounds to be used for the Y predictions
+ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
 n.folds <- 5 # number of folds for SL
 
@@ -68,8 +68,8 @@ if(t.end<4 && t.end >36){
   stop("t.end must be at least 4 and no more than 36")
 }
 
-if(t.end!=36 & estimator!="tmle"){
-  stop("need to manually change t.end in shift functions in lmtp_fns.R or ltmle.R, and the number of lags in tmle_dat, and IC in tmle_fns")
+if(t.end!=36){
+  stop("need to manually change  the number of lags in tmle_dat, and IC in tmle_fns")
 }
 
 if(n.folds<3){
@@ -78,6 +78,10 @@ if(n.folds<3){
 
 if(use.SL==FALSE){
   warning("not tested on use.SL=FALSE")
+}
+
+if(scale.continuous==TRUE){
+  warning("real values of certain time-varying covariates needed to characterize treatment rules")
 }
 
 if(estimator=='tmle-lstm'){
@@ -103,6 +107,7 @@ filename <- paste0(output_dir,
                    "estimator_",estimator,
                    "_treatment_rule_",treatment.rule,
                    "_n_folds_",n.folds,
+                   "_scale_continuous_",scale.continuous,
                    "_use_SL_", use.SL,".rds")
 
 if(estimator%in%c("tmle", "tmle-lstm")){
@@ -118,21 +123,6 @@ if(estimator=='tmle-lstm'){
   print(tf_version())
 }
 
-if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
-  library(lmtp)
-  source('./src/misc_fns.R')
-  source('./src/lmtp_fns.R')
-  source('./src/SL3_fns.R', local =TRUE)
-}
-
-if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
-  library(ltmle)
-  library(SuperLearner)
-  source('./src/SL_fns.R')
-  source('./src/misc_fns.R')
-  source('./src/ltmle_fns.R')
-}
-
 # load utils
 source('./src/simcausal_fns.R')
 
@@ -144,16 +134,18 @@ if(use.simulated){
   load("simdata_from_basevars.RData")
   source("add_tv_simulated.R") # add time-varying variables
   
-  Odat <- simdata_from_basevars 
+  raw.data <- simdata_from_basevars
+  Odat <- raw.data
   
   rm(simdata_from_basevars)
-  
   data.label <- "(simulated CMS data)"
 }else{
   load("/data/MedicaidAP_associate/poulos/fup3yr_episode_months_deid_fixmonthout.RData") # run on Argos
   paste0("Original data dimension: ", dim(fup3yr_episode_months_deid))
   
-  Odat <- fup3yr_episode_months_deid
+  raw.data <- fup3yr_episode_months_deid
+  
+  Odat <- raw.data
   
   rm(fup3yr_episode_months_deid)
   
@@ -162,12 +154,49 @@ if(use.simulated){
 
 # make data balanced 38762*37 = 1434194
 
-Odat <- Odat %>%  
-  complete(nesting(hcp_patient_id), month_number = full_seq(month_number, period = 1))
+# Identify unique combinations of hcp_patient_id and month_number
+unique_combinations <- Odat %>%
+  select(hcp_patient_id, month_number) %>%
+  distinct()
 
-# Odat <- reshape(Odat, varying=colnames(Odat)[-c("hcp_patient_id","month_number","days_to_censored",grep("preperiod", colnames(Odat)),"calculated_age")], 
-#                 idvar="hcp_patient_id", timevar="month_number", times=0:t.end, direction="wide", sep="_") # need to put in wide format so it has 38762 rows
-# 
+# Create a dataframe of all combinations of unique hcp_patient_id and month_number
+complete_combinations <- expand.grid(hcp_patient_id = unique(unique_combinations$hcp_patient_id),
+                                     month_number = unique(unique_combinations$month_number))
+
+# Merge the complete_combinations dataframe with the original dataframe
+balanced_panel <- merge(complete_combinations, Odat, 
+                        by = c("hcp_patient_id", "month_number"), 
+                        all.x = TRUE)
+
+# Remove unwanted columns
+balanced_panel <- balanced_panel %>%
+  select(-c("death_36", "diabetes_36"))
+
+# Define columns to reshape
+monthly_columns <- grep("monthly", names(balanced_panel), value = TRUE)
+
+# Define columns to keep
+keep_columns <- setdiff(names(balanced_panel), c("hcp_patient_id", "month_number", monthly_columns))
+
+# Separate the time-invariant variables
+time_invariant <- balanced_panel %>%
+  select(c(hcp_patient_id, keep_columns)) %>%
+  group_by(hcp_patient_id) %>%
+  slice(1) %>%
+  ungroup()
+
+# Reshape only the time-varying data to wide format
+wide_data_temp <- balanced_panel %>%
+  select(c(hcp_patient_id, month_number, monthly_columns)) %>%
+  pivot_wider(names_from = month_number, 
+              values_from = monthly_columns, 
+              id_cols = hcp_patient_id)
+
+# Merge the time-invariant data back into the wide data
+Odat <- left_join(wide_data_temp, time_invariant, by = "hcp_patient_id")
+
+rm(wide_data_temp,time_invariant)
+
 # baseline covariates
 
 L.unscaled <- cbind(dummify(factor(Odat$state_character),show.na = FALSE),
@@ -215,29 +244,30 @@ if(use.SL==FALSE){ # exclude multicolinear variables for GLM (VIF)
 
 # TV covariates
 
-tv.unscaled <- cbind("monthly_evcum_psych"=Odat$monthly_evcum_psych,
-                    "monthly_evcum_metabolic"=Odat$monthly_evcum_metabolic,
-                    "monthly_evcum_other"=Odat$monthly_evcum_other, 
-                    "monthly_ever_mt_gluc_or_lip"=Odat$monthly_ever_mt_gluc_or_lip,
-                    "monthly_ever_rx_antidiab"=Odat$monthly_ever_rx_antidiab,
-                    "monthly_ever_rx_cm_nondiab"=Odat$monthly_ever_rx_cm_nondiab,
-                    "monthly_ever_rx_other"=Odat$monthly_ever_rx_other,
-                    "monthly_olanzeq_dose_total"=Odat$monthly_olanzeq_dose_total,
-                    "monthly_er_mhsa"=Odat$monthly_er_mhsa,
-                    "monthly_er_nonmhsa"=Odat$monthly_er_nonmhsa,
-                    "monthly_er_injury"=Odat$monthly_er_injury,
-                    "monthly_cond_mhsa"=Odat$monthly_cond_mhsa,
-                    "monthly_cond_nonmhsa"=Odat$monthly_cond_nonmhsa,
-                    "monthly_cond_injury"=Odat$monthly_cond_injury,
-                    "monthly_los_mhsa"=Odat$monthly_los_mhsa,
-                    "monthly_los_nonmhsa"=Odat$monthly_los_nonmhsa,
-                    "monthly_los_injury"=Odat$monthly_los_injury) 
+tv.unscaled <- grep("monthly",colnames(Odat), value=TRUE)
 
 tv <- tv.unscaled
 
 if(scale.continuous){
-  continuous.tv.vars <- c("monthly_olanzeq_dose_total","monthly_er_mhsa","monthly_er_nonmhsa","monthly_er_injury","monthly_cond_mhsa",
-                       "monthly_cond_nonmhsa","monthly_cond_injury","monthly_los_mhsa","monthly_los_nonmhsa","monthly_los_injury") 
+  continuous.tv.vars <- c(grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_er_mhsa",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_er_nonmhsa",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_er_injury",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_cond_mhsa",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_cond_nonmhsa",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_cond_injury",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_los_mhsa",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_los_nonmhsa",colnames(Odat), value=TRUE),
+                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
+                          grep("monthly_los_injury",colnames(Odat), value=TRUE)) 
   
   tv[,continuous.tv.vars] <- scale(tv[,continuous.tv.vars]) # scale continuous vars
 }
@@ -298,10 +328,10 @@ for(t in 1:(t.end+1)){
   static[[t]] <- ifelse(!is.na(obs.bipolar[[t]]) & obs.bipolar[[t]]==1, "QUETIAPINE", ifelse(!is.na(obs.schiz[[t]]) & obs.schiz[[t]]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
 }
 
-dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("QUETIAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels))   # Dynamic: Everyone starts with quetiap.
-# If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to risp (if bipolar), halo. (if schizophrenia), ari (if MDD)
+dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("RISPERIDONE",length.out=length(obs.treatment[[t]])), levels=drug.levels))   # Dynamic: Everyone starts with risp.
+# If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quetiap. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise, stay on risp.
 for(t in 2:(t.end+1)){
-  dynamic[[t]][(!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0)] <- ifelse(obs.bipolar[[t]][!is.na(obs.bipolar[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "RISPERIDONE", ifelse(obs.schiz[[t]][!is.na(obs.schiz[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
+  dynamic[[t]][(!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0)] <- ifelse(obs.bipolar[[t]][!is.na(obs.bipolar[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "QUETIAPINE", ifelse(obs.schiz[[t]][!is.na(obs.schiz[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
 }
 
 stochastic <- obs.treatment # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution.
@@ -340,9 +370,9 @@ obs.rules <- lapply(1:length(obs.rules), function(t) setNames(obs.rules[[t]], na
 # plot treatment adherence
 png(paste0(output_dir,paste0("treatment_adherence_analysis_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
 plotSurvEst(surv = list("Static"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[1]])), "Dynamic"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[2]])), "Stochastic"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[3]]))),
-              ylab = "Share of patients who continued to follow each rule", 
-              main = paste("Treatment rule adherence", data.label), 
-            xaxt="n", ylim = c(0,1))
+            ylab = "Share of patients who continued to follow each rule", 
+            main = paste("Treatment rule adherence", data.label), 
+            legend.xyloc = "topright", xaxt="n")
 axis(1, at = seq(1, (t.end+1), by = 3))
 dev.off() 
 
@@ -355,13 +385,12 @@ Y.observed[["overall"]] <- sapply(1:(t.end+1), function(t) mean(obs.Y[,paste0("Y
 
 png(paste0(output_dir,paste0("survival_plot_analysis_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
 plotSurvEst(surv = list("Static"=1-Y.observed[["static"]], "Dynamic"=1-Y.observed[["dynamic"]], "Stochastic"=1-Y.observed[["stochastic"]]),
-             ylab = "Share of patients without diabetes diagnosis", 
-              main = paste("Observed outcomes", data.label),
-              xaxt="n",
-              ylim = c(0.7,1),
-            legend.xyloc = "bottomleft")
+            ylab = "Share of patients without diabetes diagnosis", 
+            main = paste("Observed outcomes", data.label),
+            ylim = c(0.7,1),
+            legend.xyloc = "bottomleft", xaxt="n")
+axis(1, at = seq(1, t.end, by = 5))
 lines(1:(t.end+1), 1-Y.observed[["overall"]], type = "l", lty = 2)
-axis(1, seq(1, (t.end+1), by=3))
 dev.off()
 
 ## Manual TMLE (ours)
@@ -375,6 +404,9 @@ tmle_contrasts  <- list()
 tmle_contrasts_bin  <- list()
 
 tmle_estimates <- list()
+iptw_estimates <- list()
+iptw_bin_estimates <- list()
+gcomp_estimates <- list()
 Ahat_tmle <- list()
 prob_share <- list()
 Chat_tmle <- list()
@@ -384,25 +416,27 @@ Ahat_tmle_bin <- list()
 prob_share_bin <- list()
 Chat_tmle_bin <- list()
 
-if(estimator=="tmle"){ # needs to be in long format
+if(estimator=="tmle"){ 
   
-  tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
+  tmle_dat <- DF.to.long(Odat)
   
-  tmle_dat$L1 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  
-  tmle_dat$L2 <- unlist(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  
-  tmle_dat$L3 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  
-  tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
-  
-  tmle_dat$Y <- unlist(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
-  
-  tmle_dat$A <- unlist(sapply(0:t.end, function(t) obs.treatment[[paste0("A_", t)]]))
-  
-  tmle_dat$ID <- unlist(sapply(0:t.end, function(t) obs.ID[[paste0("ID_", t)]]))
-  
-  tmle_dat$C <- unlist(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
+  # tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
+  # 
+  # tmle_dat$L1 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  # 
+  # tmle_dat$L2 <- unlist(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  # 
+  # tmle_dat$L3 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  # 
+  # tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
+  # 
+  # tmle_dat$Y <- unlist(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
+  # 
+  # tmle_dat$A <- unlist(sapply(0:t.end, function(t) obs.treatment[[paste0("A_", t)]]))
+  # 
+  # tmle_dat$ID <- unlist(sapply(0:t.end, function(t) obs.ID[[paste0("ID_", t)]]))
+  # 
+  # tmle_dat$C <- unlist(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
   
   tmle_dat <- 
     tmle_dat %>%
@@ -425,6 +459,10 @@ if(estimator=="tmle"){ # needs to be in long format
   
   tmle_dat <- cbind(tmle_dat, dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
 
+  if(scale.continuous){
+    tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
+  }
+  
   treat.names <-  c("A1","A2","A3","A4","A5","A6","A1.lag","A2.lag","A3.lag","A4.lag","A5.lag","A6.lag","A1.lag2","A2.lag2","A3.lag2","A4.lag2","A5.lag2","A6.lag2","A1.lag3","A2.lag3","A3.lag3","A4.lag3","A5.lag3","A6.lag3")
   
   colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[(length(colnames(tmle_dat))-length(treat.names)+1):length(colnames(tmle_dat))]] <- treat.names
@@ -450,6 +488,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                            "estimator_",estimator,
                                            "_treatment_rule_",treatment.rule,
                                            "_n_folds_",n.folds,
+                                           "_scale_continuous_",scale.continuous,
                                            "_use_SL_", use.SL,".rds"))
   }else{
     
@@ -488,6 +527,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                         "estimator_",estimator,
                                         "_treatment_rule_",treatment.rule,
                                         "_n_folds_",n.folds,
+                                        "_scale_continuous_",scale.continuous,
                                         "_use_SL_", use.SL,".rds"))
   }
   
@@ -519,6 +559,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                            "estimator_",estimator,
                                            "_treatment_rule_",treatment.rule,
                                            "_n_folds_",n.folds,
+                                           "_scale_continuous_",scale.continuous,
                                            "_use_SL_", use.SL,".rds"))
   }else{
     
@@ -552,6 +593,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                             "estimator_",estimator,
                                             "_treatment_rule_",treatment.rule,
                                             "_n_folds_",n.folds,
+                                            "_scale_continuous_",scale.continuous,
                                             "_use_SL_", use.SL,".rds"))
   }
   
@@ -584,6 +626,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                            "estimator_",estimator,
                                            "_treatment_rule_",treatment.rule,
                                            "_n_folds_",n.folds,
+                                           "_scale_continuous_",scale.continuous,
                                            "_use_SL_", use.SL,".rds"))
   }else{
     
@@ -617,6 +660,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                         "estimator_",estimator,
                                         "_treatment_rule_",treatment.rule,
                                         "_n_folds_",n.folds,
+                                        "_scale_continuous_",scale.continuous,
                                         "_use_SL_", use.SL,".rds"))
   }
   
@@ -678,6 +722,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                       "estimator_",estimator,
                                       "_treatment_rule_",treatment.rule,
                                       "_n_folds_",n.folds,
+                                      "_scale_continuous_",scale.continuous,
                                       "_use_SL_", use.SL,".rds"))
   
   saveRDS(initial_model_for_Y_bin, paste0(output_dir, 
@@ -685,6 +730,7 @@ if(estimator=="tmle"){ # needs to be in long format
                                       "estimator_",estimator,
                                       "_treatment_rule_",treatment.rule,
                                       "_n_folds_",n.folds,
+                                      "_scale_continuous_",scale.continuous,
                                       "_use_SL_", use.SL,".rds"))
   # plot estimated survival curves
   
@@ -705,6 +751,43 @@ if(estimator=="tmle"){ # needs to be in long format
               ylim = c(0.5,1))
   dev.off()
   
+  iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]]))) # static, dynamic, stochastic
+  iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]]))) 
+  
+  if(r==1){
+    png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n, ".png")))
+    plotSurvEst(surv = list("Static"= iptw_estimates[1,], "Dynamic"= iptw_estimates[2,], "Stochastic"= iptw_estimates[3,]),  
+                ylab = "Estimated share of patients without diabetes diagnosis", 
+                main = "IPTW (ours, multinomial) estimated counterfactuals",
+                xlab = "Month",
+                ylim = c(0.5,1),
+                legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+    axis(1, at = seq(1, t.end, by = 5))
+    dev.off()
+    
+    png(paste0(output_dir,paste0("survival_plot_iptw_bin_estimates_",n, ".png")))
+    plotSurvEst(surv = list("Static"= iptw_bin_estimates[1,], "Dynamic"= iptw_bin_estimates[2,], "Stochastic"= iptw_bin_estimates[3,]),  
+                ylab = "Estimated share of patients without diabetes diagnosis", 
+                main = "IPTW (ours, binomial) estimated counterfactuals",
+                xlab = "Month",
+                ylim = c(0.5,1))
+    dev.off()
+  }
+  
+  gcomp_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_gcomp[[x]]))) # static, dynamic, stochastic
+  
+  if(r==1){
+    png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n, ".png")))
+    plotSurvEst(surv = list("Static"= gcomp_estimates[1,], "Dynamic"= gcomp_estimates[2,], "Stochastic"= gcomp_estimates[3,]),  
+                ylab = "Estimated share of patients without diabetes diagnosis", 
+                main = "G-comp. (ours) estimated counterfactuals",
+                xlab = "Month",
+                ylim = c(0.5,1),
+                legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+    axis(1, at = seq(1, t.end, by = 5))
+    dev.off()
+  }
+  
   # calc share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025
   
   prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) round(colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE),2)))
@@ -714,13 +797,22 @@ if(estimator=="tmle"){ # needs to be in long format
   
   names(prob_share) <- paste0("t=",seq(0,t.end))
   
-  prob_share.bin <- sapply(1:ncol(obs.rules[[(t.end)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t.end)]][which(obs.rules[[(t.end)]][na.omit(tmle_dat[tmle_dat$t==(t.end),])$ID,][,i]==1),]<0.025, na.rm=TRUE))
-  colnames(prob_share.bin) <- colnames(obs.rules[[(t.end)]])
+  prob_share.bin <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
+  for(t in 1:(t.end+1)){
+    colnames(prob_share.bin[[t]]) <- colnames(obs.rules[[(t.end)]])
+  }
+  
+  names(prob_share.bin) <- paste0("t=",seq(0,t.end))
   
   # calc CIs 
   
   tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored)
   tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored)
+  
+  iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE)
+  iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE)
+  
+  gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE)
   
   # store results
 
@@ -730,58 +822,15 @@ if(estimator=="tmle"){ # needs to be in long format
   Chat_tmle  <- C_preds_cuml_bounded
 }
 
-lmtp_results <- list()
-
-if(estimator=="lmtp"){ # FOLLOW TMLE - Don't need to scale
-  
-  # define treatment and covariates
-  baseline <- c("V1_0", "V2_0", "V3_0", paste0("L",c(1,2,3),"_",0))
-  tv <- lapply(1:t.end, function(i){paste0("L",c(1,2,3),"_",i)})
-  
-  lmtp_dat <- Odat[!colnames(Odat)%in%c("ID","A_0","C_0","Y_0")] 
-  lmtp_dat[,cnodes][is.na(lmtp_dat[,cnodes])] <- 1
-  lmtp_dat[,cnodes] <- ifelse(lmtp_dat[,cnodes]==1, 0, 1) # C=0 indicates censored
-  
-  lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE), grep("L2",colnames(lmtp_dat), value=TRUE))] <- scale(lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE), grep("L2",colnames(lmtp_dat), value=TRUE))] ) # center and scale continuous/count vars
-  
-  lmtp_dat <- lmtp_dat[mixedorder(substring(colnames(lmtp_dat), nchar(colnames(lmtp_dat))))] # columns in time-ordering of model: A < C < Y
-  
-  # define treatment rules
-  
-  lmtp_rules <- list("static"=static_mtp,
-                     "dynamic"=dynamic_mtp,
-                     "stochastic"=stochastic_mtp) 
-  
-  # estimate outcomes under treatment rule, for all periods
-  
-  lmtp_results[[treatment.rule]] <- lmtp_tmle(data = lmtp_dat,
-                                              trt = anodes,
-                                              outcome = ynodes, 
-                                              baseline = baseline, 
-                                              time_vary = tv,
-                                              cens= cnodes,
-                                              shift=lmtp_rules[[treatment.rule]],
-                                              intervention_type = "mtp",
-                                              outcome_type = "survival", 
-                                              learners_trt= if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
-                                              learners_outcome= if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
-                                              .bound = ybound[1],
-                                              .trim = gbound[2],
-                                              .SL_folds = n.folds)
-  
-  # store results
-  
-  results_bias_lmtp[[treatment.rule]] <- lmtp_results[[treatment.rule]]$theta - Y.true[[treatment.rule]][t.end] # LMTP  point and variance estimates
-  results_CP_lmtp[[treatment.rule]] <- as.numeric((lmtp_results[[treatment.rule]]$low < Y.true[[treatment.rule]][t.end]) & (lmtp_results[[treatment.rule]]$high > Y.true[[treatment.rule]][t.end]))
-  results_CIW_lmtp[[treatment.rule]]<- lmtp_results[[treatment.rule]]$high-lmtp_results[[treatment.rule]]$low
-}
-
 # save results
 results <- list("tmle_contrasts"=tmle_contrasts, "tmle_contrasts_bin"=tmle_contrasts_bin, 
             "Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
             "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
-            "lmtp_results"=lmtp_results[[treatment.rule]],"Ahat_lmtp"=Ahat_lmtp)
+            "yhat_gcomp"= gcomp_estimates,"gcomp_est_var"=gcomp_est_var,
+            "yhat_iptw"= iptw_estimates,"iptw_est_var"=iptw_est_var,
+            "yhat_iptw_bin"= iptw_bin_estimates,"iptw_est_var_bin"=iptw_est_var_bin)
 
 saveRDS(results, filename)
 
+source("./ltmle_analysis_eda.R")
 stopCluster(cl)

@@ -76,6 +76,8 @@ Contents
 
 	+ *use.SL*: logical flag. When TRUE, use Super Learner for treatment and outcome model estimation; if FALSE, use GLM (**use.SL=FALSE not functional**). 
 
+	+ *scale.continuous*: logical flag. When TRUE, use scale continuous variables before training. Default is FALSE. 
+
 	+ *n.folds*: number of cross-validation folds for Super Learner. Defaults to 5 (must be at at least 3). 
 
 * ***long_sim_plots.R*** combine output from ***simulation.R*** and plot.
@@ -98,6 +100,6 @@ Instructions
 
 4. Download in the local directory simulated data from [simdata_from_basevars.RData](https://github.com/jvpoulos/multi-tmle/blob/4286f7899ec0a9fc27474ff88871dbd6cae85dbd/simdata_from_basevars.RData) These simulated data are for illustrative purposes and are provided in the cross-sectional study repo [multi-tmle](https://github.com/jvpoulos/multi-tmle/). The file ***add_tv_simulated.R*** quickly generates time-varying covariates to demonstrate for the longituninal analysis.
 
-5. For ITT analysis on simulated data, run: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4] [arg5]`; where `[arg1]` specifies the estimator ["lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp","tmle", "tmle-lstm"], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights (e.g., '20230329/') or 'none', `[arg4]` is a logical flag if super learner estimation is to be used, and , `[arg5]` is a logical flag if simulated data is to be used; e.g, 
+5. For ITT analysis on simulated data, run: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4] [arg5]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights (e.g., '20230329/') or 'none', `[arg4]` is a logical flag if super learner estimation is to be used, and , `[arg5]` is a logical flag if simulated data is to be used; e.g, 
 
 `Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'`  
