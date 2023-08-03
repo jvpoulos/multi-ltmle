@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.04,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
   
   # libraries
   library(simcausal)
@@ -446,7 +446,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
     for (i in 2:length(g_preds_bin)) {
       g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),]
     }    
-    g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
+    g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
     
     ##  fit initial censoring model
     ## implicitly fit on those that are uncensored until t-1
@@ -602,8 +602,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
       dev.off()
     }
     
-    iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]]))) # static, dynamic, stochastic
-    iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]]))) 
+    iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) # static, dynamic, stochastic
+    iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) 
     
     if(r==1){
       png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n, ".png")))
@@ -1009,7 +1009,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.01,1), ybound=c(0.0001
 #####################
 
 # define settings for simulation
-settings <- expand.grid("n"=c(10000), 
+settings <- expand.grid("n"=c(12000), 
                         treatment.rule = c("static","dynamic","stochastic")) 
 
 options(echo=TRUE)
@@ -1030,11 +1030,11 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 100 # number of simulation runs
+R <- 120 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 
-gbound <- c(0.01,1) # define bounds to be used for the propensity score and censoring prob.
+gbound <- c(0.04,1) # define bounds to be used for the propensity score and censoring prob.
 
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 

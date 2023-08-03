@@ -48,7 +48,7 @@ use.simulated <- as.logical(args[5])  # When TRUE, use simulated data; if FALSE,
 
 scale.continuous <- FALSE # standardize continuous covariates
 
-gbound <- c(0.01,1) # define bounds to be used for the propensity score
+gbound <- c(0.04,1) # define bounds to be used for the propensity score
 
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
@@ -134,8 +134,8 @@ if(use.simulated){
   load("simdata_from_basevars.RData")
   source("add_tv_simulated.R") # add time-varying variables
   
-  raw.data <- simdata_from_basevars
-  Odat <- raw.data
+  Odat <- simdata_from_basevars
+  Odat <- Odat[Odat$hcp_patient_id%in%c(1:9000),] # select first 9k simulated IDs to improve run-time
   
   rm(simdata_from_basevars)
   data.label <- "(simulated CMS data)"
@@ -143,14 +143,16 @@ if(use.simulated){
   load("/data/MedicaidAP_associate/poulos/fup3yr_episode_months_deid_fixmonthout.RData") # run on Argos
   paste0("Original data dimension: ", dim(fup3yr_episode_months_deid))
   
-  raw.data <- fup3yr_episode_months_deid
-  
-  Odat <- raw.data
+  Odat <- fup3yr_episode_months_deid
   
   rm(fup3yr_episode_months_deid)
   
   data.label <- "(CMS data)"
 }
+
+# make summary tables and plots
+
+source("./ltmle_analysis_eda.R")
 
 # make data balanced 38762*37 = 1434194
 
@@ -172,63 +174,36 @@ balanced_panel <- merge(complete_combinations, Odat,
 balanced_panel <- balanced_panel %>%
   select(-c("death_36", "diabetes_36"))
 
-# Define columns to reshape
-monthly_columns <- grep("monthly", names(balanced_panel), value = TRUE)
-
-# Define columns to keep
-keep_columns <- setdiff(names(balanced_panel), c("hcp_patient_id", "month_number", monthly_columns))
-
-# Separate the time-invariant variables
-time_invariant <- balanced_panel %>%
-  select(c(hcp_patient_id, keep_columns)) %>%
-  group_by(hcp_patient_id) %>%
-  slice(1) %>%
-  ungroup()
-
-# Reshape only the time-varying data to wide format
-wide_data_temp <- balanced_panel %>%
-  select(c(hcp_patient_id, month_number, monthly_columns)) %>%
-  pivot_wider(names_from = month_number, 
-              values_from = monthly_columns, 
-              id_cols = hcp_patient_id)
-
-# Merge the time-invariant data back into the wide data
-Odat <- left_join(wide_data_temp, time_invariant, by = "hcp_patient_id")
-
-rm(wide_data_temp,time_invariant)
-
 # baseline covariates
 
-L.unscaled <- cbind(dummify(factor(Odat$state_character),show.na = FALSE),
-                    dummify(factor(Odat$race_defined_character),show.na = FALSE), 
-                    dummify(factor(Odat$smi_condition)), 
-                    "year"=Odat$year, 
-                    "female"=Odat$female, 
-                    "payer_index_mdcr"=dummify(factor(Odat$payer_index))[,2],
-                    "preperiod_ever_psych"=Odat$preperiod_ever_psych,
-                    "preperiod_ever_metabolic"=Odat$preperiod_ever_metabolic,
-                    "preperiod_ever_other"=Odat$preperiod_ever_other,
-                    "preperiod_drug_use_days"=Odat$preperiod_drug_use_days,
-                    "preperiod_ever_mt_gluc_or_lip"=Odat$preperiod_ever_mt_gluc_or_lip,
-                    "preperiod_ever_rx_antidiab"=Odat$preperiod_ever_rx_antidiab,
-                    "preperiod_ever_rx_cm_nondiab"=Odat$preperiod_ever_rx_cm_nondiab,
-                    "preperiod_ever_rx_other"=Odat$preperiod_ever_rx_other,
-                    "calculated_age"=Odat$calculated_age,
-                    "preperiod_olanzeq_dose_total"=Odat$preperiod_olanzeq_dose_total,
-                    "preperiod_er_mhsa"=Odat$preperiod_er_mhsa,
-                    "preperiod_er_nonmhsa"=Odat$preperiod_er_nonmhsa,
-                    "preperiod_er_injury"=Odat$preperiod_er_injury,
-                    "preperiod_cond_mhsa"=Odat$preperiod_cond_mhsa,
-                    "preperiod_cond_nonmhsa"=Odat$preperiod_cond_nonmhsa,
-                    "preperiod_cond_injury"=Odat$preperiod_cond_injury,
-                    "preperiod_los_mhsa"=Odat$preperiod_los_mhsa,
-                    "preperiod_los_nonmhsa"=Odat$preperiod_los_nonmhsa,
-                    "preperiod_los_injury"=Odat$preperiod_los_injury) 
+L <- cbind(dummify(factor(Odat$state_character),show.na = FALSE),
+           dummify(factor(Odat$race_defined_character),show.na = FALSE), 
+           dummify(factor(Odat$smi_condition)), 
+           "year"=Odat$year, 
+           "female"=Odat$female, 
+           "payer_index_mdcr"=dummify(factor(Odat$payer_index))[,2],
+           "preperiod_ever_psych"=Odat$preperiod_ever_psych,
+           "preperiod_ever_metabolic"=Odat$preperiod_ever_metabolic,
+           "preperiod_ever_other"=Odat$preperiod_ever_other,
+           "preperiod_drug_use_days"=Odat$preperiod_drug_use_days,
+           "preperiod_ever_mt_gluc_or_lip"=Odat$preperiod_ever_mt_gluc_or_lip,
+           "preperiod_ever_rx_antidiab"=Odat$preperiod_ever_rx_antidiab,
+           "preperiod_ever_rx_cm_nondiab"=Odat$preperiod_ever_rx_cm_nondiab,
+           "preperiod_ever_rx_other"=Odat$preperiod_ever_rx_other,
+           "calculated_age"=Odat$calculated_age,
+           "preperiod_olanzeq_dose_total"=Odat$preperiod_olanzeq_dose_total,
+           "preperiod_er_mhsa"=Odat$preperiod_er_mhsa,
+           "preperiod_er_nonmhsa"=Odat$preperiod_er_nonmhsa,
+           "preperiod_er_injury"=Odat$preperiod_er_injury,
+           "preperiod_cond_mhsa"=Odat$preperiod_cond_mhsa,
+           "preperiod_cond_nonmhsa"=Odat$preperiod_cond_nonmhsa,
+           "preperiod_cond_injury"=Odat$preperiod_cond_injury,
+           "preperiod_los_mhsa"=Odat$preperiod_los_mhsa,
+           "preperiod_los_nonmhsa"=Odat$preperiod_los_nonmhsa,
+           "preperiod_los_injury"=Odat$preperiod_los_injury) 
 
-colnames(L.unscaled)[which(colnames(L.unscaled)=="West Virginia")] <- "West_Virginia"
-colnames(L.unscaled)[which(colnames(L.unscaled)=="South Dakota")] <- "South_Dakota"
-
-L <- L.unscaled
+colnames(L)[which(colnames(L)=="West Virginia")] <- "West_Virginia"
+colnames(L)[which(colnames(L)=="South Dakota")] <- "South_Dakota"
 
 if(scale.continuous){
   continuous.vars <- c("calculated_age","preperiod_olanzeq_dose_total","preperiod_drug_use_days","preperiod_er_mhsa","preperiod_er_nonmhsa","preperiod_er_injury","preperiod_cond_mhsa",
@@ -244,30 +219,10 @@ if(use.SL==FALSE){ # exclude multicolinear variables for GLM (VIF)
 
 # TV covariates
 
-tv.unscaled <- grep("monthly",colnames(Odat), value=TRUE)
-
-tv <- tv.unscaled
+tv <- Odat[,grep("monthly",colnames(Odat), value=TRUE)]
 
 if(scale.continuous){
-  continuous.tv.vars <- c(grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_er_mhsa",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_er_nonmhsa",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_er_injury",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_cond_mhsa",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_cond_nonmhsa",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_cond_injury",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_los_mhsa",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_los_nonmhsa",colnames(Odat), value=TRUE),
-                          grep("monthly_olanzeq_dose_total",colnames(Odat), value=TRUE),
-                          grep("monthly_los_injury",colnames(Odat), value=TRUE)) 
+  continuous.tv.vars <- c(timevar_count_vars ,timevar_bincum_vars)
   
   tv[,continuous.tv.vars] <- scale(tv[,continuous.tv.vars]) # scale continuous vars
 }
@@ -336,7 +291,9 @@ for(t in 2:(t.end+1)){
 
 stochastic <- obs.treatment # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution.
 for(t in 2:(t.end+1)){
-  obs.treatment[[t]][is.na(obs.treatment[[t]])] <- 0
+  if(any(is.na(obs.treatment[[t]]))){
+    obs.treatment[[t]][is.na(obs.treatment[[t]])] <- 0
+  }
   stochastic.probs <- as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ARIPIPRAZOLE")+0)*matrix(c(0.95,0.01,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="HALOPERIDOL")+0)*matrix(c(0.01,0.95,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
     as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="OLANZAPINE")+0)*matrix(c(0.01,0.01,0.95,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
@@ -418,29 +375,28 @@ Chat_tmle_bin <- list()
 
 if(estimator=="tmle"){ 
   
-  tmle_dat <- DF.to.long(Odat)
-  
-  # tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
-  # 
-  # tmle_dat$L1 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  # 
-  # tmle_dat$L2 <- unlist(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  # 
-  # tmle_dat$L3 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  # 
-  # tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
-  # 
-  # tmle_dat$Y <- unlist(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
-  # 
-  # tmle_dat$A <- unlist(sapply(0:t.end, function(t) obs.treatment[[paste0("A_", t)]]))
-  # 
-  # tmle_dat$ID <- unlist(sapply(0:t.end, function(t) obs.ID[[paste0("ID_", t)]]))
-  # 
-  # tmle_dat$C <- unlist(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
+  tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
+
+  tmle_dat$L1 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+
+  tmle_dat$L2 <- unlist(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+
+  tmle_dat$L3 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+
+  tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
+
+  tmle_dat$Y <- unlist(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
+
+  tmle_dat$A <- as.numeric(unlist(sapply(0:t.end, function(t) obs.treatment[[paste0("A_", t)]])))
+
+  tmle_dat$ID <- unlist(sapply(0:t.end, function(t) obs.ID[[paste0("ID_", t)]]))
+
+  tmle_dat$C <- unlist(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
   
   tmle_dat <- 
     tmle_dat %>%
-    group_by(ID) %>% # create first, second, and third-order lags (need to add lags for all TV covars)
+    arrange(ID, month_number) %>%  # Ensure data is ordered by hcp_patient_id and month_number
+    group_by(ID) %>% # create first, second, and third-order lags
     mutate(Y.lag = dplyr::lag(Y, n = 1, default = NA),
            Y.lag2 = dplyr::lag(Y, n = 2, default = NA),
            Y.lag3 = dplyr::lag(Y, n = 3, default = NA),
@@ -491,7 +447,6 @@ if(estimator=="tmle"){
                                            "_scale_continuous_",scale.continuous,
                                            "_use_SL_", use.SL,".rds"))
   }else{
-    
     initial_model_for_A_sl <- make_learner(Lrnr_sl, # cross-validates base models
                                            learners = if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
                                            metalearner = metalearner_A,
@@ -610,7 +565,7 @@ if(estimator=="tmle"){
     g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),]
   }  
   
-  g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
+  g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
   
   ##  fit initial censoring model
   ## implicitly fit on those that are uncensored until t-1
@@ -751,8 +706,8 @@ if(estimator=="tmle"){
               ylim = c(0.5,1))
   dev.off()
   
-  iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]]))) # static, dynamic, stochastic
-  iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]]))) 
+  iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]]))) # static, dynamic, stochastic
+  iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) 
   
   if(r==1){
     png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n, ".png")))
@@ -832,5 +787,4 @@ results <- list("tmle_contrasts"=tmle_contrasts, "tmle_contrasts_bin"=tmle_contr
 
 saveRDS(results, filename)
 
-source("./ltmle_analysis_eda.R")
 stopCluster(cl)

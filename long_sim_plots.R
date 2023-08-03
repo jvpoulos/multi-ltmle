@@ -13,7 +13,7 @@ library(gtable)
 # Define parameters
 J <- 6
 n <- 10000
-R <- 40
+R <- 100
 t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
@@ -26,7 +26,7 @@ n.rules <-as.numeric(length(treatment.rules))
 # Load results data
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230721")
+args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230727")
 output.path <- as.character(args[1])
 
 filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)
@@ -40,7 +40,7 @@ if(any( duplicated(substring(filenames, 18)))){
   filenames <- filenames[-which(duplicated(substring(filenames, 18)))]
 }
 
-omit.result <- c("result.16","result.18","result.19","result.20","result.21","result.26","result.30","result.34")
+omit.result <- c("result.3","result.5","result.7","result.20","result.26","result.27","result.30","result.31","result.42","result.44","result.64","result.78","result.82","result.83","result.89","result.91")
 R <- R-length(omit.result)
 
 results <- list() # structure is: [[filename]][[metric]]
@@ -165,7 +165,7 @@ CIW[["gcomp"]] <- lapply(filenames, function(f) results[[f]]$CIW_gcomp)
 results.df <- data.frame("abs.bias"=c(sapply(estimators, function(x) sapply(1:length(1:(t.end-1)), function(t) abs(unlist(bias[[x]][[1]][t,]))))), 
                          "coverage"=c(sapply(estimators, function(x) sapply(1:length(1:(t.end-1)), function(t) unlist(CP[[x]][[1]][t,])))), 
                          "CIW"=c(sapply(estimators, function(x) sapply(1:length(1:(t.end-1)), function(t) unlist(CIW[[x]][[1]][t,])))), 
-                         "Estimator" = rep(c("TMLE (Multi.)","TMLE (Bin.)", "G-Comp.","IPTW (Multi.)","IPTW (Bin.)"), each=length(treatment.rules)*R*length(1:(t.end-1))), 
+                         "Estimator" = rep(c(" TMLE (Multi.) "," TMLE (Bin.) ", " G-Comp. "," IPTW (Multi.) "," IPTW (Bin.) "), each=length(treatment.rules)*R*length(1:(t.end-1))), 
                          "Rule" = rep(rep(rep(treatment.rules, R), length(1:(t.end-1))), n.estimators), 
                           "t"= rep(rep(2:t.end, each=R*length(treatment.rules)), n.estimators))
 
@@ -191,7 +191,7 @@ setDT(results.df)[, as.list(summary(CIW)), by = Rule]
 setDT(results.df)[, as.list(summary(abs.bias)), by = Rule]
 
 # reshape and plot
-results.df <- as.data.frame(results.df[results.df$Estimator%in%c("TMLE (Multi.)", "TMLE (Bin.)","G-Comp.","IPTW (Multi.)"),]) 
+results.df <- as.data.frame(results.df)
 results_long <- reshape2::melt(results.df, id.vars=c("Estimator","Rule", "t"))  # convert to long format
 
 # bias 
