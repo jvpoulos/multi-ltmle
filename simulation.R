@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.04,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
   
   # libraries
   library(simcausal)
@@ -1009,12 +1009,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.04,1), ybound=c(0.0001
 #####################
 
 # define settings for simulation
-settings <- expand.grid("n"=c(12000), 
+settings <- expand.grid("n"=c(10000), 
                         treatment.rule = c("static","dynamic","stochastic")) 
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # command line arguments
-# args <- c('tmle',1,'TRUE','FALSE')
+args <- commandArgs(trailingOnly = TRUE) # command line arguments # args <- c('tmle-lstm',1,'TRUE','FALSE')
 estimator <- as.character(args[1])
 thisrun <- settings[as.numeric(args[2]),]
 use.SL <- as.logical(args[3])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
@@ -1030,11 +1029,11 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 120 # number of simulation runs
+R <- 125 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 
-gbound <- c(0.04,1) # define bounds to be used for the propensity score and censoring prob.
+gbound <- c(0.05,1) # define bounds to be used for the propensity score and censoring prob.
 
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 

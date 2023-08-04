@@ -48,7 +48,7 @@ use.simulated <- as.logical(args[5])  # When TRUE, use simulated data; if FALSE,
 
 scale.continuous <- FALSE # standardize continuous covariates
 
-gbound <- c(0.04,1) # define bounds to be used for the propensity score
+gbound <- c(0.05,1) # define bounds to be used for the propensity score
 
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
@@ -166,12 +166,12 @@ complete_combinations <- expand.grid(hcp_patient_id = unique(unique_combinations
                                      month_number = unique(unique_combinations$month_number))
 
 # Merge the complete_combinations dataframe with the original dataframe
-balanced_panel <- merge(complete_combinations, Odat, 
+Odat <- merge(complete_combinations, Odat, 
                         by = c("hcp_patient_id", "month_number"), 
                         all.x = TRUE)
 
 # Remove unwanted columns
-balanced_panel <- balanced_panel %>%
+Odat <- Odat %>%
   select(-c("death_36", "diabetes_36"))
 
 # baseline covariates
@@ -229,15 +229,24 @@ if(scale.continuous){
 
 ## treatment rule info
 
-# store observed treatment assignment
+# store observed treatment assignment 
+
+drug.levels <- c("1","2","3","4","5","6", "0") #c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERIDONE","ZIPRASIDONE", "0")
 
 obs.treatment <- lapply(0:t.end, function(t) factor(Odat$drug_group[Odat$month_number==t]))
 names(obs.treatment) <- paste0("A_",seq(0,t.end))
 
+for(t in 1:(t.end+1)){ # make NAs 0
+  obs.treatment[[t]] <- factor(obs.treatment[[t]], levels = levels(addNA(obs.treatment[[t]])), labels = drug.levels, exclude = NULL)
+}
+
+obs.treatment <- do.call("cbind", obs.treatment) # convert to df
+
 obs.ID <- lapply(0:t.end, function(t) as.numeric(rownames(Odat[Odat$month_number==t,])))
 names(obs.ID) <- paste0("ID_",seq(0,t.end))
 
-treatments <- lapply(1:(t.end+1), function(t) as.data.frame(dummify(obs.treatment[[t]]))) # t-length list
+treatments <- lapply(1:(t.end+1), function(t) as.data.frame(dummify(factor(obs.treatment[,t], levels=drug.levels))))
+names(treatments) <- paste0("A_",seq(0,t.end))  
 
 # store drug fill, acute care, and preperiod conditions for dynamic rule (same lengths as obs.treatment) 
 
@@ -259,6 +268,7 @@ names(obs.schiz) <- paste0("V_",seq(0,t.end))
 # store first censored time
 
 obs.censored <- sapply(0:t.end, function(t) ifelse(Odat$days_to_censored <= (1095/36)*t,1,0))
+obs.censored[is.na(obs.censored)] <- 0
 colnames(obs.censored) <- paste0("C_",seq(0,t.end))
 
 time.censored <- data.frame("ID"=which(rowSums(obs.censored)>0),
@@ -275,42 +285,36 @@ obs.Y <- sapply(0:t.end, function(t) ifelse((!is.na(Odat$days_to_diabetes) & Oda
 colnames(obs.Y) <- paste0("Y_",seq(0,t.end))
 
 # dummies for who followed treatment rule in observed data 
-
-drug.levels <- c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERIDONE","ZIPRASIDONE")
-
-static <- lapply(1:(t.end+1), function(t) factor(rep_len("OLANZAPINE",length.out=length(obs.treatment[[t]])), levels=drug.levels)) # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
+#c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERIDONE","ZIPRASIDONE", "0")
+static <- list() # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
 for(t in 1:(t.end+1)){
-  static[[t]] <- ifelse(!is.na(obs.bipolar[[t]]) & obs.bipolar[[t]]==1, "QUETIAPINE", ifelse(!is.na(obs.schiz[[t]]) & obs.schiz[[t]]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
+  static[[t]] <- factor(ifelse(!is.na(obs.bipolar[[t]]) & obs.bipolar[[t]]==1, "4", ifelse(!is.na(obs.schiz[[t]]) & obs.schiz[[t]]==1, "2", "1")), levels=drug.levels)
 }
 
-dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("RISPERIDONE",length.out=length(obs.treatment[[t]])), levels=drug.levels))   # Dynamic: Everyone starts with risp.
+dynamic <- lapply(1:(t.end+1), function(t) factor(rep_len("5",length.out=length(obs.treatment[,t])), levels=drug.levels))   # Dynamic: Everyone starts with risp.
 # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quetiap. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise, stay on risp.
 for(t in 2:(t.end+1)){
-  dynamic[[t]][(!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0)] <- ifelse(obs.bipolar[[t]][!is.na(obs.bipolar[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "QUETIAPINE", ifelse(obs.schiz[[t]][!is.na(obs.schiz[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "HALOPERIDOL", "ARIPIPRAZOLE"))
+  dynamic[[t]][(!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0)] <- ifelse(obs.bipolar[[t]][!is.na(obs.bipolar[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "4", ifelse(obs.schiz[[t]][!is.na(obs.schiz[[t]]) & ((!is.na(obs.fill[[t]]) & obs.fill[[t]]>0) | (!is.na(obs.test[[t]]) & obs.test[[t]]>0) | (!is.na(obs.care[[t]]) & obs.care[[t]]>0))]==1, "2", "1"))
 }
 
-stochastic <- obs.treatment # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution.
+stochastic <- list()
+stochastic[[1]] <- factor(obs.treatment[,1], levels=drug.levels) # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution.
 for(t in 2:(t.end+1)){
-  if(any(is.na(obs.treatment[[t]]))){
-    obs.treatment[[t]][is.na(obs.treatment[[t]])] <- 0
-  }
-  stochastic.probs <- as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ARIPIPRAZOLE")+0)*matrix(c(0.95,0.01,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="HALOPERIDOL")+0)*matrix(c(0.01,0.95,0.01,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="OLANZAPINE")+0)*matrix(c(0.01,0.01,0.95,0.01,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="QUETIAPINE")+0)*matrix(c(0.01,0.01,0.01,0.95,0.01,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="RISPERIDONE")+0)*matrix(c(0.01,0.01,0.01,0.01,0.95,0.01),length(obs.treatment[[t]]),J,byrow = TRUE) +
-    as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[[t]]),J)=="ZIPRASIDONE")+0)*matrix(c(0.01,0.01,0.01,0.01,0.01,0.95),length(obs.treatment[[t]]),J,byrow = TRUE)
-  if(any(is.na(stochastic.probs))){
-    stochastic.probs[is.na(stochastic.probs)]<- .Machine$double.eps # placeholder 
-  }
+  stochastic.probs <- as.matrix((matrix(obs.treatment[[t]],length(obs.treatment[,t]),J)=="1")+0)*matrix(c(0.95,0.01,0.01,0.01,0.01,0.01),length(obs.treatment[,t]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[,t],length(obs.treatment[,t]),J)=="2")+0)*matrix(c(0.01,0.95,0.01,0.01,0.01,0.01),length(obs.treatment[,t]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[,t],length(obs.treatment[,t]),J)=="3")+0)*matrix(c(0.01,0.01,0.95,0.01,0.01,0.01),length(obs.treatment[,t]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[,t],length(obs.treatment[,t]),J)=="4")+0)*matrix(c(0.01,0.01,0.01,0.95,0.01,0.01),length(obs.treatment[,t]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[,t],length(obs.treatment[,t]),J)=="5")+0)*matrix(c(0.01,0.01,0.01,0.01,0.95,0.01),length(obs.treatment[,t]),J,byrow = TRUE) +
+    as.matrix((matrix(obs.treatment[,t],length(obs.treatment[,t]),J)=="6")+0)*matrix(c(0.01,0.01,0.01,0.01,0.01,0.95),length(obs.treatment[,t]),J,byrow = TRUE)
+  stochastic.probs[stochastic.probs==0]<- .Machine$double.eps # placeholder 
   stochastic[[t]] <- Multinom(1, stochastic.probs)
   levels(stochastic[[t]]) <- drug.levels
 }
 
 obs.treatment.rule <- list()
-obs.treatment.rule[["static"]] <- lapply(1:(t.end+1), function(t) (static[[t]] == obs.treatment[[t]])+0 )
-obs.treatment.rule[["dynamic"]] <- lapply(1:(t.end+1), function(t) (dynamic[[t]] == obs.treatment[[t]])+0 )
-obs.treatment.rule[["stochastic"]] <- lapply(1:(t.end+1), function(t) (stochastic[[t]] == obs.treatment[[t]])+0 )
+obs.treatment.rule[["static"]] <- lapply(1:(t.end+1), function(t) (static[[t]] == obs.treatment[,t])+0 )
+obs.treatment.rule[["dynamic"]] <- lapply(1:(t.end+1), function(t) (dynamic[[t]] == obs.treatment[,t])+0 )
+obs.treatment.rule[["stochastic"]] <- lapply(1:(t.end+1), function(t) (stochastic[[t]] == obs.treatment[,t])+0 )
 
 # re-arrange so it is in same structure as QAW list
 obs.rules <- lapply(1:(t.end+1), function(t) sapply(obs.treatment.rule, "[", t))
@@ -374,24 +378,24 @@ prob_share_bin <- list()
 Chat_tmle_bin <- list()
 
 if(estimator=="tmle"){ 
-  
-  tmle_dat <- data.frame("month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
 
-  tmle_dat$L1 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  tmle_dat <- data.frame("ID"=Odat$hcp_patient_id,"month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
 
-  tmle_dat$L2 <- unlist(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  tmle_dat$L1 <- c(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
 
-  tmle_dat$L3 <- unlist(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  tmle_dat$L2 <- c(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+
+  tmle_dat$L3 <- c(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
 
   tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
 
-  tmle_dat$Y <- unlist(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
+  tmle_dat$Y <- c(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
 
-  tmle_dat$A <- as.numeric(unlist(sapply(0:t.end, function(t) obs.treatment[[paste0("A_", t)]])))
+  tmle_dat$A <- c(sapply(0:t.end, function(t) obs.treatment[,paste0("A_", t)]))
+  tmle_dat$A <- factor(tmle_dat$A)
+  levels(tmle_dat$A) <- drug.levels
 
-  tmle_dat$ID <- unlist(sapply(0:t.end, function(t) obs.ID[[paste0("ID_", t)]]))
-
-  tmle_dat$C <- unlist(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
+  tmle_dat$C <- c(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
   
   tmle_dat <- 
     tmle_dat %>%
@@ -419,7 +423,7 @@ if(estimator=="tmle"){
     tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
   }
   
-  treat.names <-  c("A1","A2","A3","A4","A5","A6","A1.lag","A2.lag","A3.lag","A4.lag","A5.lag","A6.lag","A1.lag2","A2.lag2","A3.lag2","A4.lag2","A5.lag2","A6.lag2","A1.lag3","A2.lag3","A3.lag3","A4.lag3","A5.lag3","A6.lag3")
+  treat.names <-  c("A1","A2","A3","A4","A5","A6","A0","A1.lag","A2.lag","A3.lag","A4.lag","A5.lag","A6.lag","A0.lag","A1.lag2","A2.lag2","A3.lag2","A4.lag2","A5.lag2","A6.lag2","A0.lag2","A1.lag3","A2.lag3","A3.lag3","A4.lag3","A5.lag3","A6.lag3","A0.lag3")
   
   colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[(length(colnames(tmle_dat))-length(treat.names)+1):length(colnames(tmle_dat))]] <- treat.names
   

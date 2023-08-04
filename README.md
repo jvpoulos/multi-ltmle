@@ -24,12 +24,23 @@ Prerequsites
 ------
 
 * **R** (tested on 4.0.1)
-	+ Required **R** packages located in ***package_list.R*** 
++ Required **R** packages located in ***package_list.R*** 
 
 * **python3** (tested on 3.11.2) and **TensorFlow** (tested on 2.12.1) for use of 'tmle-lstm' as an estimator
-	* see documentation: https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/ and https://www.tensorflow.org/install/pip#linux
-		+ start R in virtual environment where python3 and Tensorflow are installed
-	+ *keras* flag in ***package_list.R*** must be set to TRUE
++ instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
+```
+# create virtual environment
+python3 -m venv env
+source env/bin/activate
+
+# install Tensorflow
+pip install --upgrade pip
+pip install tensorflow==2.12.*
+
+# start R or rstudio in virtual environment where python3 and Tensorflow are installed
+rstudio
+```
++ *keras* flag in ***package_list.R*** must be set to TRUE
 
 Contents
 ------
@@ -62,15 +73,15 @@ Contents
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
-	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(0.04,1)  and c(0.0001,0.9999), resp.
+	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(0.05,1)  and c(0.0001,0.9999), resp.
 
 	+ *J*: number of treatments; must be J=6.
 
-	+ *n*: sample size. Defaults to 12000.
+	+ *n*: sample size. Defaults to 10000.
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 120. 
+	+ *R*: number of simulation runs. Default is 125. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 
