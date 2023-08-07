@@ -26,10 +26,12 @@ Prerequsites
 * **R** (tested on 4.0.1)
 + Required **R** packages located in ***package_list.R*** 
 
-* **python3** (tested on 3.11.2) and **TensorFlow** (tested on 2.12.1) for use of 'tmle-lstm' as an estimator
+* For use of 'tmle-lstm' as an estimator: **python3** (tested on 3.10.11),**TensorFlow** (tested on 2.12.1), and  **R** (tested on 4.3.1)
++ gcc 9.2.0 and cuda 11.2 used for GPU-enabled TensorFlow
 + instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
 ```
-# create virtual environment
+# create virtual environment within directory
+cd multi-ltmle
 python3 -m venv env
 source env/bin/activate
 
@@ -81,7 +83,7 @@ Contents
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 125. 
+	+ *R*: number of simulation runs. Default is 120. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 
@@ -114,4 +116,17 @@ Instructions
 
 5. For ITT analysis on simulated data, run: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4] [arg5]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights (e.g., '20230329/') or 'none', `[arg4]` is a logical flag if super learner estimation is to be used, and , `[arg5]` is a logical flag if simulated data is to be used; e.g, 
 
-`Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'`  
+`Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'` 
+
+Simulation
+------
+
+Example output images are saved in `outputs/`. The following are from a single simulated longitudinal dataset for n=10k people. We estimate the counterfactual diabetes risk for those who continued to follow each of 3 regimes (static, dynamic, stochastic) in each of 36 time periods, based on the observed outcomes and covariates. 
+
+![demo](./ex_outputs/treatment_adherence_12000.png)
+
+![demo](./ex_outputs/survival_plot_observed_12000.png)
+
+![demo](./ex_outputs/survival_plot_truth_12000.png)
+
+![demo](./ex_outputs/survival_plot_tmle_estimates_12000.png)

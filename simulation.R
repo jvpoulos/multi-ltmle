@@ -1029,7 +1029,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 125 # number of simulation runs
+R <- 120 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -1099,7 +1099,6 @@ print(paste0('simulation setting: ', "estimator = ", estimator, ", treatment.rul
 sim.results <- foreach(r = 1:R, .combine='cbind', .verbose = TRUE, .errorhandling="pass") %dopar% {
   simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
 }
-sim.results
 
 saveRDS(sim.results, filename)
 
