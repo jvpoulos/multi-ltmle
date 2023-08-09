@@ -2,7 +2,7 @@
 # Install packages   #
 ######################
 
-packages <- c("devtools","ggplot2","nnet","tmle","MASS","tidyverse","data.table","SuperLearner","Rsolnp","reshape2","origami","tictoc","weights","grid","car","latex2exp","progressr","future","ltmle","gtools")
+packages <- c("devtools","ggplot2","nnet","tmle","MASS","tidyverse","data.table","SuperLearner","Rsolnp","reshape2","origami","tictoc","weights","grid","car","latex2exp","progressr","future","ltmle","gtools","readr")
 
 super.learner <- TRUE
 dependencies <- FALSE # data.table, stringi, HMisc dependencies might be needed for SuperLearner libraries
@@ -21,7 +21,8 @@ if(dependencies){
 
 # development packages
 devtools::install_github("nt-williams/lmtp@sl3")
-remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
+remotes::install_github("tlverse/sl3")
+#remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
 
 devtools::install_github('osofr/gridisl', build_vignettes = FALSE)
 devtools::install_github('osofr/stremr')
@@ -32,13 +33,16 @@ doMPI <- FALSE
 if(doMPI){
   install.packages("Rmpi", repos = "http://cran.us.r-project.org")
   install.packages("doMPI", dependencies=TRUE, repos = "http://cran.us.r-project.org")
+}else{
+  install.packages("parallel", repos = "http://cran.us.r-project.org")
+  install.packages("doParallel", repos = "http://cran.us.r-project.org")
+  install.packages("foreach", repos = "http://cran.us.r-project.org")
 }
 
 # keras/TensorFlow
 keras <- FALSE
 if(keras){
   install.packages("tensorflow", repos = "http://cran.us.r-project.org")
-
-  library(tensorflow)
-  install_tensorflow(envname = ".venv", version = "2.12.1")
+  install.packages("keras", repos = "http://cran.us.r-project.org")
+  install.packages("reticulate", repos = "http://cran.us.r-project.org")
 }

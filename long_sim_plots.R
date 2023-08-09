@@ -13,7 +13,7 @@ library(gtable)
 # Define parameters
 J <- 6
 n <- 10000
-R <- 125
+R <- 120
 t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
@@ -26,7 +26,7 @@ n.rules <-as.numeric(length(treatment.rules))
 # Load results data
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230805")
+args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230807")
 output.path <- as.character(args[1])
 
 filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)
@@ -40,7 +40,7 @@ if(any( duplicated(substring(filenames, 18)))){
   filenames <- filenames[-which(duplicated(substring(filenames, 18)))]
 }
 
-omit.result <- c("result.3","result.5","result.7","result.20","result.26","result.27","result.30","result.31","result.42","result.44","result.64","result.78","result.82","result.83","result.89","result.91")
+omit.result <- c("result.3","result.17","result.26","result.27","result.30","result.33","result.40","result.41","result.42","result.43","result.46","result.49","result.56","result.70","result.82","result.84","result.108","result.110","result.113")
 R <- R-length(omit.result)
 
 results <- list() # structure is: [[filename]][[metric]]
@@ -190,6 +190,12 @@ setDT(results.df)[, as.list(summary(CP)), by = Rule]
 setDT(results.df)[, as.list(summary(CIW)), by = Rule]
 setDT(results.df)[, as.list(summary(abs.bias)), by = Rule]
 
+# get summary stats by estimator and rule
+
+setDT(results.df)[, as.list(summary(CP)), by = .(Estimator,Rule)] 
+setDT(results.df)[, as.list(summary(CIW)), by = .(Estimator,Rule)]
+setDT(results.df)[, as.list(summary(abs.bias)), by = .(Estimator,Rule)]
+
 # reshape and plot
 results.df <- as.data.frame(results.df)
 results_long <- reshape2::melt(results.df, id.vars=c("Estimator","Rule", "t"))  # convert to long format
@@ -199,7 +205,7 @@ sim.results.bias <- ggplot(data=results_long[results_long$variable=="abs.bias" &
                            aes(x=factor(t), y=value, fill=forcats::fct_rev(Estimator)))  + geom_boxplot(outlier.alpha = 0.3,outlier.size = 1, outlier.stroke = 0.1, lwd=0.25) +
   facet_grid(Rule ~  ., scales = "free")  +  
   xlab("Time") + ylab("Abs. diff. btwn. true and estimated counterfactual outcomes") +  ggtitle(paste0("Absolute bias")) +
-  scale_fill_discrete(name = "Estimator:") +
+  scale_fill_discrete(name = "Estimator:  ") +
   theme(legend.position="bottom") +   theme(plot.title = element_text(hjust = 0.5, family="serif", size=16)) +
   theme(axis.title=element_text(family="serif", size=14)) +
   theme(axis.text.y=element_text(family="serif", size=12)) +
@@ -248,7 +254,7 @@ sim.results.coverage <- ggplot(data=results_long[results_long$variable=="CP",],
                            aes(x=factor(t), y=value, colour=forcats::fct_rev(Estimator), group=forcats::fct_rev(Estimator)))  +   geom_line()   +
   facet_grid(Rule ~  ., scales = "free")  +  
   xlab("Time") + ylab("Share of estimated CIs containing true target quantity") + ggtitle(paste0("Coverage probability")) + 
-  scale_colour_discrete(name = "Estimator:") +
+  scale_colour_discrete(name = "Estimator:  ") +
   geom_hline(yintercept = 0.95, linetype="dotted")+
   theme(legend.position="bottom") +   theme(plot.title = element_text(hjust = 0.5, family="serif", size=16)) +
   theme(axis.title=element_text(family="serif", size=14)) +
@@ -290,7 +296,7 @@ sim.results.CI.width <- ggplot(data=results_long[results_long$variable=="CIW",],
                                aes(x=factor(t), y=value, fill=forcats::fct_rev(Estimator)))  + geom_boxplot(outlier.alpha = 0.3,outlier.size = 1, outlier.stroke = 0.1, lwd=0.25) +
   facet_grid(Rule ~  ., scales = "free")  +  
   xlab("Time") + ylab("Difference btwn. upper & lower bounds of estimated CIs") + ggtitle(paste0("Confidence interval width")) +
-  scale_fill_discrete(name = "Estimator:") +
+  scale_fill_discrete(name = "Estimator:  ") +
   theme(legend.position="bottom") +   theme(plot.title = element_text(hjust = 0.5, family="serif", size=16)) +
   theme(axis.title=element_text(family="serif", size=14)) +
   theme(axis.text.y=element_text(family="serif", size=12)) +

@@ -10,7 +10,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # libraries
   library(simcausal)
-  library(dplyr)
   library(purrr)
   library(origami)
   library(sl3)
@@ -22,33 +21,41 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   library(MASS)
   library(progressr)
   library(data.table)
-  library(weights)
   library(gtools)
+  library(dplyr)
+  library(readr)
   
   if(estimator=='tmle-lstm'){
+    library(reticulate)
+    use_python("~/multi-ltmle/env/bin/python")
+    
     library(tensorflow)
     library(keras)
     print(is_keras_available())
     print(tf_version())
+  
+    source('./src/lstm.R')
   }
   
-  if(estimator%in%c("tmle", "tmle-lstm", "lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
-    source('./src/misc_fns.R')
+  if(estimator%in%c("tmle","tmle-lstm")){
     source('./src/tmle_fns.R')
-    source('./src/SL3_fns.R', local =TRUE)
   }
   
   if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
     library(lmtp)
+    source('./src/lmtp_fns.R')
+    
   }
   
   if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
     library(ltmle)
     library(SuperLearner)
     source('./src/SL_fns.R')
-    source('./src/misc_fns.R')
     source('./src/ltmle_fns.R')
   }
+  
+  source('./src/SL3_fns.R', local =TRUE)
+  source('./src/misc_fns.R')
   
   if(J!=6){
     stop("J must be 6")
@@ -302,7 +309,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(scale.continuous){
         tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
       }
-      tmle_dat[is.na(tmle_dat)] <- -10 # set NAs to -10 (add masking layer to LSTM)
+      tmle_dat[is.na(tmle_dat)] <- -10 # set NAs to -10
       
       tmle_dat$A <- factor(tmle_dat$A)
       tmle_dat$V1 <- factor(tmle_dat$V1)
@@ -319,12 +326,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # multinomial
     
-    initial_model_for_A_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                           learners = if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
-                                           metalearner = metalearner_A,
-                                           keep_extra=FALSE)
-    
     if(estimator=="tmle"){
+      
+      initial_model_for_A_sl <- make_learner(Lrnr_sl, # cross-validates base models
+                                             learners = if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
+                                             metalearner = metalearner_A,
+                                             keep_extra=FALSE)
+      
       initial_model_for_A <- lapply(0:t.end, function(t){ # going forward in time
         
         tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("Y","C")]
@@ -349,25 +357,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                     "data"=tmle_dat_sub)) 
       })
     } else if(estimator=="tmle-lstm"){ 
-      folds <- origami::make_folds(tmle_dat[-(grep("Y",colnames(tmle_dat)))], fold_fun=folds_rolling_window, window_size = ceiling(t.end*0.5), validation_size = ceiling(t.end*0.1), gap = 0, batch = 1) # define cross-validation appropriate for dependent data
-      
-      options('datatable.alloccol' = 270003)
-      initial_model_for_A_task <- make_sl3_Task(tmle_dat[-(grep("Y",colnames(tmle_dat)))],
-                                                covariates = tmle_covars_A,
-                                                outcome = grep("A",colnames(tmle_dat),value = TRUE), 
-                                                outcome_type="categorical", 
-                                                folds = folds) 
-
-      
-      # train
-      initial_model_for_A_sl_fit <- initial_model_for_A_sl$train(initial_model_for_A_task)
-      
-      initial_model_for_A <- list("preds"=initial_model_for_A_sl_fit$predict(initial_model_for_A_task),
-                                  "folds"= folds,
-                                  "task"=initial_model_for_A_task,
-                                  "fit"=initial_model_for_A_sl_fit,
+      initial_model_for_A <- list("preds"= lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A",colnames(tmle_dat),value = TRUE), covariates = tmle_covars_A, t_end=t.end, out_activation="softmax", loss_fn = "categorical_crossentropy", output_dir),
                                   "data"=tmle_dat)
-    }
+    } # NEED TO FORMAT LSTM PREDS
     
     g_preds <- lapply(1:length(initial_model_for_A), function(i) data.frame(matrix(unlist(lapply(initial_model_for_A[[i]]$preds, unlist)), nrow=length(lapply(initial_model_for_A[[i]]$preds, unlist)), byrow=TRUE)) ) # t length list of estimated propensity scores 
     g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
@@ -386,12 +378,12 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # binomial
     
-    initial_model_for_A_sl_bin <- make_learner(Lrnr_sl, # cross-validates base models
-                                               learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
-                                               metalearner = metalearner_A_bin,
-                                               keep_extra=FALSE)
-    
     if(estimator=="tmle"){
+      
+      initial_model_for_A_sl_bin <- make_learner(Lrnr_sl, # cross-validates base models
+                                                 learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
+                                                 metalearner = metalearner_A_bin,
+                                                 keep_extra=FALSE)
       
       initial_model_for_A_bin <- lapply(0:t.end, function(t){
         
@@ -418,19 +410,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                     "data"=tmle_dat_sub)) 
       })
     } else if(estimator=="tmle-lstm"){ 
-      initial_model_for_A_task_bin <- lapply(1:J, function(j) make_sl3_Task(cbind("A"=dummify(tmle_dat$A)[,j],tmle_dat[tmle_covars_A]), 
-                                                                            covariates = tmle_covars_A, 
-                                                                            outcome = "A",
-                                                                            outcome_type="binomial",
-                                                                            folds = folds)) 
-      # train
-      
-      initial_model_for_A_sl_fit_bin <- lapply(1:J, function(j) initial_model_for_A_sl_bin$train(initial_model_for_A_task_bin[[j]]))
-      
-      initial_model_for_A_sl_bin <- list("preds"=sapply(1:J, function(j) initial_model_for_A_sl_fit_bin[[j]]$predict(initial_model_for_A_task_bin[[j]])), 
-                                         "folds"= folds,
-                                         "task"=initial_model_for_A_task_bin,
-                                         "fit"=initial_model_for_A_sl_fit_bin,
+      initial_model_for_A_sl_bin <- list("preds"=lapply(1:J, function(j) lstm(data=cbind("A"=dummify(tmle_dat$A)[,j],tmle_dat[tmle_covars_A]), outcome= "A", covariates=tmle_covars_A, t.end=t.end, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)),
                                          "data"=tmle_dat)
     }
     
@@ -451,12 +431,12 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     ##  fit initial censoring model
     ## implicitly fit on those that are uncensored until t-1
     
-    initial_model_for_C_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                           learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
-                                           metalearner = metalearner_A_bin,
-                                           keep_extra=FALSE)
-    
     if(estimator=="tmle"){
+      
+      initial_model_for_C_sl <- make_learner(Lrnr_sl, # cross-validates base models
+                                             learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
+                                             metalearner = metalearner_A_bin,
+                                             keep_extra=FALSE)
       
       initial_model_for_C <- lapply(0:t.end, function(t){
         
@@ -483,21 +463,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       })
     }else if(estimator=="tmle-lstm"){
       
-      # define task and candidate learners
-      initial_model_for_C_task <- make_sl3_Task(data=tmle_dat,
-                                                covariates = tmle_covars_C, 
-                                                outcome = "C",
-                                                outcome_type="binomial", 
-                                                folds = folds) 
-      
-      # train
-      
-      initial_model_for_C_sl_fit <- initial_model_for_C_sl$train(initial_model_for_C_task)
-      
-      initial_model_for_C <- list("preds"=initial_model_for_C_sl_fit$predict(initial_model_for_C_task),
-                                  "folds"= folds,
-                                  "task"=initial_model_for_C_task,
-                                  "fit"=initial_model_for_C_sl_fit,
+      initial_model_for_C <- list("preds"=lstm(data=tmle_dat[c(grep("C",colnames(tmle_dat),value = TRUE),tmle_covars_C)], outcome=grep("C",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_C, t.end=t.end, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir),
                                   "data"=tmle_dat)
     }
     
@@ -518,12 +484,12 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     ## model is fit on all uncensored and alive (until t-1)
     ## the outcome is the observed Y for t=T and updated Y if t<T
     
-    initial_model_for_Y_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                           learners = if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
-                                           metalearner = metalearner_Y,
-                                           keep_extra=FALSE)
-    
     if(estimator=="tmle"){
+      
+      initial_model_for_Y_sl <- make_learner(Lrnr_sl, # cross-validates base models
+                                             learners = if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
+                                             metalearner = metalearner_Y,
+                                             keep_extra=FALSE)
       
       initial_model_for_Y_sl_cont <- make_learner(Lrnr_sl, # cross-validates base models
                                                   learners = if(use.SL) learner_stack_Y_cont else make_learner(Lrnr_glm),
@@ -558,20 +524,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     } else if(estimator=='tmle-lstm'){
       tmle_dat_sub <- tmle_dat[!is.na(tmle_dat$Y),] # drop rows with missing Y
       
-      # define task and candidate learners
-      initial_model_for_Y_task <- make_sl3_Task(data=tmle_dat_sub,
-                                                covariates = tmle_covars_Y, 
-                                                outcome = "Y",
-                                                outcome_type="binomial", 
-                                                folds = folds) 
-      # train
-      initial_model_for_Y_sl_fit <- initial_model_for_Y_sl$train(initial_model_for_Y_task)
-      
       # predict on everyone
-      Y_preds <- initial_model_for_Y_sl_fit$predict(sl3_Task$new(data=tmle_dat, covariates = tmle_covars_Y, outcome="Y", outcome_type="binomial"))
+      Y_preds <- lstm(data=tmle_d[c(grep("Y",colnames(tmle_dat),value = TRUE),tmle_covars_Y)], outcome=grep("Y",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_Y, t.end=t.end, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)
       
       initial_model_for_Y <- list("preds"=boundProbs(Y_preds,ybound),
-                                  "fit"=initial_model_for_Y_sl_fit,
                                   "data"=tmle_dat) # evaluation data (fit on everyone)
     }
     
@@ -621,7 +577,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                   ylab = "Estimated share of patients without diabetes diagnosis", 
                   main = "IPTW (ours, binomial) estimated counterfactuals",
                   xlab = "Month",
-                  ylim = c(0.5,1))
+                  ylim = c(0.5,1),
+                  legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+      axis(1, at = seq(1, t.end, by = 5))
       dev.off()
     }
     

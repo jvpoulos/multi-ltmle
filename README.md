@@ -23,11 +23,10 @@ Please cite the paper if you use this repo:
 Prerequsites
 ------
 
-* **R** (tested on 4.0.1)
+* **R** (tested on 4.0.1 using a 6.2.0 GCC compiler)
 + Required **R** packages located in ***package_list.R*** 
 
-* For use of 'tmle-lstm' as an estimator: **python3** (tested on 3.10.11),**TensorFlow** (tested on 2.12.1), and  **R** (tested on 4.3.1)
-+ gcc 9.2.0 and cuda 11.2 used for GPU-enabled TensorFlow
+* For use of 'tmle-lstm' as an estimator:  **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using GCC 9.2.0 and cuda 11.2 for GPU computation
 + instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
 ```
 # create virtual environment within directory
@@ -35,12 +34,16 @@ cd multi-ltmle
 python3 -m venv env
 source env/bin/activate
 
-# install Tensorflow
+# install Tensorflow and TensorRT
 pip install --upgrade pip
-pip install tensorflow==2.12.*
+pip install tensorflow-gpu
+pip install tensorrt
 
-# start R or rstudio in virtual environment where python3 and Tensorflow are installed
-rstudio
+python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))" # verify the CPU setup
+python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))" # verify the GPU setup
+
+# start R in virtual environment where python3 and Tensorflow are installed
+R
 ```
 + *keras* flag in ***package_list.R*** must be set to TRUE
 
@@ -68,6 +71,10 @@ Contents
 * ***src/tmle_calculation_long.R***: function for generating counterfactual means under each treatment rule in longitudinal data. Inputs initial Y estimates, bounded cumulative treatment/censoring probabilities, observed treatment, and observed outcomes. Outputs treatment-rule specific means.
 
 * ***src/tmleContrastLong.R***: function for calculating contrasts across all treatment rules in longitudinal data. Inputs treatment-rule-specific means, the contrast matrix, and logical flags. Outputs ATE and variance estimates. 
+
+* ***src/lstm.R***: function for calling Python code for estimating with LSTMs within R; used when estimator ='tmle-lstm'. 
+
+* ***src/train_lstm_sim.py***: Python code for training LSTMs for simulations; used when estimator ='tmle-lstm'.
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
@@ -123,10 +130,10 @@ Simulation
 
 Example output images are saved in `outputs/`. The following are from a single simulated longitudinal dataset for n=10k people. We estimate the counterfactual diabetes risk for those who continued to follow each of 3 regimes (static, dynamic, stochastic) in each of 36 time periods, based on the observed outcomes and covariates. 
 
-![demo](./ex_outputs/treatment_adherence_12000.png)
+![demo](./ex_outputs/treatment_adherence_10000.png)
 
-![demo](./ex_outputs/survival_plot_observed_12000.png)
+![demo](./ex_outputs/survival_plot_observed_10000.png)
 
-![demo](./ex_outputs/survival_plot_truth_12000.png)
+![demo](./ex_outputs/survival_plot_truth_10000.png)
 
-![demo](./ex_outputs/survival_plot_tmle_estimates_12000.png)
+![demo](./ex_outputs/survival_plot_tmle_estimates_10000.png)
