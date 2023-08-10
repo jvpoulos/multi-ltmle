@@ -45,7 +45,8 @@ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'
 # start R in virtual environment where python3 and Tensorflow are installed
 R
 ```
-+ *keras* flag in ***package_list.R*** must be set to TRUE
+* The following Python packages are required: numpy (tested on 1.19.5) and pandas (tested on 1.1.5)
+* Additional **R** packages are required by setting the *keras* flag in ***package_list.R*** to TRUE
 
 Contents
 ------

@@ -15,8 +15,7 @@ from keras import backend as K
 from keras.models import Model
 from keras.layers import LSTM, Input, Dense
 from keras.callbacks import CSVLogger, EarlyStopping, TerminateOnNaN
-from keras import regularizers
-from keras.optimizers import Adam
+from tensorflow.keras.optimizers import Adam
 
 # Select gpu
 import os
@@ -27,7 +26,7 @@ if gpu < 3:
     from tensorflow.python.client import device_lib
     print(device_lib.list_local_devices())
 
-def create_model(n_pre, nb_features, output_dim, lr, penalty, dr, n_hidden, hidden_activation, out_activation, loss_fn):
+def create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn):
     """ 
         creates, compiles and returns a RNN model 
         @param nb_features: the number of features in the model
@@ -36,13 +35,17 @@ def create_model(n_pre, nb_features, output_dim, lr, penalty, dr, n_hidden, hidd
 
     inputs = Input(shape=(n_pre, nb_features), name="Inputs")
     lstm_1 = LSTM(int(n_hidden), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=False, name="LSTM_1")(inputs) 
-    output= Dense(output_dim, activation=out_activation, kernel_regularizer=regularizers.l2(penalty), name='Dense')(lstm_1)
+    output= Dense(output_dim, activation=out_activation, name='Dense')(lstm_1)
 
     model = Model(inputs, output) 
 
     # Compile
-    model.compile(optimizer=Adam(lr=lr), loss=loss_fn)
-
+    if loss_fn=="categorical_crossentropy":
+        model.compile(optimizer=Adam(learning_rate=lr), loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+              metrics=['accuracy'])
+    else:
+        model.compile(optimizer=Adam(learning_rate=lr), loss=loss_fn)
+    
     return model
 
 def train_model(model, dataX, dataY, epoch_count, batches):
@@ -67,13 +70,14 @@ def train_model(model, dataX, dataY, epoch_count, batches):
 def test_model():
 
     n_post = int(1)
-    n_pre = int(n_pre)-1
+    n_pre = int(window_size)
     seq_len = int(t_end)
 
     x = np.array(pd.read_csv("input_data.csv"))
     y = np.array(pd.read_csv("output_data.csv"))
 
     print('raw x shape', x.shape)   
+    print('raw y shape', y.shape) 
 
     dX, dY = [], []
     for i in range(seq_len-n_pre-n_post):
@@ -91,7 +95,7 @@ def test_model():
   
     # create and fit the LSTM network
     print('creating model...')
-    model = create_model(n_pre, nb_features, output_dim, lr, penalty, dr, n_hidden, hidden_activation, out_activation, loss_fn)
+    model = create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn)
 
     train_model(model, dataX, dataY, int(epochs), int(nb_batches))
 

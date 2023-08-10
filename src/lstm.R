@@ -2,7 +2,7 @@
 # LSTM for Simulations            #
 ###################################
 
-lstm <- function(data, outcome, covariates, t_end, out_activation, loss_fn, output_dir){
+lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir){
   # data: data.frame in T x N format
   # output_dir: character string output directory
   # out_activation: Activation function to use for the output step
@@ -12,8 +12,8 @@ lstm <- function(data, outcome, covariates, t_end, out_activation, loss_fn, outp
   input_data <- data.matrix(data[covariates]) # T x N
   output_data <- data.matrix(data[outcome]) # T x N
   
-  write.csv(data,paste0("input_data.csv"),row.names = FALSE)
-  write.csv(data,paste0("output_data.csv"),row.names = FALSE)
+  write.csv(input_data,paste0("input_data.csv"),row.names = FALSE)
+  write.csv(output_data,paste0("output_data.csv"),row.names = FALSE)
 
   py <- import_main()
   py$output_dir <- output_dir
@@ -25,19 +25,22 @@ lstm <- function(data, outcome, covariates, t_end, out_activation, loss_fn, outp
   py$loss_fn <- loss_fn
 
   py$lr <- 0.001
-  py$dr <- 0.5
-  py$penalty <- 0.01
-  py$nb_batches <- 32
+  py$dr <- 0
+  py$nb_batches <- 8
   py$patience <- 25
-  py$t_end <- t_end
-  py$n_pre <- ceiling(t.end/2)
+  py$t_end <- (t_end+1)
+  py$window_size <- window_size
   
   source_python("src/train_lstm_sim.py")
   
-  lstm.pred <- as.matrix(read_csv(paste0(output_dir, "lstm_preds.csv"), col_names = FALSE))
-  colnames(lstm.pred) <- colnames(output_data)
+  print("Reading predictions")
+  lstm.pred <- as.matrix(as.data.frame(read_csv(paste0(output_dir, "lstm_preds.csv"))), col_names = colnames(output_data))
+  
+  print("Renaming predictions")
+  lstm.pred <- rbind(output_data[1:window_size,], lstm.pred)
+  #rownames(lstm.pred) <- 0:t.end
   
   lstm.pred <-lstm.pred[,match(colnames(output_data), colnames(lstm.pred))] # same order
   
-  return(t(lstm.pred))  # N x T
+  return(lstm.pred)
 }
