@@ -12,8 +12,8 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   input_data <- data.matrix(data[covariates]) # T x N
   output_data <- data.matrix(data[outcome]) # T x N
   
-  write.csv(input_data,paste0("input_data.csv"),row.names = FALSE)
-  write.csv(output_data,paste0("output_data.csv"),row.names = FALSE)
+  write.csv(input_data,paste0(output_dir,"input_data.csv"),row.names = FALSE)
+  write.csv(output_data,paste0(output_dir,"output_data.csv"),row.names = FALSE)
 
   py <- import_main()
   py$output_dir <- output_dir
@@ -25,7 +25,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$loss_fn <- loss_fn
 
   py$lr <- 0.001
-  py$dr <- 0
+  py$dr <- 0.5
   py$nb_batches <- 8
   py$patience <- 25
   py$t_end <- (t_end+1)
@@ -38,7 +38,6 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   
   print("Renaming predictions")
   lstm.pred <- rbind(output_data[1:window_size,], lstm.pred)
-  #rownames(lstm.pred) <- 0:t.end
   
   lstm.pred <-lstm.pred[,match(colnames(output_data), colnames(lstm.pred))] # same order
   

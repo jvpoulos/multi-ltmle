@@ -57,7 +57,7 @@ D <- D.base +
   node("L1",                                      # er_mhsa (count)
        t = 1:t.end,
        distr = "NegBinom",
-       mu= plogis(.1 *L1[t-1]**2 + .1 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -3, ifelse(A[(t-1)]==5, -5, 0)))) + 
+       mu= plogis(.1 *L1[t-1]**2 + .1 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -3, ifelse(A[(t-1)]==5, -5, -1)))) + 
   node("L2",                                      # ever_mt_gluc_or_lip (binary)
        t = 1:t.end,
        distr = "rbern",
@@ -69,7 +69,7 @@ D <- D.base +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
        t = 1:t.end, 
        distr = "Multinom",
-       probs = StochasticFun(A[(t-1)], d=c(ifelse(V2[0]==1 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.2, 0), ifelse(V2[0]==3 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.2, 0), 0, ifelse(V2[0]==2 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.2, 0), ifelse(A[(t-1)]==5 & (L1[t]>0 | L2[t]>0 | L3[t]>0), -0.94, 0), 0))) +
+       probs = StochasticFun(A[(t-1)], d=c(ifelse(V2[0]==1 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.15, 0), ifelse(V2[0]==3 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.15, 0), 0, ifelse(V2[0]==2 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.15, 0), ifelse(A[(t-1)]==5 & (L1[t]>0 | L2[t]>0 | L3[t]>0), -0.94, 0), 0))) +
   node("C",                                      # monthly_censored_indicator
        t = 1:t.end,
        distr = "rbern",

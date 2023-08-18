@@ -3,8 +3,8 @@
 #SBATCH -p mpi
 #SBATCH -n 110
 #SBATCH --ntasks-per-node=10
-#SBATCH --mem-per-cpu=3GB
-#SBATCH -t 3-00:00:00
+#SBATCH --mem-per-cpu=5GB
+#SBATCH -t 5-00:00:00
 #SBATCH --array=1
 
 ulimit -l unlimited

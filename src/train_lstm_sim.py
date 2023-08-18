@@ -34,17 +34,14 @@ def create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activa
     # Define model parameters
 
     inputs = Input(shape=(n_pre, nb_features), name="Inputs")
-    lstm_1 = LSTM(int(n_hidden), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=False, name="LSTM_1")(inputs) 
-    output= Dense(output_dim, activation=out_activation, name='Dense')(lstm_1)
+    lstm_1 = LSTM(int(n_hidden), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1")(inputs) 
+    lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=False, name="LSTM_2")(lstm_1) 
+    output= Dense(output_dim, activation=out_activation, name='Dense')(lstm_2)
 
     model = Model(inputs, output) 
 
     # Compile
-    if loss_fn=="categorical_crossentropy":
-        model.compile(optimizer=Adam(learning_rate=lr), loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-              metrics=['accuracy'])
-    else:
-        model.compile(optimizer=Adam(learning_rate=lr), loss=loss_fn)
+    model.compile(optimizer=Adam(learning_rate=lr), loss=loss_fn)
     
     return model
 
@@ -73,8 +70,8 @@ def test_model():
     n_pre = int(window_size)
     seq_len = int(t_end)
 
-    x = np.array(pd.read_csv("input_data.csv"))
-    y = np.array(pd.read_csv("output_data.csv"))
+    x = np.array(pd.read_csv("{}input_data.csv".format(output_dir)))
+    y = np.array(pd.read_csv("{}output_data.csv".format(output_dir)))
 
     print('raw x shape', x.shape)   
     print('raw y shape', y.shape) 

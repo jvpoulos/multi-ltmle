@@ -81,7 +81,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     warning("real values of certain time-varying covariates needed to characterize treatment rules")
   }
   
-  if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp","tmle-lstm")){
+  if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp")){
     warning("estimator not functional")
   }
   
@@ -320,13 +320,14 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       tmle_covars_A <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("V",colnames(tmle_dat),value = TRUE))
       tmle_covars_C <- tmle_covars_A
       
-      # set NAs to -9 (skip with masking layer)
+      # set NAs to -9 (except treatment NA=0)
       tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)])] <- -9
       tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)])] <- -9
       tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)])] <- -9
       tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)])] <- -9
       
-      tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),grep("V1",colnames(tmle_dat),value = TRUE),grep("V2",colnames(tmle_dat),value = TRUE))] <- lapply(tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),grep("V1",colnames(tmle_dat),value = TRUE),grep("V2",colnames(tmle_dat),value = TRUE))], function(x){`levels<-`(addNA(x), c(levels(x), -9))})
+      tmle_dat[c(grep("V1",colnames(tmle_dat),value = TRUE),grep("V2",colnames(tmle_dat),value = TRUE))] <- lapply(tmle_dat[c(grep("V1",colnames(tmle_dat),value = TRUE),grep("V2",colnames(tmle_dat),value = TRUE))], function(x){`levels<-`(addNA(x), c(-9, levels(x)))})
+      tmle_dat[grep("A",colnames(tmle_dat),value = TRUE)] <- lapply(tmle_dat[grep("A",colnames(tmle_dat),value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
     }
     
     ##  fit initial treatment model
@@ -380,7 +381,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
       
     } else if(estimator=="tmle-lstm"){ 
-      lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A",colnames(tmle_dat),value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=6, out_activation="softmax", loss_fn = "categorical_crossentropy", output_dir)
+      lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A",colnames(tmle_dat),value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=6, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir)
       
       initial_model_for_A <- list("preds"= lstm_A_preds,
                                   "data"=tmle_dat)
@@ -1015,7 +1016,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 120 # number of simulation runs
+R <- 240 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 

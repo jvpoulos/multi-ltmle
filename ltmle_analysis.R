@@ -286,7 +286,6 @@ obs.Y <- sapply(0:t.end, function(t) ifelse((!is.na(Odat$days_to_diabetes) & Oda
 colnames(obs.Y) <- paste0("Y_",seq(0,t.end))
 
 # dummies for who followed treatment rule in observed data 
-#c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERIDONE","ZIPRASIDONE", "0")
 static <- list() # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
 for(t in 1:(t.end+1)){
   static[[t]] <- factor(ifelse(!is.na(obs.bipolar[[t]]) & obs.bipolar[[t]]==1, "4", ifelse(!is.na(obs.schiz[[t]]) & obs.schiz[[t]]==1, "2", "1")), levels=drug.levels)
@@ -452,6 +451,10 @@ if(estimator=="tmle"){
                                            "_scale_continuous_",scale.continuous,
                                            "_use_SL_", use.SL,".rds"))
   }else{
+    learner_stack_A <- make_learner_stack(list("Lrnr_xgboost",nrounds=1000, early_stopping_rounds=3, max_depth = 2, eta = 1, verbose = 0, nthread = 2, objective="multi:softprob", eval_metric="mlogloss",num_class=length(levels(tmle_dat$A))), # need to inc. number of classes for missing values
+                                          list("Lrnr_ranger",num.trees=100),list("Lrnr_glmnet",nfolds = n.folds,alpha = 1, family = "multinomial"), 
+                                          list("Lrnr_glmnet",nfolds = n.folds,alpha = 0.5, family = "multinomial"))  
+    
     initial_model_for_A_sl <- make_learner(Lrnr_sl, # cross-validates base models
                                            learners = if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
                                            metalearner = metalearner_A,
