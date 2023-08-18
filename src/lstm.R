@@ -26,7 +26,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
 
   py$lr <- 0.001
   py$dr <- 0.5
-  py$nb_batches <- 8
+  py$nb_batches <- 6
   py$patience <- 25
   py$t_end <- (t_end+1)
   py$window_size <- window_size

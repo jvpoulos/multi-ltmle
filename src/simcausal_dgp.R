@@ -57,15 +57,15 @@ D <- D.base +
   node("L1",                                      # er_mhsa (count)
        t = 1:t.end,
        distr = "NegBinom",
-       mu= plogis(.1 *L1[t-1]**2 + .1 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -3, ifelse(A[(t-1)]==5, -5, -1)))) + 
+       mu= plogis(.1 *L1[t-1]**2 + .1 * L2[t-1] + .2 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -3, ifelse(A[(t-1)]==5, -5, 0)))) + 
   node("L2",                                      # ever_mt_gluc_or_lip (binary)
        t = 1:t.end,
        distr = "rbern",
-       prob= ifelse(L2[t-1]==1,1, plogis(-2.5 + .1 * (L1[t] - L1[t-1])**2 + .2 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0))))) +
+       prob= ifelse(L2[t-1]==1,1, plogis(-3.5 + .1 * (L1[t] - L1[t-1])**2 + .2 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0))))) +
   node("L3",                                      # ever_rx_antidiab (binary)
        t = 1:t.end,
        distr = "rbern",
-       prob= ifelse(L3[t-1]==1,1, plogis(-2.5 + .1 * (L1[t] - L1[t-1])**2 + .1 * L2[t] + 0.1 * L2[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0))))) +
+       prob= ifelse(L3[t-1]==1,1, plogis(-3.5 + .1 * (L1[t] - L1[t-1])**2 + .1 * L2[t] + 0.1 * L2[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0))))) +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
        t = 1:t.end, 
        distr = "Multinom",

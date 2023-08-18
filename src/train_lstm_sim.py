@@ -26,6 +26,12 @@ if gpu < 3:
     from tensorflow.python.client import device_lib
     print(device_lib.list_local_devices())
 
+def custom_loss(y_true, y_pred):
+    y_true_reshaped = tf.reshape(y_true, [-1, 1])
+    y_pred_reshaped = tf.reshape(y_pred, [-1, 7]) # The model's output is already shaped as (batch_size, 10000, 7)
+    loss = tf.keras.losses.sparse_categorical_crossentropy(y_true_reshaped, y_pred_reshaped)
+    return tf.reduce_mean(loss)
+
 def create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn):
     """ 
         creates, compiles and returns a RNN model 
@@ -36,12 +42,25 @@ def create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activa
     inputs = Input(shape=(n_pre, nb_features), name="Inputs")
     lstm_1 = LSTM(int(n_hidden), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1")(inputs) 
     lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=False, name="LSTM_2")(lstm_1) 
-    output= Dense(output_dim, activation=out_activation, name='Dense')(lstm_2)
+    
+    if loss_fn=="sparse_categorical_crossentropy":
+        output = Dense(10000 * 7, activation='linear', name='Dense')(lstm_2)
+        output_reshaped = tf.keras.layers.Reshape((10000, 7))(output)
+        softmax_output = tf.keras.layers.Activation('softmax')(output_reshaped)
+    else:
+        output= Dense(output_dim, activation=out_activation, name='Dense')(lstm_2)
 
-    model = Model(inputs, output) 
+
+    if loss_fn=="sparse_categorical_crossentropy":
+        model = Model(inputs, softmax_output) 
+    else:
+        model = Model(inputs, output)
 
     # Compile
-    model.compile(optimizer=Adam(learning_rate=lr), loss=loss_fn)
+    if loss_fn=="sparse_categorical_crossentropy":
+        model.compile(optimizer=Adam(learning_rate=lr), loss=custom_loss)
+    else:
+        model.compile(optimizer=Adam(learning_rate=lr), loss=loss_fn)
     
     return model
 
@@ -87,8 +106,14 @@ def test_model():
     print('dataX shape:', dataX.shape)
     print('dataY shape:', dataY.shape)
 
+    if loss_fn=="sparse_categorical_crossentropy":
+        dataY = dataY-1
+
     nb_features = dataX.shape[2]
     output_dim = dataY.shape[1]
+
+    print('nb_features:', nb_features)
+    print('output_dim:', output_dim)
   
     # create and fit the LSTM network
     print('creating model...')
@@ -101,6 +126,9 @@ def test_model():
     print('Generate predictions')
 
     preds_test = model.predict(dataX, batch_size=int(nb_batches), verbose=0)
+
+    if loss_fn=="sparse_categorical_crossentropy":
+        preds_test = preds_test.reshape(preds_test.shape[0], -1)
 
     print('predictions shape =', preds_test.shape)
 

@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name="tmle"
 #SBATCH -p mpi
-#SBATCH -n 110
+#SBATCH -n 100
 #SBATCH --ntasks-per-node=10
-#SBATCH --mem-per-cpu=5GB
+#SBATCH --mem-per-cpu=22GB
 #SBATCH -t 5-00:00:00
 #SBATCH --array=1
 
