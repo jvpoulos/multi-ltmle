@@ -18,7 +18,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py <- import_main()
   py$output_dir <- output_dir
   py$gpu <- 3
-  py$epochs <- 500
+  py$epochs <- 100
   py$n_hidden <- 128
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
@@ -26,20 +26,29 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
 
   py$lr <- 0.001
   py$dr <- 0.5
-  py$nb_batches <- 6
-  py$patience <- 25
+  py$nb_batches <- 8
+  py$patience <- 10
   py$t_end <- (t_end+1)
   py$window_size <- window_size
   
   source_python("src/train_lstm_sim.py")
   
   print("Reading predictions")
-  lstm.pred <- as.matrix(as.data.frame(read_csv(paste0(output_dir, "lstm_preds.csv"))), col_names = colnames(output_data))
+  np <- import('numpy')
+  preds <- np$load(paste0(output_dir, 'lstm_preds.npy'))
   
-  print("Renaming predictions")
-  lstm.pred <- rbind(output_data[1:window_size,], lstm.pred)
+  print("Converting to list")
   
-  lstm.pred <-lstm.pred[,match(colnames(output_data), colnames(lstm.pred))] # same order
+  # Convert NumPy array to R array
+  preds_r_array <- as.array(preds)
+  
+  # Initialize an empty list to store the matrices
+  lstm.pred <- vector("list", length = dim(preds_r_array)[1])
+  
+  # Fill the list with matrices
+  for (i in 1:dim(preds_r_array)[1]) {
+    lstm.pred[[i]] <- preds_r_array[i,,]
+  }
   
   return(lstm.pred)
 }

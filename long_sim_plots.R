@@ -13,7 +13,7 @@ library(gtable)
 # Define parameters
 J <- 6
 n <- 10000
-R <- 120
+R <- 240
 t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
@@ -26,7 +26,7 @@ n.rules <-as.numeric(length(treatment.rules))
 # Load results data
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230807")
+args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20230818")
 output.path <- as.character(args[1])
 
 filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)
@@ -40,7 +40,8 @@ if(any( duplicated(substring(filenames, 18)))){
   filenames <- filenames[-which(duplicated(substring(filenames, 18)))]
 }
 
-omit.result <- c("result.3","result.17","result.26","result.27","result.30","result.33","result.40","result.41","result.42","result.43","result.46","result.49","result.56","result.70","result.82","result.84","result.108","result.110","result.113")
+results.obj <-readRDS(filenames)
+omit.result <- names(which(apply(results.obj,2,function(x) class(x$Ahat_tmle))=="character"))
 R <- R-length(omit.result)
 
 results <- list() # structure is: [[filename]][[metric]]

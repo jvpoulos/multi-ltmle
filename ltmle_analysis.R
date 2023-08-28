@@ -136,7 +136,6 @@ if(use.simulated){
   source("add_tv_simulated.R") # add time-varying variables
   
   Odat <- simdata_from_basevars
-  Odat <- Odat[Odat$hcp_patient_id%in%c(1:9000),] # select first 9k simulated IDs to improve run-time
   
   rm(simdata_from_basevars)
   data.label <- "(simulated CMS data)"
@@ -326,10 +325,10 @@ for(t in 1:(t.end+1)){
   obs.rules[[t]] <- lapply(1:length(obs.rules[[t]]), function(i)(obs.rules[[t]][[i]]==t) +0)
 }
 
-obs.rules <- lapply(1:length(obs.rules), function(t) setNames(obs.rules[[t]], names(obs.treatment.rule) ))
+#obs.rules <- lapply(1:length(obs.rules), function(t) setNames(obs.rules[[t]], names(obs.treatment.rule) ))
 
 # plot treatment adherence
-png(paste0(output_dir,paste0("treatment_adherence_analysis_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
+png(paste0(output_dir,paste0("treatment_adherence_analysis_weights_loc_",gsub('.{1}$', '', weights.loc),"_use_simulated_", use.simulated,".png")))
 plotSurvEst(surv = list("Static"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[1]])), "Dynamic"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[2]])), "Stochastic"=sapply(1:length(obs.rules), function(t) mean(obs.rules[[t]][[3]]))),
             ylab = "Share of patients who continued to follow each rule", 
             main = paste("Treatment rule adherence", data.label), 
@@ -344,7 +343,7 @@ names(Y.observed) <- rules
 
 Y.observed[["overall"]] <- sapply(1:(t.end+1), function(t) mean(obs.Y[,paste0("Y_",t-1)]))
 
-png(paste0(output_dir,paste0("survival_plot_analysis_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
+png(paste0(output_dir,paste0("survival_plot_analysis_weights_loc_",gsub('.{1}$', '', weights.loc),"_use_simulated_", use.simulated,".png")))
 plotSurvEst(surv = list("Static"=1-Y.observed[["static"]], "Dynamic"=1-Y.observed[["dynamic"]], "Stochastic"=1-Y.observed[["stochastic"]]),
             ylab = "Share of patients without diabetes diagnosis", 
             main = paste("Observed outcomes", data.label),
@@ -495,7 +494,7 @@ if(estimator=="tmle"){
   }
   
   g_preds <- lapply(1:length(initial_model_for_A), function(i) data.frame(matrix(unlist(lapply(initial_model_for_A[[i]]$preds, unlist)), nrow=length(lapply(initial_model_for_A[[i]]$preds, unlist)), byrow=TRUE)) ) # t length list of estimated propensity scores 
-  g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+  #g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
   
   g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist))) 
   
@@ -561,7 +560,7 @@ if(estimator=="tmle"){
   }
   
   g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(i) data.frame(initial_model_for_A_bin[[i]]$preds) ) # t length list of estimated propensity scores 
-  g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+  #g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
   
   g_preds_bin_ID <- lapply(1:length(initial_model_for_A_bin), function(i) unlist(lapply(initial_model_for_A_bin[[i]]$data$ID, unlist)))
   
@@ -644,20 +643,54 @@ if(estimator=="tmle"){
   ## model is fit on all uncensored and alive (until t-1)
   ## the outcome is the observed Y for t=T and updated Y if t<T
   
-  initial_model_for_Y_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                         learners = if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
-                                         metalearner = metalearner_Y,
-                                         keep_extra=FALSE)
-  
-  initial_model_for_Y_sl_cont <- make_learner(Lrnr_sl, # cross-validates base models
-                                              learners = if(use.SL) learner_stack_Y_cont else make_learner(Lrnr_glm),
-                                              metalearner = metalearner_Y_cont,
-                                              keep_extra=FALSE)
-  
-  initial_model_for_Y <- list()
-  initial_model_for_Y_bin <- list() # updated Y's are used as outcomes for t<T
-  initial_model_for_Y[[t.end]] <- sequential_g(t=t.end, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t.end)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl, ybound) # for t=T fit on measured Y
-  initial_model_for_Y_bin[[t.end]] <- initial_model_for_Y[[t.end]] # same
+  if(weights.loc!='none'){
+    initial_model_for_Y <-  readRDS(paste0(output_dir,
+                                           "initial_model_for_Y_",
+                                           "estimator_",estimator,
+                                           "_treatment_rule_",treatment.rule,
+                                           "_n_folds_",n.folds,
+                                           "_scale_continuous_",scale.continuous,
+                                           "_use_SL_", use.SL,".rds"))
+    
+    initial_model_for_Y_bin <-  readRDS(paste0(output_dir,
+                                               "initial_model_for_Y_bin_",
+                                               "estimator_",estimator,
+                                               "_treatment_rule_",treatment.rule,
+                                               "_n_folds_",n.folds,
+                                               "_scale_continuous_",scale.continuous,
+                                               "_use_SL_", use.SL,".rds"))
+  }else{
+    initial_model_for_Y_sl <- make_learner(Lrnr_sl, # cross-validates base models
+                                           learners = if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
+                                           metalearner = metalearner_Y,
+                                           keep_extra=FALSE)
+    
+    initial_model_for_Y_sl_cont <- make_learner(Lrnr_sl, # cross-validates base models
+                                                learners = if(use.SL) learner_stack_Y_cont else make_learner(Lrnr_glm),
+                                                metalearner = metalearner_Y_cont,
+                                                keep_extra=FALSE)
+    
+    initial_model_for_Y <- list()
+    initial_model_for_Y_bin <- list() # updated Y's are used as outcomes for t<T
+    initial_model_for_Y[[t.end]] <- sequential_g(t=t.end, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t.end)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl, ybound) # for t=T fit on measured Y
+    initial_model_for_Y_bin[[t.end]] <- initial_model_for_Y[[t.end]] # same
+    
+    saveRDS(initial_model_for_Y, paste0(output_dir, 
+                                        "initial_model_for_Y_",
+                                        "estimator_",estimator,
+                                        "_treatment_rule_",treatment.rule,
+                                        "_n_folds_",n.folds,
+                                        "_scale_continuous_",scale.continuous,
+                                        "_use_SL_", use.SL,".rds"))
+    
+    saveRDS(initial_model_for_Y_bin, paste0(output_dir, 
+                                            "initial_model_for_Y_bin_",
+                                            "estimator_",estimator,
+                                            "_treatment_rule_",treatment.rule,
+                                            "_n_folds_",n.folds,
+                                            "_scale_continuous_",scale.continuous,
+                                            "_use_SL_", use.SL,".rds"))
+  }
   
   # Update equations, calculate point estimate and variance
   # backward in time: T.end, ..., 1
@@ -679,35 +712,19 @@ if(estimator=="tmle"){
     tmle_contrasts[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
     tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
   }
-
-  saveRDS(initial_model_for_Y, paste0(output_dir, 
-                                      "initial_model_for_Y_",
-                                      "estimator_",estimator,
-                                      "_treatment_rule_",treatment.rule,
-                                      "_n_folds_",n.folds,
-                                      "_scale_continuous_",scale.continuous,
-                                      "_use_SL_", use.SL,".rds"))
-  
-  saveRDS(initial_model_for_Y_bin, paste0(output_dir, 
-                                      "initial_model_for_Y_bin_",
-                                      "estimator_",estimator,
-                                      "_treatment_rule_",treatment.rule,
-                                      "_n_folds_",n.folds,
-                                      "_scale_continuous_",scale.continuous,
-                                      "_use_SL_", use.SL,".rds"))
   # plot estimated survival curves
   
   tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
   tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
   
-  png(paste0(output_dir,paste0("survival_plot_tmle_estimates_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
+  png(paste0(output_dir,paste0("survival_plot_tmle_estimates_weights_loc_",gsub('.{1}$', '', weights.loc),"_use_simulated_", use.simulated,".png")))
   plotSurvEst(surv = list("Static"= tmle_estimates[1,], "Dynamic"= tmle_estimates[2,], "Stochastic"= tmle_estimates[3,]),  
               ylab = "Estimated share of patients without diabetes diagnosis", 
               main = "LTMLE (ours, multinomial) outcomes (CMS data)",
               ylim = c(0.5,1))
   dev.off()
   
-  png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_weights_loc_",weights.loc,"_use_simulated_", use.simulated,".png")))
+  png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_weights_loc_",gsub('.{1}$', '', weights.loc),"_use_simulated_", use.simulated,".png")))
   plotSurvEst(surv = list("Static"= tmle_bin_estimates[1,], "Dynamic"= tmle_bin_estimates[2,], "Stochastic"= tmle_bin_estimates[3,]),  
               ylab = "Estimated outcomes (CMS data)", 
               main = "Estimated share of patients without diabetes diagnosis",

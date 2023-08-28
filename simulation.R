@@ -381,11 +381,14 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
       
     } else if(estimator=="tmle-lstm"){ 
-      lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A",colnames(tmle_dat),value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=6, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir)
+      window.size <- 9
+      lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A",colnames(tmle_dat),value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir)
+      
+      lstm_A_preds <- c(replicate((window.size+1), lstm_A_preds[[1]], simplify = FALSE), lstm_A_preds) # assume predictions in t=1....window.size is the same as window_size+1
       
       initial_model_for_A <- list("preds"= lstm_A_preds,
                                   "data"=tmle_dat)
-      
+      #NEED TO format preds
       g_preds <- data.frame(matrix(initial_model_for_A$preds, nrow=length(initial_model_for_A$preds), byrow=TRUE))
       g_preds <- setNames(g_preds, grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) 
       
@@ -393,7 +396,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       
       g_preds_cuml <- vector("list", length(g_preds))
       
-      g_preds_cuml[[1]] <- g_preds[,1]
+      g_preds_cuml[[1]] <- g_preds[[1]]
       
       for (i in 2:ncol(g_preds)) {
         g_preds_cuml[[i]] <- g_preds[,i][which(g_preds_ID[i-1]%in%g_preds_ID[i]),] * g_preds_cuml[[i-1]][which(g_preds_ID[i-1]%in%g_preds_ID[i]),]
@@ -451,7 +454,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       }    
       g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
     } else if(estimator=="tmle-lstm"){
-      lstm_A_preds_bin <- lapply(1:J, function(j) lstm(data=cbind("A"=dummify(tmle_dat$A)[,j],tmle_dat[tmle_covars_A]), outcome= "A", covariates=tmle_covars_A, t_end=t.end, window_size=6, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir))
+      lstm_A_preds_bin <- lapply(1:J, function(j) lstm(data=cbind("A"=dummify(tmle_dat$A)[,j],tmle_dat[tmle_covars_A]), outcome= "A", covariates=tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir))
       initial_model_for_A_sl_bin <- list("preds"=lstm_A_preds_bin,
                                          "data"=tmle_dat)
     }
@@ -505,7 +508,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative bounded censoring predictions, 1=Censored                            
     }else if(estimator=="tmle-lstm"){
       
-      lstm_C_preds <- lstm(data=tmle_dat[c(grep("C",colnames(tmle_dat),value = TRUE),tmle_covars_C)], outcome=grep("C",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_C, t_end=t.end, window_size=6, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)
+      lstm_C_preds <- lstm(data=tmle_dat[c(grep("C",colnames(tmle_dat),value = TRUE),tmle_covars_C)], outcome=grep("C",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_C, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)
       initial_model_for_C <- list("preds"=lstm_C_preds,
                                   "data"=tmle_dat)
     }
@@ -554,7 +557,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       }
     } else if(estimator=='tmle-lstm'){
       
-      lstm_Y_preds <- lstm(data=tmle_dat[c(grep("Y",colnames(tmle_dat),value = TRUE),tmle_covars_Y)], outcome=grep("Y",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_Y, t_end=t.end, window_size=6, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)
+      lstm_Y_preds <- lstm(data=tmle_dat[c(grep("Y",colnames(tmle_dat),value = TRUE),tmle_covars_Y)], outcome=grep("Y",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_Y, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)
       
       initial_model_for_Y <- list("preds"=boundProbs(lstm_Y_preds,ybound),
                                   "data"=tmle_dat) # evaluation data (fit on everyone)

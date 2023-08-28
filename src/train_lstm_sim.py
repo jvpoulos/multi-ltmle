@@ -127,16 +127,13 @@ def test_model():
 
     preds_test = model.predict(dataX, batch_size=int(nb_batches), verbose=0)
 
-    if loss_fn=="sparse_categorical_crossentropy":
-        preds_test = preds_test.reshape(preds_test.shape[0], -1)
-
     print('predictions shape =', preds_test.shape)
 
     # Save predictions
 
-    print('Saving to {}lstm_preds.csv'.format(output_dir))
+    print('Saving to {}lstm_preds.npy'.format(output_dir))
 
-    np.savetxt("{}lstm_preds.csv".format(output_dir), preds_test, delimiter=",")
+    np.save("{}lstm_preds.npy".format(output_dir), preds_test)
 
 def main():
     test_model()
