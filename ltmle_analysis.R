@@ -40,7 +40,7 @@ doParallel::registerDoParallel(cl) # register cluster
 
 # command line args
 args <- commandArgs(trailingOnly = TRUE) # command line arguments 
-# args <- c('tmle','all','none','TRUE','TRUE')
+# args <- c('tmle','all','20230828/','TRUE','TRUE')
 estimator <- as.character(args[1])
 treatment.rule <- ifelse(estimator=="tmle", "all", as.character(args[2])) # tmle calculates calculates counterfactual means under all treatment rules
 weights.loc <- as.character(args[3])
@@ -139,6 +139,9 @@ if(use.simulated){
   
   rm(simdata_from_basevars)
   data.label <- "(simulated CMS data)"
+  
+  missing.smi <- Multinom(nrow(Odat[is.na(Odat$smi_condition),]), c(1/3,1/3,1/3))
+  Odat[is.na(Odat$smi_condition)]$smi_condition <- ifelse(missing.smi==1, "bipolar", ifelse(missing.smi==2, "mdd", "schiz")) # ensure everyone has one primary SMI condition
 }else{
   load("/data/MedicaidAP_associate/poulos/fup3yr_episode_months_deid_fixmonthout.RData") # run on Argos
   paste0("Original data dimension: ", dim(fup3yr_episode_months_deid))
@@ -325,7 +328,7 @@ for(t in 1:(t.end+1)){
   obs.rules[[t]] <- lapply(1:length(obs.rules[[t]]), function(i)(obs.rules[[t]][[i]]==t) +0)
 }
 
-#obs.rules <- lapply(1:length(obs.rules), function(t) setNames(obs.rules[[t]], names(obs.treatment.rule) ))
+obs.rules <- lapply(1:length(obs.rules), function(t) setNames(obs.rules[[t]], names(obs.treatment.rule) ))
 
 # plot treatment adherence
 png(paste0(output_dir,paste0("treatment_adherence_analysis_weights_loc_",gsub('.{1}$', '', weights.loc),"_use_simulated_", use.simulated,".png")))
@@ -494,7 +497,7 @@ if(estimator=="tmle"){
   }
   
   g_preds <- lapply(1:length(initial_model_for_A), function(i) data.frame(matrix(unlist(lapply(initial_model_for_A[[i]]$preds, unlist)), nrow=length(lapply(initial_model_for_A[[i]]$preds, unlist)), byrow=TRUE)) ) # t length list of estimated propensity scores 
-  #g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+  g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
   
   g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist))) 
   
@@ -560,7 +563,7 @@ if(estimator=="tmle"){
   }
   
   g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(i) data.frame(initial_model_for_A_bin[[i]]$preds) ) # t length list of estimated propensity scores 
-  #g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+  g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
   
   g_preds_bin_ID <- lapply(1:length(initial_model_for_A_bin), function(i) unlist(lapply(initial_model_for_A_bin[[i]]$data$ID, unlist)))
   
@@ -674,27 +677,11 @@ if(estimator=="tmle"){
     initial_model_for_Y_bin <- list() # updated Y's are used as outcomes for t<T
     initial_model_for_Y[[t.end]] <- sequential_g(t=t.end, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t.end)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl, ybound) # for t=T fit on measured Y
     initial_model_for_Y_bin[[t.end]] <- initial_model_for_Y[[t.end]] # same
-    
-    saveRDS(initial_model_for_Y, paste0(output_dir, 
-                                        "initial_model_for_Y_",
-                                        "estimator_",estimator,
-                                        "_treatment_rule_",treatment.rule,
-                                        "_n_folds_",n.folds,
-                                        "_scale_continuous_",scale.continuous,
-                                        "_use_SL_", use.SL,".rds"))
-    
-    saveRDS(initial_model_for_Y_bin, paste0(output_dir, 
-                                            "initial_model_for_Y_bin_",
-                                            "estimator_",estimator,
-                                            "_treatment_rule_",treatment.rule,
-                                            "_n_folds_",n.folds,
-                                            "_scale_continuous_",scale.continuous,
-                                            "_use_SL_", use.SL,".rds"))
   }
   
   # Update equations, calculate point estimate and variance
   # backward in time: T.end, ..., 1
-  # fit on thoese uncesnored until t-1
+  # fit on those uncensored until t-1
   
   tmle_rules <- list("static"=static_mtp,
                      "dynamic"=dynamic_mtp,
@@ -712,6 +699,22 @@ if(estimator=="tmle"){
     tmle_contrasts[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
     tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
   }
+  
+  saveRDS(initial_model_for_Y, paste0(output_dir, 
+                                      "initial_model_for_Y_",
+                                      "estimator_",estimator,
+                                      "_treatment_rule_",treatment.rule,
+                                      "_n_folds_",n.folds,
+                                      "_scale_continuous_",scale.continuous,
+                                      "_use_SL_", use.SL,".rds"))
+  
+  saveRDS(initial_model_for_Y_bin, paste0(output_dir, 
+                                          "initial_model_for_Y_bin_",
+                                          "estimator_",estimator,
+                                          "_treatment_rule_",treatment.rule,
+                                          "_n_folds_",n.folds,
+                                          "_scale_continuous_",scale.continuous,
+                                          "_use_SL_", use.SL,".rds"))
   # plot estimated survival curves
   
   tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
