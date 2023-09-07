@@ -1019,7 +1019,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 240 # number of simulation runs
+R <- 350 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 

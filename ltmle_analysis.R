@@ -139,9 +139,6 @@ if(use.simulated){
   
   rm(simdata_from_basevars)
   data.label <- "(simulated CMS data)"
-  
-  missing.smi <- Multinom(nrow(Odat[is.na(Odat$smi_condition),]), c(1/3,1/3,1/3))
-  Odat[is.na(Odat$smi_condition)]$smi_condition <- ifelse(missing.smi==1, "bipolar", ifelse(missing.smi==2, "mdd", "schiz")) # ensure everyone has one primary SMI condition
 }else{
   load("/data/MedicaidAP_associate/poulos/fup3yr_episode_months_deid_fixmonthout.RData") # run on Argos
   paste0("Original data dimension: ", dim(fup3yr_episode_months_deid))
@@ -152,6 +149,9 @@ if(use.simulated){
   
   data.label <- "(CMS data)"
 }
+
+# make month start with 1
+Odat$month_number <- Odat$month_number+1
 
 # make summary tables and plots
 
@@ -236,8 +236,8 @@ if(scale.continuous){
 
 drug.levels <- c("1","2","3","4","5","6", "0") #c("ARIPIPRAZOLE","HALOPERIDOL","OLANZAPINE","QUETIAPINE","RISPERIDONE","ZIPRASIDONE", "0")
 
-obs.treatment <- lapply(0:t.end, function(t) factor(Odat$drug_group[Odat$month_number==t]))
-names(obs.treatment) <- paste0("A_",seq(0,t.end))
+obs.treatment <- lapply(1:(t.end+1), function(t) factor(Odat$drug_group[Odat$month_number==t]))
+names(obs.treatment) <- paste0("A_",seq(1,(t.end+1)))
 
 for(t in 1:(t.end+1)){ # make NAs 0
   obs.treatment[[t]] <- factor(obs.treatment[[t]], levels = levels(addNA(obs.treatment[[t]])), labels = drug.levels, exclude = NULL)
@@ -245,47 +245,47 @@ for(t in 1:(t.end+1)){ # make NAs 0
 
 obs.treatment <- do.call("cbind", obs.treatment) # convert to df
 
-obs.ID <- lapply(0:t.end, function(t) as.numeric(rownames(Odat[Odat$month_number==t,])))
-names(obs.ID) <- paste0("ID_",seq(0,t.end))
+obs.ID <- lapply(1:(t.end+1), function(t) as.numeric(rownames(Odat[Odat$month_number==t,])))
+names(obs.ID) <- paste0("ID_",seq(1,(t.end+1)))
 
 treatments <- lapply(1:(t.end+1), function(t) as.data.frame(dummify(factor(obs.treatment[,t], levels=drug.levels))))
-names(treatments) <- paste0("A_",seq(0,t.end))  
+names(treatments) <- paste0("A_",seq(1,(t.end+1)))  
 
 # store drug fill, acute care, and preperiod conditions for dynamic rule (same lengths as obs.treatment) 
 
-obs.fill <- lapply(0:t.end, function(t) ifelse((Odat$monthly_ever_rx_antidiab==1 | Odat$monthly_ever_rx_cm_nondiab==1) & Odat$month_number <=t,1,0)[Odat$month_number==t]) # any antidiabetic or non-diabetic cardiometabolic drug is filled
-names(obs.fill) <- paste0("L_",seq(0,t.end))  
+obs.fill <- lapply(1:(t.end+1), function(t) ifelse((Odat$monthly_ever_rx_antidiab==1 | Odat$monthly_ever_rx_cm_nondiab==1) & Odat$month_number <=t,1,0)[Odat$month_number==t]) # any antidiabetic or non-diabetic cardiometabolic drug is filled
+names(obs.fill) <- paste0("L_",seq(1,(t.end+1)))  
 
-obs.test <- lapply(0:t.end, function(t) ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=t,1,0)[Odat$month_number==t]) # lipid or glucose lab tests
-names(obs.test) <- paste0("L_",seq(0,t.end))  
+obs.test <- lapply(1:(t.end+1), function(t) ifelse(Odat$monthly_ever_mt_gluc_or_lip==1 & Odat$month_number <=t,1,0)[Odat$month_number==t]) # lipid or glucose lab tests
+names(obs.test) <- paste0("L_",seq(1,(t.end+1)))  
 
-obs.care <- lapply(0:t.end, function(t) ifelse((Odat$monthly_los_mhsa>0 | Odat$monthly_er_mhsa>0) & Odat$month_number <=t,1,0)[Odat$month_number==t]) # any acute care (inpatient or ED visits) for MH is observed
-names(obs.care) <- paste0("L_",seq(0,t.end))  
+obs.care <- lapply(1:(t.end+1), function(t) ifelse((Odat$monthly_los_mhsa>0 | Odat$monthly_er_mhsa>0) & Odat$month_number <=t,1,0)[Odat$month_number==t]) # any acute care (inpatient or ED visits) for MH is observed
+names(obs.care) <- paste0("L_",seq(1,(t.end+1)))  
 
-obs.bipolar <- lapply(0:t.end, function(t) ifelse(Odat$smi_condition=="bipolar" & Odat$month_number <=t,1,0)[Odat$month_number==t])
-names(obs.bipolar) <- paste0("V_",seq(0,t.end))  
+obs.bipolar <- lapply(1:(t.end+1), function(t) ifelse(Odat$smi_condition=="bipolar" & Odat$month_number <=t,1,0)[Odat$month_number==t])
+names(obs.bipolar) <- paste0("V_",seq(1,(t.end+1)))  
 
-obs.schiz <- lapply(0:t.end, function(t) ifelse(Odat$smi_condition=="schiz" & Odat$month_number <=t,1,0)[Odat$month_number==t])
-names(obs.schiz) <- paste0("V_",seq(0,t.end))  
+obs.schiz <- lapply(1:(t.end+1), function(t) ifelse(Odat$smi_condition=="schiz" & Odat$month_number <=t,1,0)[Odat$month_number==t])
+names(obs.schiz) <- paste0("V_",seq(1,(t.end+1)))  
 
 # store first censored time
 
-obs.censored <- sapply(0:t.end, function(t) ifelse(Odat$days_to_censored <= (1095/36)*t,1,0))
+obs.censored <- sapply(1:(t.end+1), function(t) ifelse(Odat$days_to_censored <= (1095/36)*t,1,0))
 obs.censored[is.na(obs.censored)] <- 0
-colnames(obs.censored) <- paste0("C_",seq(0,t.end))
+colnames(obs.censored) <- paste0("C_",seq(1,(t.end+1)))
 
 time.censored <- data.frame("ID"=which(rowSums(obs.censored)>0),
                             "time_censored"=NA)
 
-for(t in t.end:0){ # time first censored
+for(t in t.end:1){ # time first censored
   time.censored$time_censored[which(obs.censored[which(rowSums(obs.censored)>0),][,paste0("C_",t)]==1)] <- t
 }
 
 # store observed Y
 # outcome is diabetes within 36 months
 
-obs.Y <- sapply(0:t.end, function(t) ifelse((!is.na(Odat$days_to_diabetes) & Odat$days_to_diabetes <= (1095/36)*t), 1, 0))
-colnames(obs.Y) <- paste0("Y_",seq(0,t.end))
+obs.Y <- sapply(1:(t.end+1), function(t) ifelse((!is.na(Odat$days_to_diabetes) & Odat$days_to_diabetes <= (1095/36)*t), 1, 0))
+colnames(obs.Y) <- paste0("Y_",seq(1,(t.end+1)))
 
 # dummies for who followed treatment rule in observed data 
 static <- list() # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
@@ -341,10 +341,10 @@ dev.off()
 
 # store observed Ys
 rules <- c("static","dynamic","stochastic")
-Y.observed <- lapply(1:length(rules), function(i) sapply(1:t.end, function(t) mean(obs.Y[,paste0("Y_",t)][which(obs.rules[[t+1]][[i]]==1)]))) # skip Y in t=0
+Y.observed <- lapply(1:length(rules), function(i) sapply(1:(t.end+1), function(t) mean(obs.Y[,paste0("Y_",t)][which(obs.rules[[t]][[i]]==1)])))
 names(Y.observed) <- rules
 
-Y.observed[["overall"]] <- sapply(1:(t.end+1), function(t) mean(obs.Y[,paste0("Y_",t-1)]))
+Y.observed[["overall"]] <- sapply(1:(t.end+1), function(t) mean(obs.Y[,paste0("Y_",t)]))
 
 png(paste0(output_dir,paste0("survival_plot_analysis_weights_loc_",gsub('.{1}$', '', weights.loc),"_use_simulated_", use.simulated,".png")))
 plotSurvEst(surv = list("Static"=1-Y.observed[["static"]], "Dynamic"=1-Y.observed[["dynamic"]], "Stochastic"=1-Y.observed[["stochastic"]]),
@@ -383,21 +383,21 @@ if(estimator=="tmle"){
 
   tmle_dat <- data.frame("ID"=Odat$hcp_patient_id,"month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
 
-  tmle_dat$L1 <- c(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  tmle_dat$L1 <- c(sapply(1:(t.end+1), function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
 
-  tmle_dat$L2 <- c(sapply(0:t.end, function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  tmle_dat$L2 <- c(sapply(1:(t.end+1), function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
 
-  tmle_dat$L3 <- c(sapply(0:t.end, function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+  tmle_dat$L3 <- c(sapply(1:(t.end+1), function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
 
   tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
 
-  tmle_dat$Y <- c(sapply(0:t.end, function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
+  tmle_dat$Y <- c(sapply(1:(t.end+1), function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
 
-  tmle_dat$A <- c(sapply(0:t.end, function(t) obs.treatment[,paste0("A_", t)]))
+  tmle_dat$A <- c(sapply(1:(t.end+1), function(t) obs.treatment[,paste0("A_", t)]))
   tmle_dat$A <- factor(tmle_dat$A)
   levels(tmle_dat$A) <- drug.levels
 
-  tmle_dat$C <- c(sapply(0:t.end, function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
+  tmle_dat$C <- c(sapply(1:(t.end+1), function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
   
   tmle_dat <- 
     tmle_dat %>%
@@ -462,7 +462,7 @@ if(estimator=="tmle"){
                                            metalearner = metalearner_A,
                                            keep_extra=FALSE)
     
-    initial_model_for_A <- lapply(0:t.end, function(t){ # going forward in time
+    initial_model_for_A <- lapply(1:(t.end+1), function(t){ # going forward in time
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("Y","C")]
       
@@ -528,7 +528,7 @@ if(estimator=="tmle"){
                                            "_use_SL_", use.SL,".rds"))
   }else{
     
-    initial_model_for_A_bin <- lapply(0:t.end, function(t){
+    initial_model_for_A_bin <- lapply(1:(t.end+1), function(t){
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("C","Y")]
       
@@ -563,7 +563,7 @@ if(estimator=="tmle"){
   }
   
   g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(i) data.frame(initial_model_for_A_bin[[i]]$preds) ) # t length list of estimated propensity scores 
-  g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+  #g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
   
   g_preds_bin_ID <- lapply(1:length(initial_model_for_A_bin), function(i) unlist(lapply(initial_model_for_A_bin[[i]]$data$ID, unlist)))
   
@@ -595,7 +595,7 @@ if(estimator=="tmle"){
                                            "_use_SL_", use.SL,".rds"))
   }else{
     
-    initial_model_for_C <- lapply(0:t.end, function(t){
+    initial_model_for_C <- lapply(1:(t.end+1), function(t){
       
       tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("A","Y")]
       
@@ -744,7 +744,7 @@ if(estimator=="tmle"){
                 main = "IPTW (ours, multinomial) estimated counterfactuals",
                 xlab = "Month",
                 ylim = c(0.5,1),
-                legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+                legend.xyloc = "bottomleft", xindx = 1:(t.end+1), xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
     
@@ -766,7 +766,7 @@ if(estimator=="tmle"){
                 main = "G-comp. (ours) estimated counterfactuals",
                 xlab = "Month",
                 ylim = c(0.5,1),
-                legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
+                legend.xyloc = "bottomleft", xindx = 1:(t.end+1), xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
   }
@@ -778,14 +778,14 @@ if(estimator=="tmle"){
     colnames(prob_share[[t]]) <- colnames(obs.rules[[(t.end)]])
   }
   
-  names(prob_share) <- paste0("t=",seq(0,t.end))
+  names(prob_share) <- paste0("t=",seq(1,(t.end+1)))
   
   prob_share.bin <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
   for(t in 1:(t.end+1)){
     colnames(prob_share.bin[[t]]) <- colnames(obs.rules[[(t.end)]])
   }
   
-  names(prob_share.bin) <- paste0("t=",seq(0,t.end))
+  names(prob_share.bin) <- paste0("t=",seq(1,(t.end+1)))
   
   # calc CIs 
   

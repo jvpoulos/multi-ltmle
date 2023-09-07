@@ -91,7 +91,7 @@ Contents
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 120. 
+	+ *R*: number of simulation runs. Default is 350. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 
