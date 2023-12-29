@@ -23,7 +23,6 @@ if(dependencies){
 devtools::install_github("nt-williams/lmtp@sl3")
 remotes::install_github("tlverse/sl3")
 remotes::install_github("jvpoulos/Rsolnp") # v1.16
-#remotes::install_github("jvpoulos/sl3") # v1.4.4  <<-- changes to keras
 
 devtools::install_github('osofr/gridisl', build_vignettes = FALSE)
 devtools::install_github('osofr/stremr')

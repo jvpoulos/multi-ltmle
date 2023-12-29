@@ -23,10 +23,10 @@ Please cite the paper if you use this repo:
 Prerequsites
 ------
 
-* **R** (tested on 4.0.1 using a 6.2.0 GCC compiler)
+* **R** (tested on 4.0.1 using a 6.2.0 GCC compile)
 + Required **R** packages located in ***package_list.R*** 
 
-* For use of 'tmle-lstm' as an estimator:  **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using GCC 9.2.0 and cuda 11.2 for GPU computation
+* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using a GCC 9.2.0 compiler and cuda 11.2 for GPU computation
 + instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
 ```
 # create virtual environment within directory
@@ -87,11 +87,11 @@ Contents
 
 	+ *J*: number of treatments; must be J=6.
 
-	+ *n*: sample size. Defaults to 10000.
+	+ *n*: sample size. Defaults to 15000.
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 350. 
+	+ *R*: number of simulation runs. Default is 250. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 
@@ -114,7 +114,7 @@ Instructions
 
 2. For simulations, run: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ["lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp","tmle", "tmle-lstm"], `[arg2]` is a number specifying the treatment rule [1-3, except if 'tmle', 1 should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
 
-`Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'`
+	`Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'`
 
 3. To plot simulation results, run: `Rscript long_sim_plots.R [arg1]`; where `[arg1]` specifies the output path of the simulation results. E.g., 
 	

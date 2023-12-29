@@ -40,7 +40,7 @@ D.base <- D +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
        t = 0, 
        distr = "Multinom",
-       probs =  c(ifelse(V2[0]==1, 0.3, 0.05), ifelse(V2[0]==3, 0.3, 0.05), 0.05, ifelse(V2[0]==2, 0.3, 0.05), ifelse(V2[0]==2, 0.6, 0.3), 0.05)) + 
+       probs =  c(ifelse(V2[0]==1, 0.5, 0.05), ifelse(V2[0]==3, 0.3, 0.05), 0.05, ifelse(V2[0]==2, 0.3, 0.05), ifelse(V2[0]==2, 0.6, 0.3), 0.05)) + 
   node("C",                                     # monthly_censored_indicator (no censoring at baseline)
        t = 0,
        distr = "rbern",
@@ -57,7 +57,7 @@ D <- D.base +
   node("L1",                                      # er_mhsa (count)
        t = 1:t.end,
        distr = "NegBinom",
-       mu= plogis(.05 *L1[t-1]**2 + .05 * L2[t-1] + .1 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -3, ifelse(A[(t-1)]==5, -5, 0)))) + 
+       mu= plogis(.05 *L1[t-1]**2 + .05 * L2[t-1] + .1 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -1, ifelse(A[(t-1)]==5, -5, 0)))) + 
   node("L2",                                      # ever_mt_gluc_or_lip (binary)
        t = 1:t.end,
        distr = "rbern",

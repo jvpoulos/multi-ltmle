@@ -3,6 +3,9 @@
 ###################################
 
 lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir){
+  # lstm() function calls train_lstm_sim.py, which inputs the data and outputs predictions. The prediction task is to predict 10,000 outcomes, 
+  # all are factor variables with 7 classes (0,1,2,3,4,5,6), where 0 represents missing values.
+  #
   # data: data.frame in T x N format
   # output_dir: character string output directory
   # out_activation: Activation function to use for the output step
@@ -19,7 +22,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$output_dir <- output_dir
   py$gpu <- 3
   py$epochs <- 100
-  py$n_hidden <- 128
+  py$n_hidden <- 64
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
   py$loss_fn <- loss_fn
@@ -38,17 +41,23 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   preds <- np$load(paste0(output_dir, 'lstm_preds.npy'))
   
   print("Converting to list")
-  
-  # Convert NumPy array to R array
   preds_r_array <- as.array(preds)
   
-  # Initialize an empty list to store the matrices
-  lstm.pred <- vector("list", length = dim(preds_r_array)[1])
+  # Initialize an empty list to store the predictions
+  lstm_preds <- vector("list", length = nrow(preds_r_array))
   
-  # Fill the list with matrices
-  for (i in 1:dim(preds_r_array)[1]) {
-    lstm.pred[[i]] <- preds_r_array[i,,]
+  if(out_activation == "sigmoid"){
+    # Fill the list with prediction vectors for binary classification
+    for (i in 1:nrow(preds_r_array)) {
+      lstm_preds[[i]] <- preds_r_array[i,]
+    }
+  } else if(out_activation == "softmax"){
+    # Fill the list with matrices for multiclass classification
+    for (i in 1:dim(preds_r_array)[1]) {
+      lstm_preds[[i]] <- preds_r_array[i,,]
+    }
   }
   
-  return(lstm.pred)
+  gc()
+  return(lstm_preds)
 }

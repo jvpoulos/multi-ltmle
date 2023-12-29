@@ -12,8 +12,8 @@ library(gtable)
 
 # Define parameters
 J <- 6
-n <- 10000
-R <- 240
+n <- 15000
+R <- 250
 t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
