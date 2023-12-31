@@ -21,15 +21,15 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py <- import_main()
   py$output_dir <- output_dir
   py$gpu <- 3
-  py$epochs <- 100
-  py$n_hidden <- 64
+  py$epochs <- 500
+  py$n_hidden <- 32
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
   py$loss_fn <- loss_fn
 
   py$lr <- 0.001
   py$dr <- 0.5
-  py$nb_batches <- 8
+  py$nb_batches <- 6
   py$patience <- 10
   py$t_end <- (t_end+1)
   py$window_size <- window_size

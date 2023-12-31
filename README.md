@@ -87,7 +87,7 @@ Contents
 
 	+ *J*: number of treatments; must be J=6.
 
-	+ *n*: sample size. Defaults to 15000.
+	+ *n*: sample size. Defaults to 10000.
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 

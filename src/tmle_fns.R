@@ -253,6 +253,56 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
   return(list("Qs"=Qs,"QAW"=QAW,"clever_covariates"=clever_covariates,"weights"=weights,"updated_model_for_Y"=updated_model_for_Y, "Qstar"=Qstar, "Qstar_iptw"=Qstar_iptw, "Qstar_gcomp"=Qstar_gcomp, "ID"=initial_model_for_Y_data$ID))
 }
 
+getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, initial_model_for_Y_fit, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end){
+  
+  C <- initial_model_for_Y$data$C # 1=Censored
+  
+  for(rule in names(tmle_rules)){
+    data <- initial_model_for_Y_data[grep("A",colnames(initial_model_for_Y_data), value=TRUE, invert=TRUE)]
+    shifted <- tmle_rules[[rule]](initial_model_for_Y_data[1,]) # first row
+    for(i in 2:nrow(initial_model_for_Y_data)){ # bind row-by-row
+      shifted <- rbind(shifted, tmle_rules[[rule]](initial_model_for_Y_data[i,]))
+    }
+    newdata <- cbind(data,shifted)
+    assign(paste0("Q_",rule), initial_model_for_Y_sl_fit$predict(sl3_Task$new(newdata, covariates = tmle_covars_Y)))
+    rm(data,shifted,newdata)
+  }
+  
+  Qs <- mget(c(paste0("Q_", names(tmle_rules)))) # list of treatment.rule
+  Qs <- do.call(cbind, Qs)
+  
+  QAW <- data.frame(apply(cbind(QA=initial_model_for_Y_preds,Qs), 2, boundProbs, bounds=ybound)) # bound predictions
+  
+  # inverse probs. only used for subset of patients following treatment rule and uncensored (=0 for those excluded)
+  clever_covariates <- (obs.rules[initial_model_for_Y_data$ID,]*(1-C)) # numerator
+  
+  if(dim(g_preds_bounded)[1]>length(initial_model_for_Y_data$ID)){
+    weights <- clever_covariates/rowSums(obs.treatment[initial_model_for_Y_data$ID,]*boundProbs(g_preds_bounded[initial_model_for_Y_data$ID,]*C_preds_bounded[initial_model_for_Y_data$ID], bounds = gbound)) # denominator: clever covariate used as weight in regression
+  }else{
+    weights <- clever_covariates/rowSums(obs.treatment[initial_model_for_Y_data$ID,]*boundProbs(g_preds_bounded*C_preds_bounded, bounds = gbound)) # denominator: clever covariate used as weight in regression
+  }
+  
+  # targeting step - refit outcome model using clever covariates
+  if(unique(initial_model_for_Y$data$t)<t.end){ # use actual Y for t=T
+    updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(QAW$QA ~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
+  }else{
+    updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(initial_model_for_Y$data$Y~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
+  }
+  
+  Qstar <- lapply(1:ncol(clever_covariates), function(i) predict(updated_model_for_Y[[i]], type="response"))
+  names(Qstar) <- colnames(obs.rules)
+  
+  # IPTW estimate
+  Qstar_iptw <- lapply(1:ncol(clever_covariates), function(i) boundProbs(weights[,i]*initial_model_for_Y$data$Y, bound=ybound)) 
+  names(Qstar_iptw) <- colnames(obs.rules)
+  
+  # gcomp estimate
+  Qstar_gcomp <- lapply(1:ncol(clever_covariates), function(i) QAW[,(i+1)])
+  names(Qstar_gcomp) <- colnames(obs.rules)
+  
+  return(list("Qs"=Qs,"QAW"=QAW,"clever_covariates"=clever_covariates,"weights"=weights,"updated_model_for_Y"=updated_model_for_Y, "Qstar"=Qstar, "Qstar_iptw"=Qstar_iptw, "Qstar_gcomp"=Qstar_gcomp, "ID"=initial_model_for_Y_data$ID))
+}
+
 ###################################################################
 # Influence Curve                                                 #
 ###################################################################
