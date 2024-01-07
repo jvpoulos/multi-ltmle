@@ -2,8 +2,8 @@
 # LSTM for Simulations            #
 ###################################
 
-lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir){
-  # lstm() function calls train_lstm_sim.py, which inputs the data and outputs predictions. The prediction task is to predict 10,000 outcomes, 
+lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE){
+  # lstm() function calls train_lstm.py, which inputs the data and outputs predictions. The prediction task is to predict 10,000 outcomes, 
   # all are factor variables with 7 classes (0,1,2,3,4,5,6), where 0 represents missing values.
   #
   # data: data.frame in T x N format
@@ -30,15 +30,23 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$lr <- 0.001
   py$dr <- 0.5
   py$nb_batches <- 6
-  py$patience <- 10
+  py$patience <- 15
   py$t_end <- (t_end+1)
   py$window_size <- window_size
   
-  source_python("src/train_lstm_sim.py")
-  
-  print("Reading predictions")
   np <- import('numpy')
-  preds <- np$load(paste0(output_dir, 'lstm_preds.npy'))
+  
+  if(inference){
+    source_python("src/test_lstm.py")
+    
+    print("Reading predictions")
+    preds <- np$load(paste0(output_dir, 'lstm_new_preds.npy'))
+  }else{
+    source_python("src/train_lstm.py")
+    
+    print("Reading predictions")
+    preds <- np$load(paste0(output_dir, 'lstm_preds.npy'))
+  }
   
   print("Converting to list")
   preds_r_array <- as.array(preds)

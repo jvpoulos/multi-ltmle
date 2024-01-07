@@ -75,7 +75,9 @@ Contents
 
 * ***src/lstm.R***: function for calling Python code for estimating with LSTMs within R; used when estimator ='tmle-lstm'. 
 
-* ***src/train_lstm_sim.py***: Python code for training LSTMs for simulations; used when estimator ='tmle-lstm'.
+* ***src/train_lstm.py***: Python code for training LSTMs and predicting on the same data; used when estimator ='tmle-lstm'.
+
+* ***src/test_lstm.py***: Python code for inference using a trained LSTMs model on new data; used when estimator ='tmle-lstm'.
 
 * ***simulation.R***: longitudinal setting (T>1) simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
@@ -91,7 +93,7 @@ Contents
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 250. 
+	+ *R*: number of simulation runs. Default is 100. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 

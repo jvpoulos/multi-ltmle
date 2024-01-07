@@ -13,9 +13,10 @@ import tensorflow as tf
 
 from keras import backend as K
 from keras.models import Model
-from keras.layers import LSTM, Input, Dense
+from keras.layers import LSTM, Input, Dense, Masking
 from keras.callbacks import CSVLogger, EarlyStopping, TerminateOnNaN
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.layers import Lambda
 
 # Select gpu
 import os
@@ -40,13 +41,16 @@ def create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activa
     # Define model parameters
 
     inputs = Input(shape=(n_pre, nb_features), name="Inputs")
-    lstm_1 = LSTM(int(n_hidden), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1")(inputs) 
+    masked_input = Masking(mask_value=-1.0)(inputs)
+    lstm_1 = LSTM(int(n_hidden), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1")(masked_input) 
     lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, activation= hidden_activation, recurrent_activation="sigmoid", return_sequences=False, name="LSTM_2")(lstm_1) 
     
-    if loss_fn=="sparse_categorical_crossentropy":
-        output = Dense(10000 * 7, activation='linear', name='Dense')(lstm_2)
-        output_reshaped = tf.keras.layers.Reshape((10000, 7))(output)
-        softmax_output = tf.keras.layers.Activation('softmax')(output_reshaped)
+    if loss_fn=="sparse_categorical_crossentropy": # 7 classes: 0, 6
+        output = Dense(output_dim * 7, activation='linear', name='Dense')(lstm_2)
+        output_reshaped = tf.keras.layers.Reshape((output_dim , 7))(output)
+        
+        # Apply softmax activation across the last dimension
+        softmax_output = Lambda(lambda x: tf.nn.softmax(x, axis=-1))(output_reshaped)
     else:
         output= Dense(output_dim, activation=out_activation, name='Dense')(lstm_2)
 
@@ -120,6 +124,12 @@ def test_model():
     model = create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn)
 
     train_model(model, dataX, dataY, int(epochs), int(nb_batches))
+
+    # Save the trained model
+    model_path = os.path.join(output_dir, 'trained_model.h5')
+
+    print('Saving model to {}'.format(model_path))
+    model.save(model_path)
 
     # now test
 

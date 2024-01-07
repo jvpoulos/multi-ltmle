@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
   
   # libraries
   library(simcausal)
@@ -233,6 +233,7 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   iptw_estimates <- list()
   iptw_bin_estimates <- list()
   gcomp_estimates <- list()
+  
   Ahat_tmle <- list()
   prob_share <- list()
   Chat_tmle <- list()
@@ -305,29 +306,48 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
       tmle_dat$A <- factor(tmle_dat$A)
     }else if(estimator=="tmle-lstm"){
+      tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2)) # binarize categorical covariates
       
       if(scale.continuous){
         tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
       }
       
+      colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
+      
       tmle_dat$A <- factor(tmle_dat$A)
-      tmle_dat$V1 <- factor(tmle_dat$V1)
-      tmle_dat$V2 <- factor(tmle_dat$V2)
       
-      tmle_dat <- reshape(tmle_dat[c("t","ID", "V1", "V2", "V3", "L1", "L2","L3","A","Y","C")], idvar = "t", timevar = "ID", direction = "wide") # reshape wide so it is T x N
+      # Reshape the time-varying variables to wide format
+      # tmle_dat_time_varying_reshaped <- reshape(tmle_dat_time_varying, idvar = "t", timevar = "ID", direction = "wide") # T x N
+      tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
       
-      tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("A",colnames(tmle_dat),value = TRUE), grep("V",colnames(tmle_dat),value = TRUE))  
-      tmle_covars_A <- c(grep("L",colnames(tmle_dat),value = TRUE), grep("V",colnames(tmle_dat),value = TRUE))
+      tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
+      tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), 
+                         grep("A", colnames(tmle_dat), value = TRUE), 
+                         grep("V", colnames(tmle_dat), value = TRUE),
+                         grep("white", colnames(tmle_dat), value = TRUE),
+                         grep("black", colnames(tmle_dat), value = TRUE),
+                         grep("latino", colnames(tmle_dat), value = TRUE),
+                         grep("other", colnames(tmle_dat), value = TRUE),
+                         grep("mdd", colnames(tmle_dat), value = TRUE),
+                         grep("bipolar", colnames(tmle_dat), value = TRUE),
+                         grep("schiz", colnames(tmle_dat), value = TRUE))
+      tmle_covars_A <- setdiff(tmle_covars_Y, grep("A", colnames(tmle_dat), value = TRUE))
       tmle_covars_C <- tmle_covars_A
       
-      # set NAs to -9 (except treatment NA=0)
-      tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)])] <- -9
-      tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)])] <- -9
-      tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)])] <- -9
-      tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)])] <- -9
+      # set NAs to -1 (except treatment NA=0)
+      tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)])] <- -1
+      tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)])] <- -1
       
-      tmle_dat[c(grep("V1",colnames(tmle_dat),value = TRUE),grep("V2",colnames(tmle_dat),value = TRUE))] <- lapply(tmle_dat[c(grep("V1",colnames(tmle_dat),value = TRUE),grep("V2",colnames(tmle_dat),value = TRUE))], function(x){`levels<-`(addNA(x), c(-9, levels(x)))})
-      tmle_dat[grep("A",colnames(tmle_dat),value = TRUE)] <- lapply(tmle_dat[grep("A",colnames(tmle_dat),value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
+      tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
     }
     
     ##  fit initial treatment model
@@ -381,9 +401,9 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
       
     } else if(estimator=="tmle-lstm"){ 
-      window.size <- 9
+      window.size <- 7
       
-      lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A",colnames(tmle_dat),value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir) # list of 27 matrices
+      lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir) # list of 27 matrices
       
       lstm_A_preds <- c(replicate((window.size+1), lstm_A_preds[[1]], simplify = FALSE), lstm_A_preds) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1
       
@@ -403,101 +423,98 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         reshaped_matrix
       })
       
-      g_preds_ID <- initial_model_for_A$data$ID
-      
       g_preds_cuml <- vector("list", length(g_preds))
       
       g_preds_cuml[[1]] <- g_preds[[1]]
       
       for (i in 2:length(g_preds)) {
-        # Compute the cumulative product of corresponding rows in g_preds[[i]] and g_preds_cuml[[i-1]]
-        g_preds_cuml[[i]] <- sweep(g_preds[[i]], 1, g_preds_cuml[[i-1]], "*")
+        g_preds_cuml[[i]] <- g_preds[[i]] * g_preds_cuml[[i-1]]
       }
       
-      # Apply the boundProbs function to each matrix in g_preds_cuml
-      g_preds_cuml_bounded <- lapply(g_preds_cuml, function(x) boundProbs(x, bounds = gbound))  # winsorized cumulative propensity scores
+      g_preds_cuml_bounded <- lapply(1:length(g_preds), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
     }
     
-    # binomial
+  }
+  
+  # binomial
+  
+  if(estimator=="tmle"){
     
-    if(estimator=="tmle"){
+    initial_model_for_A_sl_bin <- make_learner(Lrnr_sl, # cross-validates base models
+                                               learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
+                                               metalearner = metalearner_A_bin,
+                                               keep_extra=FALSE)
+    
+    initial_model_for_A_bin <- lapply(0:t.end, function(t){
       
-      initial_model_for_A_sl_bin <- make_learner(Lrnr_sl, # cross-validates base models
-                                                 learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
-                                                 metalearner = metalearner_A_bin,
-                                                 keep_extra=FALSE)
+      tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("C","Y")]
       
-      initial_model_for_A_bin <- lapply(0:t.end, function(t){
-        
-        tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("C","Y")]
-        
-        # define cross-validation
-        folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
-        
-        # define task and candidate learners
-        
-        initial_model_for_A_task_bin <- lapply(1:J, function(j) make_sl3_Task(cbind("A"=dummify(tmle_dat_sub$A)[,j],tmle_dat_sub[tmle_covars_A]), 
-                                                                              covariates = tmle_covars_A, 
-                                                                              outcome = "A",
-                                                                              outcome_type="binomial",
-                                                                              folds = folds)) 
-        # train
-        
-        initial_model_for_A_sl_fit_bin <- lapply(1:J, function(j) initial_model_for_A_sl_bin$train(initial_model_for_A_task_bin[[j]]))
-        
-        return(list("preds"=sapply(1:J, function(j) initial_model_for_A_sl_fit_bin[[j]]$predict(initial_model_for_A_task_bin[[j]])), 
-                    "folds"= folds,
-                    "task"=initial_model_for_A_task_bin,
-                    "fit"=initial_model_for_A_sl_fit_bin,
-                    "data"=tmle_dat_sub)) 
+      # define cross-validation
+      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      
+      # define task and candidate learners
+      
+      initial_model_for_A_task_bin <- lapply(1:J, function(j) make_sl3_Task(cbind("A"=dummify(tmle_dat_sub$A)[,j],tmle_dat_sub[tmle_covars_A]), 
+                                                                            covariates = tmle_covars_A, 
+                                                                            outcome = "A",
+                                                                            outcome_type="binomial",
+                                                                            folds = folds)) 
+      # train
+      
+      initial_model_for_A_sl_fit_bin <- lapply(1:J, function(j) initial_model_for_A_sl_bin$train(initial_model_for_A_task_bin[[j]]))
+      
+      return(list("preds"=sapply(1:J, function(j) initial_model_for_A_sl_fit_bin[[j]]$predict(initial_model_for_A_task_bin[[j]])), 
+                  "folds"= folds,
+                  "task"=initial_model_for_A_task_bin,
+                  "fit"=initial_model_for_A_sl_fit_bin,
+                  "data"=tmle_dat_sub)) 
+    })
+    
+    g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(i) data.frame(initial_model_for_A_bin[[i]]$preds) ) # t length list of estimated propensity scores 
+    g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+    
+    g_preds_bin_ID <- lapply(1:length(initial_model_for_A_bin), function(i) unlist(lapply(initial_model_for_A_bin[[i]]$data$ID, unlist)))
+    
+    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
+    
+    g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
+    
+    for (i in 2:length(g_preds_bin)) {
+      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),]
+    }    
+    g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
+  } else if(estimator=="tmle-lstm"){ 
+    
+    # Define the number of treatment classes
+    num_classes <- J
+    
+    lstm_A_preds_bin <- list()
+    for (k in 1:num_classes) {
+      print(paste0("Class ", k, " in ", num_classes))
+      
+      # Create a binary matrix for the outcomes where each 'A' column is compared to class k
+      A_binary_matrix <- sapply(grep("A", colnames(tmle_dat), value = TRUE), function(col_name) {
+        as.numeric(tmle_dat[[col_name]] == k)  # 1 if treatment is class k, 0 otherwise
       })
       
-      g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(i) data.frame(initial_model_for_A_bin[[i]]$preds) ) # t length list of estimated propensity scores 
-      g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+      print(dim(A_binary_matrix))
       
-      g_preds_bin_ID <- lapply(1:length(initial_model_for_A_bin), function(i) unlist(lapply(initial_model_for_A_bin[[i]]$data$ID, unlist)))
+      # Combine with covariates data
+      lstm_input_data <- cbind(A_binary_matrix, tmle_dat[tmle_covars_A])
       
-      g_preds_bin_cuml <- vector("list", length(g_preds_bin))
-      
-      g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
-      
-      for (i in 2:length(g_preds_bin)) {
-        g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),]
-      }    
-      g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
-    } else if(estimator=="tmle-lstm"){ 
-      lstm_A_preds_bin <- list()
-      
-      # Define the number of treatment classes
-      num_classes <- J
-      
-      for (k in 1:num_classes) {
-        print(paste0("Class ", k, " in ", num_classes))
-        
-        # Create a binary matrix for the outcomes where each 'A' column is compared to class k
-        A_binary_matrix <- sapply(grep("A", colnames(tmle_dat), value = TRUE), function(col_name) {
-          as.numeric(tmle_dat[[col_name]] == k)  # 1 if treatment is class k, 0 otherwise
-        })
-        
-        print(dim(A_binary_matrix))
-        
-        # Combine with covariates data
-        lstm_input_data <- cbind(A_binary_matrix, tmle_dat[tmle_covars_A])
-        
-        # Train the LSTM model with the prepared data
-        lstm_A_preds_bin[[k]] <- lstm(data = lstm_input_data, 
-                                      outcome = colnames(A_binary_matrix), 
-                                      covariates = tmle_covars_A, 
-                                      t_end = t.end, 
-                                      window_size = window.size, 
-                                      out_activation = "sigmoid", 
-                                      loss_fn = "binary_crossentropy", 
-                                      output_dir) # [[J (1:6)][[timesteps (1:27)]]]
-      }
-      
-      # Optionally, force garbage collection after the loop
-      gc()
+      # Train the LSTM model with the prepared data
+      lstm_A_preds_bin[[k]] <- lstm(data = lstm_input_data, 
+                                    outcome = colnames(A_binary_matrix), 
+                                    covariates = tmle_covars_A, 
+                                    t_end = t.end, 
+                                    window_size = window.size, 
+                                    out_activation = "sigmoid", 
+                                    loss_fn = "binary_crossentropy", 
+                                    output_dir) # [[J (1:6)][[timesteps (1:27)]]]
     }
+    
+    # Optionally, force garbage collection after the loop
+    gc()
     
     # Initialize the transformed list
     transformed_preds_bin <- vector("list", length = 6) # for 6 treatment classes
@@ -513,8 +530,6 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       # Assign the combined matrix to the transformed list
       transformed_preds_bin[[class]] <- combined_matrix
     } # Now, transformed_preds_bin is a list of 6 elements, each a 10000 by 27 matrix
-    
-    lstm_A_preds_bin <- list()
     
     for (i in 1:length(transformed_preds_bin)) {
       # Get the first column and replicate it (window.size) times
@@ -554,7 +569,6 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Apply boundProbs to each cumulative prediction
     g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) boundProbs(x, bounds = gbound))
-    
   }
   
   ##  fit initial censoring model
@@ -647,7 +661,6 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Apply boundProbs to each cumulative prediction
     C_preds_cuml_bounded <- lapply(C_preds_cuml, function(x) boundProbs(x, bounds = gbound))
-    
   }
   
   ## sequential g-formula
@@ -708,11 +721,10 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_contrasts <- list()
     tmle_contrasts_bin <- list()
     
-    ### CONTINUE HERE: NEED TO MODIFY THIS FN
+    # Continue HERE - need to reshape data/preds
     tmle_contrasts[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = initial_model_for_Y$preds[, t.end],  # Update this line as needed
-      initial_model_for_Y_data, 
-      initial_model_for_Y_fit, 
+      initial_model_for_Y_preds = initial_model_for_Y$preds[, t.end], 
+      initial_model_for_Y_data = initial_model_for_Y$data, 
       tmle_rules = tmle_rules,
       tmle_covars_Y=tmle_covars_Y, 
       g_preds_bounded=g_preds_cuml_bounded[[t.end+1]], 
@@ -723,9 +735,8 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     )
     
     tmle_contrasts_bin[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t.end],  # Update this line as needed
-      initial_model_for_Y_data, 
-      initial_model_for_Y_fit, 
+      initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t.end], 
+      initial_model_for_Y_data = initial_model_for_Y$data, 
       tmle_rules = tmle_rules,
       tmle_covars_Y=tmle_covars_Y, 
       g_preds_bounded=g_preds_bin_cuml_bounded[[t.end+1]], 
@@ -740,9 +751,8 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       tmle_contrasts[[t]] <- sapply(1:length(tmle_rules), function(i) {
         # Ensure correct referencing of the transformed predictions
         getTMLELongLSTM(
-          initial_model_for_Y_preds = initial_model_for_Y$preds[, t],  # Update this line as needed
-          initial_model_for_Y_data, 
-          initial_model_for_Y_fit, 
+          initial_model_for_Y_preds = initial_model_for_Y$preds[, t], 
+          initial_model_for_Y_data = initial_model_for_Y$data, 
           tmle_rules = tmle_rules,
           tmle_covars_Y=tmle_covars_Y, 
           g_preds_bounded=g_preds_cuml_bounded[[t+1]], 
@@ -757,9 +767,8 @@ simLong <- function(r, J=6, n=15000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) {
         # Ensure correct referencing
         getTMLELongLSTM(
-          initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t],  # Update this line as needed
-          initial_model_for_Y_data, 
-          initial_model_for_Y_fit, 
+          initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t], 
+          initial_model_for_Y_data = initial_model_for_Y$data, 
           tmle_rules = tmle_rules,
           tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t+1]], 
           C_preds_bounded=C_preds_cuml_bounded[[t]], 
@@ -1230,7 +1239,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 250 # number of simulation runs
+R <- 100 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -1292,7 +1301,27 @@ filename <- paste0(output_dir,
 
 print(paste0('simulation setting: ', "estimator = ", estimator, ", treatment.rule = ", treatment.rule, " R = ", R, ", n = ", n,", J = ", J ,", t.end = ", t.end, ", use.SL = ",use.SL, ", scale.continuous = ",scale.continuous))
 
-sim.results <- foreach(r = 1:R, .combine='cbind', .verbose = TRUE, .errorhandling="remove") %dopar% {
+library_vector <- c(
+  "simcausal",
+  "purrr",
+  "origami",
+  "sl3",
+  "nnet",
+  "ranger",
+  "xgboost",
+  "glmnet",
+  "MASS",
+  "progressr",
+  "data.table",
+  "gtools",
+  "dplyr",
+  "readr",
+  "reticulate",
+  "tensorflow",
+  "keras"
+)
+
+sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE, .inorder=FALSE) %dopar% {
   simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
 }
 

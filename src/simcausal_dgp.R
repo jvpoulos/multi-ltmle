@@ -40,7 +40,7 @@ D.base <- D +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
        t = 0, 
        distr = "Multinom",
-       probs =  c(ifelse(V2[0]==1, 0.5, 0.05), ifelse(V2[0]==3, 0.3, 0.05), 0.05, ifelse(V2[0]==2, 0.3, 0.05), ifelse(V2[0]==2, 0.6, 0.3), 0.05)) + 
+       probs =  c(ifelse(V2[0]==1 & (L1[0]>0 | L2[0]>0 | L3[0]>0), 1/4, 1/8), ifelse(V2[0]==3 & (L1[0]>0), 1/4, 1/8), 1/8, ifelse(V2[0]==2 & (L2[0]>0), 1/4, 1/8), ifelse(V2[0]==2 & (L3[0]>0), 1/4, 1/8), 1/8)) + 
   node("C",                                     # monthly_censored_indicator (no censoring at baseline)
        t = 0,
        distr = "rbern",
@@ -69,7 +69,7 @@ D <- D.base +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
        t = 1:t.end, 
        distr = "Multinom",
-       probs = StochasticFun(A[(t-1)], d=c(ifelse(V2[0]==1 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.1, 0), ifelse(V2[0]==3 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.1, 0), 0, ifelse(V2[0]==2 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.1, 0), ifelse(A[(t-1)]==5 & (L1[t]>0 | L2[t]>0 | L3[t]>0), -0.94, 0), 0))) +
+       probs = StochasticFun(A[(t-1)], d=c(ifelse(V2[0]==1 & (L1[t]>0 | L2[t]>0 | L3[t]>0), 0.01, 0), ifelse(V2[0]==3 & (L1[t]>0), 0.01, 0), 0, ifelse(V2[0]==2 & (L2[t]>0), 0.01, 0), ifelse(V2[0]==2  & (L3[t]>0), 0.01, 0), 0), stay_prob=0.95)) +
   node("C",                                      # monthly_censored_indicator
        t = 1:t.end,
        distr = "rbern",

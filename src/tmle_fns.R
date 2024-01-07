@@ -253,7 +253,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
   return(list("Qs"=Qs,"QAW"=QAW,"clever_covariates"=clever_covariates,"weights"=weights,"updated_model_for_Y"=updated_model_for_Y, "Qstar"=Qstar, "Qstar_iptw"=Qstar_iptw, "Qstar_gcomp"=Qstar_gcomp, "ID"=initial_model_for_Y_data$ID))
 }
 
-getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, initial_model_for_Y_fit, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end){
+getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end){
   
   C <- initial_model_for_Y$data$C # 1=Censored
   
@@ -264,7 +264,8 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       shifted <- rbind(shifted, tmle_rules[[rule]](initial_model_for_Y_data[i,]))
     }
     newdata <- cbind(data,shifted)
-    assign(paste0("Q_",rule), initial_model_for_Y_sl_fit$predict(sl3_Task$new(newdata, covariates = tmle_covars_Y)))
+    # assign(paste0("Q_",rule), initial_model_for_Y_sl_fit$predict(sl3_Task$new(newdata, covariates = tmle_covars_Y)))
+    assign(paste0("Q_",rule), lstm(data=newdata[c(grep("Y",colnames(newdata),value = TRUE),tmle_covars_Y)], outcome=grep("Y",colnames(newdata),value = TRUE), covariates=tmle_covars_Y, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir, inference=TRUE))
     rm(data,shifted,newdata)
   }
   

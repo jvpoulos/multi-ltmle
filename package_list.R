@@ -2,7 +2,7 @@
 # Install packages   #
 ######################
 
-packages <- c("devtools","ggplot2","nnet","tmle","MASS","tidyverse","data.table","SuperLearner","reshape2","origami","tictoc","weights","grid","car","latex2exp","progressr","future","ltmle","gtools","readr")
+packages <- c("devtools","ggplot2","nnet","tmle","MASS","tidyverse","data.table","SuperLearner","reshape2","origami","tictoc","weights","grid","car","latex2exp","progressr","future","ltmle","gtools","readr","futile.logger")
 
 super.learner <- TRUE
 dependencies <- FALSE # data.table, stringi, HMisc dependencies might be needed for SuperLearner libraries

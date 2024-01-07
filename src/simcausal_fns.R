@@ -45,21 +45,33 @@ Multinom <- function(n,probs){
 }
 
 # stochastic treatment rule function
-StochasticFun <- function(condition, d) {
+StochasticFun <- function(condition, d, stay_prob=0.75) {
   condition[is.na(condition)] <- 0
   n <- length(condition)
-  if(!is.matrix(d)){
-    d <- matrix(d,n,length(d),byrow = TRUE)
+  if (!is.matrix(d)) {
+    d <- matrix(d, n, length(d), byrow = TRUE)
   }
   J <- ncol(d)
- res <- as.matrix((matrix(condition,n,J)==1)+0)*matrix(c(0.95,0.01,0.01,0.01,0.01,0.01),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==2)+0)*matrix(c(0.01,0.95,0.01,0.01,0.01,0.01),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==3)+0)*matrix(c(0.01,0.01,0.95,0.01,0.01,0.01),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==4)+0)*matrix(c(0.01,0.01,0.01,0.95,0.01,0.01),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==5)+0)*matrix(c(0.01,0.01,0.01,0.01,0.95,0.01),n,J,byrow = TRUE) +
-    as.matrix((matrix(condition,n,J)==6)+0)*matrix(c(0.01,0.01,0.01,0.01,0.01,0.95),n,J,byrow = TRUE) + d
-  if(any(is.na(res))){
-    res[is.na(res)] <- .Machine$double.eps # placeholder 
+  
+  # Create a matrix with higher stay probability and lower switch probability
+  switch_prob <- (1 - stay_prob) / (J - 1)  # Adjusted switch probability
+  
+  # Create a matrix for the probabilities of staying vs. switching
+  probs_matrix <- matrix(switch_prob, n, J, byrow = TRUE)
+  for (j in 1:J) {
+    probs_matrix[, j] <- ifelse(condition == j, stay_prob, switch_prob)
   }
+  
+  # Apply the stochastic adjustments d
+  res <- probs_matrix + d
+  
+  # Ensure that no probabilities exceed 1 after the adjustment
+  res[res > 1] <- 1
+  
+  # Replace any resulting NAs with a very small number
+  if (any(is.na(res))) {
+    res[is.na(res)] <- .Machine$double.eps
+  }
+  
   return(res)
 }
