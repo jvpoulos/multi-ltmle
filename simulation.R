@@ -24,6 +24,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   library(gtools)
   library(dplyr)
   library(readr)
+  library(tidyr)
   
   if(estimator=='tmle-lstm'){
     library(reticulate)
@@ -37,24 +38,18 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     source('./src/lstm.R')
   }
   
-  if(estimator%in%c("tmle","tmle-lstm")){
+  if(estimator=='tmle-lstm'){
+    source('./src/SL3_fns.R', local =TRUE)
+  }
+  
+  if(estimator%in%c("tmle")){
     source('./src/tmle_fns.R')
   }
   
-  if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
-    library(lmtp)
-    source('./src/lmtp_fns.R')
-    
+  if(estimator%in%c("tmle-lstm")){
+    source('./src/tmle_fns_lstm.R')
   }
   
-  if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
-    library(ltmle)
-    library(SuperLearner)
-    source('./src/SL_fns.R')
-    source('./src/ltmle_fns.R')
-  }
-  
-  source('./src/SL3_fns.R', local =TRUE)
   source('./src/misc_fns.R')
   
   if(J!=6){
@@ -66,7 +61,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   }
   
   if(t.end!=36 & estimator!="tmle"){
-    stop("need to manually change t.end in shift functions in lmtp_fns.R or ltmle.R, and the number of lags in tmle_dat, and IC in tmle_fns")
+    stop("need to manually change the number of lags in tmle_dat and IC in tmle_fns")
   }
   
   if(n.folds<3){
@@ -79,10 +74,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   if(scale.continuous==TRUE){
     warning("real values of certain time-varying covariates needed to characterize treatment rules")
-  }
-  
-  if(estimator%in%c("lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp")){
-    warning("estimator not functional")
   }
   
   # define DGP
@@ -317,7 +308,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       tmle_dat$A <- factor(tmle_dat$A)
       
       # Reshape the time-varying variables to wide format
-      # tmle_dat_time_varying_reshaped <- reshape(tmle_dat_time_varying, idvar = "t", timevar = "ID", direction = "wide") # T x N
       tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
       
       tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
@@ -708,20 +698,42 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     lstm_Y_preds <- lstm(data=tmle_dat[c(grep("Y",colnames(tmle_dat),value = TRUE),tmle_covars_Y)], outcome=grep("Y",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_Y, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)
     
-    # Transform lstm_Y_preds into a data matrix of n x 37
+    # Transform lstm_Y_preds into a data matrix of n x t.end
     transformed_Y_preds <- do.call(cbind, c(replicate(window.size, lstm_Y_preds[[1]], simplify = FALSE), lstm_Y_preds))
     
-    # Create initial_model_for_Y using the transformed predictions
-    initial_model_for_Y <- list("preds" = boundProbs(transformed_Y_preds, ybound), "data" = tmle_dat)
+    # Reshape tmle_dat from wide to long format
+    long_data <- tmle_dat %>%
+      # Convert all columns to character type to avoid data type conflicts
+      mutate(across(-t, as.character)) %>%
+      pivot_longer(
+        cols = -t,  # Select all columns except 't'
+        names_to = "covariate_id",
+        values_to = "value"
+      ) %>%
+      separate(covariate_id, into = c("covariate", "id"), sep = "\\.") %>%
+      pivot_wider(
+        names_from = covariate,
+        values_from = value,
+        id_cols = c(t, id)
+      )
     
-    tmle_rules <- list("static" = static_mtp,
-                       "dynamic" = dynamic_mtp,
-                       "stochastic" = stochastic_mtp)
+    # Convert all columns to numeric except 'A', which is converted to a factor
+    long_data <- long_data %>%
+      mutate(across(-A, as.numeric),  # Convert all columns except 'A' to numeric
+             A = as.factor(A))  # Convert 'A' to a factor
+    
+    long_data <- as.data.frame(long_data)
+    
+    # Create initial_model_for_Y using the transformed predictions
+    initial_model_for_Y <- list("preds" = boundProbs(transformed_Y_preds, ybound), "data" = long_data)
+    
+    tmle_rules <- list("static" = static_mtp_lstm,
+                       "dynamic" = dynamic_mtp_lstm,
+                       "stochastic" = stochastic_mtp_lstm)
     
     tmle_contrasts <- list()
     tmle_contrasts_bin <- list()
     
-    # Continue HERE - need to reshape data/preds
     tmle_contrasts[[t.end]] <- getTMLELongLSTM(
       initial_model_for_Y_preds = initial_model_for_Y$preds[, t.end], 
       initial_model_for_Y_data = initial_model_for_Y$data, 
@@ -789,7 +801,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     png(paste0(output_dir,paste0("survival_plot_tmle_estimates_",n, ".png")))
     plotSurvEst(surv = list("Static"= tmle_estimates[1,], "Dynamic"= tmle_estimates[2,], "Stochastic"= tmle_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
-                main = "LTMLE (ours, multinomial) estimated counterfactuals",
+                main = "TMLE (ours, multinomial) estimated counterfactuals",
                 xlab = "Month",
                 ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
@@ -799,7 +811,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_",n, ".png")))
     plotSurvEst(surv = list("Static"= tmle_bin_estimates[1,], "Dynamic"= tmle_bin_estimates[2,], "Stochastic"= tmle_bin_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
-                main = "LTMLE (ours, binomial) estimated counterfactuals",
+                main = "TMLE (ours, binomial) estimated counterfactuals",
                 xlab = "Month",
                 ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
@@ -864,13 +876,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # calc CIs 
   
-  tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored)
-  tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored)
+  tmle_est_var <- TMLE_IC_lstm(tmle_contrasts, initial_model_for_Y, time.censored)
+  tmle_est_var_bin <- TMLE_IC_lstm(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored)
   
-  iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE)
-  iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE)
+  iptw_est_var <- TMLE_IC_lstm(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE)
+  iptw_est_var_bin <- TMLE_IC_lstm(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE)
   
-  gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE)
+  gcomp_est_var <- TMLE_IC_lstm(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE)
   
   # store results
   
@@ -971,247 +983,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     names(CIW_iptw_bin[[t]]) <- names(bias_iptw_bin[[t]])
   }
   
-  ## LMTP
-  
-  lmtp_tmle_results <- list()
-  lmtp_iptw_results <- list()
-  lmtp_gcomp_results <- list()
-  lmtp_sdr_results <- list()
-  
-  results_bias_lmtp_tmle <- list() 
-  results_CP_lmtp_tmle <- list()
-  results_CIW_lmtp_tmle <- list()
-  
-  results_bias_lmtp_iptw <- list() 
-  results_CP_lmtp_iptw <- list()
-  results_CIW_lmtp_iptw <- list()
-  
-  results_bias_lmtp_gcomp <- list() 
-  results_CP_lmtp_gcomp <- list()
-  results_CIW_lmtp_gcomp <- list()
-  
-  results_bias_lmtp_sdr <- list() 
-  results_CP_lmtp_sdr <- list()
-  results_CIW_lmtp_sdr <- list()
-  
-  if (missing(estimator)) {
-    stop("The 'estimator' argument is missing.")
-  }
-  
-  if(estimator%in%c("lmtp-tmle", "lmtp-iptw","lmtp-gcomp","lmtp-sdr")){
-    
-    # define treatment and covariates
-    baseline <- c("V1_0", "V2_0", "V3_0")
-    tv <- lapply(0:t.end, function(i){paste0("L",c(1,2,3),"_",i)})
-    
-    lmtp_dat <- Odat[!colnames(Odat)%in%c("ID")] # columns in time-ordering of model: A < C < Y
-    lmtp_dat[,cnodes][is.na(lmtp_dat[,cnodes])] <- 1
-    lmtp_dat[,cnodes] <- ifelse(lmtp_dat[,cnodes]==1, 0, 1) # C=0 indicates censored
-    
-    if(scale.continuous){
-      lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] <- scale(lmtp_dat[c("V3_0",grep("L1",colnames(lmtp_dat), value=TRUE))] ) # center and scale continuous/count vars
-    }
-    
-    # define treatment rules
-    
-    lmtp_rules <- list("static"=static_mtp,
-                       "dynamic"=dynamic_mtp,
-                       "stochastic"=stochastic_mtp) 
-    
-    # estimate outcomes under treatment rule, for all periods
-    
-    if(estimator=="lmtp-tmle"){
-      lmtp_tmle_results[[treatment.rule]] <- lmtp_tmle(data = lmtp_dat,
-                                                       trt = anodes,
-                                                       outcome = ynodes, 
-                                                       baseline = baseline, 
-                                                       time_vary = tv,
-                                                       cens= cnodes,
-                                                       shift=lmtp_rules[[treatment.rule]],
-                                                       intervention_type = "mtp",
-                                                       outcome_type = "survival", 
-                                                       learners_trt= if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
-                                                       learners_outcome= if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
-                                                       .SL_folds = n.folds)
-      
-      results_bias_lmtp_tmle[[treatment.rule]] <- lmtp_tmle_results[[treatment.rule]]$theta - Y.true[[treatment.rule]][t.end] # LMTP  point and variance estimates
-      results_CP_lmtp_tmle[[treatment.rule]] <- as.numeric((lmtp_tmle_results[[treatment.rule]]$low < Y.true[[treatment.rule]][t.end]) & (lmtp_tmle_results[[treatment.rule]]$high > Y.true[[treatment.rule]][t.end]))
-      results_CIW_lmtp_tmle[[treatment.rule]]<- lmtp_tmle_results[[treatment.rule]]$high-lmtp_tmle_results[[treatment.rule]]$low
-    } else if(estimator=="lmtp-iptw"){
-      lmtp_iptw_results[[treatment.rule]] <- lmtp_ipw(data = lmtp_dat,
-                                                      trt = anodes,
-                                                      outcome = ynodes, 
-                                                      baseline = baseline, 
-                                                      time_vary = tv,
-                                                      cens= cnodes,
-                                                      shift=lmtp_rules[[treatment.rule]],
-                                                      intervention_type = "mtp",
-                                                      outcome_type = "survival", 
-                                                      learners= if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
-                                                      .SL_folds = n.folds)
-      
-      results_bias_lmtp_iptw[[treatment.rule]] <- lmtp_iptw_results[[treatment.rule]]$theta - Y.true[[treatment.rule]][t.end] # LMTP  point and variance estimates
-      results_CP_lmtp_iptw[[treatment.rule]] <- as.numeric((lmtp_iptw_results[[treatment.rule]]$low < Y.true[[treatment.rule]][t.end]) & (lmtp_iptw_results[[treatment.rule]]$high > Y.true[[treatment.rule]][t.end]))
-      results_CIW_lmtp_iptw[[treatment.rule]]<- lmtp_iptw_results[[treatment.rule]]$high-lmtp_iptw_results[[treatment.rule]]$low
-    } else if(estimator=="lmtp-gcomp"){
-      lmtp_gcomp_results[[treatment.rule]] <- lmtp_sub(data = lmtp_dat,
-                                                       trt = anodes,
-                                                       outcome = ynodes, 
-                                                       baseline = baseline, 
-                                                       time_vary = tv,
-                                                       cens= cnodes,
-                                                       shift=lmtp_rules[[treatment.rule]],
-                                                       outcome_type = "survival", 
-                                                       learners= if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
-                                                       .SL_folds = n.folds)
-      
-      results_bias_lmtp_gcomp[[treatment.rule]] <- lmtp_gcomp_results[[treatment.rule]]$theta - Y.true[[treatment.rule]][t.end] # LMTP  point and variance estimates
-      results_CP_lmtp_gcomp[[treatment.rule]] <- as.numeric((lmtp_gcomp_results[[treatment.rule]]$low < Y.true[[treatment.rule]][t.end]) & (lmtp_gcomp_results[[treatment.rule]]$high > Y.true[[treatment.rule]][t.end]))
-      results_CIW_lmtp_gcomp[[treatment.rule]]<- lmtp_gcomp_results[[treatment.rule]]$high-lmtp_gcomp_results[[treatment.rule]]$low
-    } else if(estimator=="lmtp-sdr"){
-      lmtp_sdr_results[[treatment.rule]] <- lmtp_sdr(data = lmtp_dat,
-                                                     trt = anodes,
-                                                     outcome = ynodes, 
-                                                     baseline = baseline, 
-                                                     time_vary = tv,
-                                                     cens= cnodes,
-                                                     shift=lmtp_rules[[treatment.rule]],
-                                                     intervention_type = "mtp",
-                                                     outcome_type = "survival", 
-                                                     learners_trt= if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
-                                                     learners_outcome= if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
-                                                     .SL_folds = n.folds)
-      # store results
-      
-      results_bias_lmtp_sdr[[treatment.rule]] <- lmtp_sdr_results[[treatment.rule]]$theta - Y.true[[treatment.rule]][t.end] # LMTP  point and variance estimates
-      results_CP_lmtp_sdr[[treatment.rule]] <- as.numeric((lmtp_sdr_results[[treatment.rule]]$low < Y.true[[treatment.rule]][t.end]) & (lmtp_sdr_results[[treatment.rule]]$high > Y.true[[treatment.rule]][t.end]))
-      results_CIW_lmtp_sdr[[treatment.rule]]<- lmtp_sdr_results[[treatment.rule]]$high-lmtp_sdr_results[[treatment.rule]]$low
-    }
-  }
-  
-  ## LTMLE
-  
-  ltmle_tmle_results <- list()
-  ltmle_iptw_results <- list()
-  ltmle_gcomp_results <- list()
-  
-  results_CI_ltmle_tmle <- list() 
-  results_bias_ltmle_tmle <- list() 
-  results_CP_ltmle_tmle <- list()
-  results_CIW_ltmle_tmle <- list()
-  
-  results_CI_ltmle_iptw <- list() 
-  results_bias_ltmle_iptw <- list() 
-  results_CP_ltmle_iptw <- list()
-  results_CIW_ltmle_iptw <- list()
-  
-  results_CI_ltmle_gcomp <- list() 
-  results_bias_ltmle_gcomp <- list() 
-  results_CP_ltmle_gcomp <- list()
-  results_CIW_ltmle_gcomp <- list()
-  
-  if(estimator%in%c("ltmle-tmle","ltmle-gcomp")){
-    
-    # define treatments
-    obs.treatment[obs.treatment==0] <- NA
-    obs.treatment <- droplevels(obs.treatment)
-    treatments <- lapply(1:(t.end+1), function(t) dummify(obs.treatment[,t]))
-    treatments <- do.call("cbind", treatments)
-    colnames(treatments) <- c(sapply(0:t.end, function(t) paste0(c("A1_","A2_","A3_","A4_","A5_","A6_"), rep(t,3))))
-    
-    # define treatment and covariates 
-    
-    baseline <- c("V1_0", "V2_0", "V3_0")
-    tv <- c(sapply(0:t.end, function(i){paste0("L",c(1,2,3),"_",i)}))
-    
-    ltmle_dat <- data.frame(Odat[baseline],Odat[tv],treatments,
-                            sapply(1:length(cnodes), function(t) BinaryToCensoring(is.censored=Odat[,cnodes[t]])),  # converts to 1=uncensored, 0=censored
-                            Odat[ynodes], stringsAsFactors=TRUE)
-    colnames(ltmle_dat)[grep("X",colnames(ltmle_dat))] <- colnames(Odat[cnodes])
-    
-    if(scale.continuous){
-      ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))] <- scale(ltmle_dat[c("V3_0",grep("L1",colnames(ltmle_dat), value=TRUE))]) # center and scale continuous/count vars
-    }
-    
-    column_order <- c(baseline, c(sapply(0:t.end, function(i){
-      c(paste0("L",c(1,2,3),"_",i), paste0("A",c(1:6),"_",i), paste0("C","_",i), paste0("Y","_",i))
-    })))
-    
-    ltmle_dat <-  ltmle_dat[mixedorder(names(ltmle_dat))][column_order] # columns in time-ordering of model: A < C < Y
-    
-    # define treatment rules
-    
-    ltmle_rules <- list("static"=static_mtp,
-                        "dynamic"=dynamic_mtp,
-                        "stochastic"=stochastic_mtp) 
-    
-    # estimate outcomes under treatment regime
-    
-    if(estimator=="ltmle-tmle"){
-      ltmle_tmle_results[[treatment.rule]] <- ltmle(ltmle_dat, 
-                                                    Anodes=colnames(treatments),
-                                                    Cnodes=cnodes,
-                                                    Lnodes=tv,
-                                                    Ynodes=ynodes, 
-                                                    survivalOutcome = TRUE,
-                                                    rule=ltmle_rules[[treatment.rule]],
-                                                    stratify=FALSE, 
-                                                    variance.method="ic",
-                                                    estimate.time=TRUE, 
-                                                    SL.library=if(use.SL) SL.library else "glm",
-                                                    SL.cvControl=if(use.SL) list(V = n.folds) else list(),
-                                                    gbounds=gbound)
-      
-      results_bias_ltmle_tmle[[treatment.rule]] <- ltmle_tmle_results[[treatment.rule]]$estimates['tmle'] - Y.true[[treatment.rule]][t.end] # ltmle  point and variance estimates
-      results_CI_ltmle_tmle[[treatment.rule]] <- CI(est=ltmle_tmle_results[[treatment.rule]]$estimates['tmle'], infcurv = ltmle_tmle_results[[treatment.rule]]$IC$tmle, alpha=0.05)
-      
-      results_CP_ltmle_tmle[[treatment.rule]] <- as.numeric((results_CI_ltmle_tmle[[treatment.rule]][[1]] < sapply(Y.true,"[[",t.end)[[treatment.rule]])  & (results_CI_ltmle_tmle[[treatment.rule]][[2]] > sapply(Y.true,"[[",t.end)[[treatment.rule]])) 
-      results_CIW_ltmle_tmle[[treatment.rule]] <- results_CI_ltmle_tmle[[treatment.rule]][[2]] - results_CI_ltmle_tmle[[treatment.rule]][[1]]  # wrt to est at T
-      
-      results_bias_ltmle_iptw[[treatment.rule]] <- ltmle_iptw_results[[treatment.rule]]$estimates['iptw'] - Y.true[[treatment.rule]][t.end] # ltmle  point and variance estimates
-      results_CI_ltmle_iptw[[treatment.rule]] <- CI(est=ltmle_iptw_results[[treatment.rule]]$estimates['iptw'], infcurv = ltmle_iptw_results[[treatment.rule]]$IC$iptw, alpha=0.05)
-      
-      results_CP_ltmle_iptw[[treatment.rule]] <- as.numeric((results_CI_ltmle_iptw[[treatment.rule]][[1]] < sapply(Y.true,"[[",t.end)[[treatment.rule]])  & (results_CI_ltmle_iptw[[treatment.rule]][[2]] > sapply(Y.true,"[[",t.end)[[treatment.rule]])) 
-      results_CIW_ltmle_iptw[[treatment.rule]] <- results_CI_ltmle_iptw[[treatment.rule]][[2]] - results_CI_ltmle_iptw[[treatment.rule]][[1]]  # wrt to est at T
-      
-    }else if(estimator=="ltmle-gcomp"){
-      ltmle_gcomp_results[[treatment.rule]] <- ltmle(ltmle_dat, 
-                                                     Anodes=colnames(treatments),
-                                                     Cnodes=cnodes,
-                                                     Lnodes=tv,
-                                                     Ynodes=ynodes, 
-                                                     survivalOutcome = TRUE,
-                                                     rule=ltmle_rules[[treatment.rule]],
-                                                     stratify=FALSE, 
-                                                     variance.method="ic",
-                                                     estimate.time=TRUE, 
-                                                     gcomp=TRUE,
-                                                     SL.library=if(use.SL) SL.library else "glm",
-                                                     SL.cvControl=if(use.SL) list(V = n.folds) else list(),
-                                                     gbounds=gbound)
-      
-      results_bias_ltmle_gcomp[[treatment.rule]] <- ltmle_gcomp_results[[treatment.rule]]$estimates['gcomp'] - Y.true[[treatment.rule]][t.end] # ltmle  point and variance estimates
-      results_CI_ltmle_gcomp[[treatment.rule]] <- CI(est=ltmle_gcomp_results[[treatment.rule]]$estimates['gcomp'], infcurv = ltmle_gcomp_results[[treatment.rule]]$IC$gcomp, alpha=0.05)
-      
-      results_CP_ltmle_gcomp[[treatment.rule]] <- as.numeric((results_CI_ltmle_gcomp[[treatment.rule]][[1]] < sapply(Y.true,"[[",t.end)[[treatment.rule]])  & (results_CI_ltmle_gcomp[[treatment.rule]][[2]] > sapply(Y.true,"[[",t.end)[[treatment.rule]])) 
-      results_CIW_ltmle_gcomp[[treatment.rule]] <- results_CI_ltmle_gcomp[[treatment.rule]][[2]] - results_CI_ltmle_gcomp[[treatment.rule]][[1]]  # wrt to est at T
-    }
-  }
-  
   return(list("Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
               "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,"tmle_est_var"=tmle_est_var,
               "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,"tmle_est_var_bin"=tmle_est_var_bin,
               "yhat_gcomp"= gcomp_estimates, "bias_gcomp"= bias_gcomp,"CP_gcomp"= CP_gcomp,"CIW_gcomp"=CIW_gcomp,"gcomp_est_var"=gcomp_est_var,
               "yhat_iptw"= iptw_estimates,"bias_iptw"= bias_iptw,"CP_iptw"= CP_iptw,"CIW_iptw"=CIW_iptw,"iptw_est_var"=iptw_est_var,
-              "yhat_iptw_bin"= iptw_bin_estimates,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=iptw_est_var_bin,
-              "lmtp_tmle_results"=lmtp_tmle_results[[treatment.rule]],"bias_lmtp_tmle"=results_bias_lmtp_tmle,"CP_lmtp_tmle"=results_CP_lmtp_tmle,"CIW_lmtp_tmle"=results_CIW_lmtp_tmle,
-              "lmtp_iptw_results"=lmtp_iptw_results[[treatment.rule]],"bias_lmtp_iptw"=results_bias_lmtp_iptw,"CP_lmtp_iptw"=results_CP_lmtp_iptw,"CIW_lmtp_iptw"=results_CIW_lmtp_iptw,
-              "lmtp_gcomp_results"=lmtp_gcomp_results[[treatment.rule]],"bias_lmtp_gcomp"=results_bias_lmtp_gcomp,"CP_lmtp_gcomp"=results_CP_lmtp_gcomp,"CIW_lmtp_gcomp"=results_CIW_lmtp_gcomp,
-              "lmtp_sdr_results"=lmtp_sdr_results[[treatment.rule]],"bias_lmtp_sdr"=results_bias_lmtp_sdr,"CP_lmtp_sdr"=results_CP_lmtp_sdr,"CIW_lmtp_sdr"=results_CIW_lmtp_sdr,
-              "ltmle_tmle_results"=ltmle_tmle_results[[treatment.rule]],"CI_ltmle_tmle"=results_CI_ltmle_tmle,"bias_ltmle_tmle"=results_bias_ltmle_tmle, "CP_ltmle_tmle"=results_CP_ltmle_tmle,"CIW_ltmle_tmle"=results_CIW_ltmle_tmle,
-              "ltmle_iptw_results"=ltmle_iptw_results[[treatment.rule]],"CI_ltmle_iptw"=results_CI_ltmle_iptw,"bias_ltmle_iptw"=results_bias_ltmle_iptw, "CP_ltmle_iptw"=results_CP_ltmle_iptw,"CIW_ltmle_iptw"=results_CIW_ltmle_iptw,
-              "ltmle_gcomp_results"=ltmle_gcomp_results[[treatment.rule]],"CI_ltmle_gcomp"=results_CI_ltmle_gcomp,"bias_ltmle_gcomp"=results_bias_ltmle_gcomp, "CP_ltmle_gcomp"=results_CP_ltmle_gcomp,"CIW_ltmle_gcomp"=results_CIW_ltmle_gcomp))
+              "yhat_iptw_bin"= iptw_bin_estimates,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=iptw_est_var_bin))
 }
 
 #####################
@@ -1239,7 +1017,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 100 # number of simulation runs
+R <- 275 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -1316,6 +1094,7 @@ library_vector <- c(
   "gtools",
   "dplyr",
   "readr",
+  "tidyr",
   "reticulate",
   "tensorflow",
   "keras"

@@ -45,7 +45,7 @@ Multinom <- function(n,probs){
 }
 
 # stochastic treatment rule function
-StochasticFun <- function(condition, d, stay_prob=0.75) {
+StochasticFun <- function(condition, d, stay_prob=0.95) {
   condition[is.na(condition)] <- 0
   n <- length(condition)
   if (!is.matrix(d)) {
