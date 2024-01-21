@@ -5,6 +5,9 @@ import pandas as pd
 from keras.models import load_model
 
 def test_model():
+
+    model_path = os.path.join(output_dir, 'trained_model.h5')
+    
     # Load the saved model
     model = load_model(model_path)
 

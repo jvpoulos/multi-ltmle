@@ -66,6 +66,6 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     }
   }
   
-  gc()
+  print("Returning predictions")
   return(lstm_preds)
 }

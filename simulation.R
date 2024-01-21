@@ -38,16 +38,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     source('./src/lstm.R')
   }
   
-  if(estimator=='tmle-lstm'){
-    source('./src/SL3_fns.R', local =TRUE)
+  if(estimator%in%c("tmle-lstm")){
+    source('./src/tmle_fns_lstm.R')
   }
   
   if(estimator%in%c("tmle")){
     source('./src/tmle_fns.R')
-  }
-  
-  if(estimator%in%c("tmle-lstm")){
-    source('./src/tmle_fns_lstm.R')
+    source('./src/SL3_fns.R', local =TRUE)
   }
   
   source('./src/misc_fns.R')
@@ -557,8 +554,26 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       }
     }
     
+    # Initialize an empty list for the reshaped predictions
+    reshaped_preds_bin <- vector("list", length = t.end)
+    
+    # Loop over each time point
+    for (i in 1:t.end) {
+      # Extract predictions for each treatment class at time point i
+      temp_matrices <- lapply(lstm_A_preds_bin, function(x) {
+        # Convert each element of lstm_A_preds_bin into a 10000 x 37 matrix
+        matrix(x, nrow = n, ncol = t.end)
+      })
+      
+      # Extract the ith column from each matrix and combine them to create a single matrix
+      combined_matrix <- do.call(cbind, lapply(temp_matrices, function(m) m[, i]))
+      
+      # Assign the combined matrix to the reshaped_preds_bin list
+      reshaped_preds_bin[[i]] <- combined_matrix
+    }
+    
     # Apply boundProbs to each cumulative prediction
-    g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) boundProbs(x, bounds = gbound))
+    g_preds_bin_cuml_bounded <- lapply(reshaped_preds_bin, function(x) boundProbs(x, bounds = gbound))
   }
   
   ##  fit initial censoring model
@@ -710,11 +725,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         names_to = "covariate_id",
         values_to = "value"
       ) %>%
-      separate(covariate_id, into = c("covariate", "id"), sep = "\\.") %>%
+      separate(covariate_id, into = c("covariate", "ID"), sep = "\\.") %>%
       pivot_wider(
         names_from = covariate,
         values_from = value,
-        id_cols = c(t, id)
+        id_cols = c(t, ID)
       )
     
     # Convert all columns to numeric except 'A', which is converted to a factor
@@ -743,19 +758,19 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       C_preds_bounded=C_preds_cuml_bounded[[t.end]], 
       obs.treatment=treatments[[t.end+1]], 
       obs.rules=obs.rules[[t.end+1]], 
-      gbound=gbound, ybound=ybound, t.end=t.end
+      gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
     )
     
     tmle_contrasts_bin[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t.end], 
+      initial_model_for_Y_preds = initial_model_for_Y$preds[, t.end], 
       initial_model_for_Y_data = initial_model_for_Y$data, 
       tmle_rules = tmle_rules,
       tmle_covars_Y=tmle_covars_Y, 
-      g_preds_bounded=g_preds_bin_cuml_bounded[[t.end+1]], 
+      g_preds_bounded=g_preds_bin_cuml_bounded[[t.end]], 
       C_preds_bounded=C_preds_cuml_bounded[[t.end]], 
       obs.treatment=treatments[[t.end+1]], 
       obs.rules=obs.rules[[t.end+1]], 
-      gbound=gbound, ybound=ybound, t.end=t.end
+      gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
     )
     
     for (t in (t.end-1):1) {
@@ -771,7 +786,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           C_preds_bounded=C_preds_cuml_bounded[[t]], 
           obs.treatment=treatments[[t+1]], 
           obs.rules=obs.rules[[t+1]], 
-          gbound=gbound, ybound=ybound, t.end=t.end
+          gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
         )
       })
       
@@ -779,14 +794,14 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) {
         # Ensure correct referencing
         getTMLELongLSTM(
-          initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t], 
-          initial_model_for_Y_data = initial_model_for_Y$data, 
+          initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t],
+          initial_model_for_Y_data = initial_model_for_Y$data,
           tmle_rules = tmle_rules,
-          tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t+1]], 
-          C_preds_bounded=C_preds_cuml_bounded[[t]], 
-          obs.treatment=treatments[[t+1]], 
-          obs.rules=obs.rules[[t+1]], 
-          gbound=gbound, ybound=ybound, t.end=t.end
+          tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t]],
+          C_preds_bounded=C_preds_cuml_bounded[[t]],
+          obs.treatment=treatments[[t+1]],
+          obs.rules=obs.rules[[t+1]],
+          gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
         )
       })
     }
@@ -798,7 +813,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
   
   if(r==1){
-    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_",n, ".png")))
+    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_",n, estimator,".png")))
     plotSurvEst(surv = list("Static"= tmle_estimates[1,], "Dynamic"= tmle_estimates[2,], "Stochastic"= tmle_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "TMLE (ours, multinomial) estimated counterfactuals",
@@ -808,7 +823,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
     
-    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_",n, ".png")))
+    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_",n, estimator,".png")))
     plotSurvEst(surv = list("Static"= tmle_bin_estimates[1,], "Dynamic"= tmle_bin_estimates[2,], "Stochastic"= tmle_bin_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "TMLE (ours, binomial) estimated counterfactuals",
@@ -823,7 +838,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) 
   
   if(r==1){
-    png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n, ".png")))
+    png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n, estimator,".png")))
     plotSurvEst(surv = list("Static"= iptw_estimates[1,], "Dynamic"= iptw_estimates[2,], "Stochastic"= iptw_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "IPTW (ours, multinomial) estimated counterfactuals",
@@ -833,7 +848,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
     
-    png(paste0(output_dir,paste0("survival_plot_iptw_bin_estimates_",n, ".png")))
+    png(paste0(output_dir,paste0("survival_plot_iptw_bin_estimates_",n, estimator,".png")))
     plotSurvEst(surv = list("Static"= iptw_bin_estimates[1,], "Dynamic"= iptw_bin_estimates[2,], "Stochastic"= iptw_bin_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "IPTW (ours, binomial) estimated counterfactuals",
@@ -847,7 +862,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   gcomp_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_gcomp[[x]]))) # static, dynamic, stochastic
   
   if(r==1){
-    png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n, ".png")))
+    png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n, estimator,".png")))
     plotSurvEst(surv = list("Static"= gcomp_estimates[1,], "Dynamic"= gcomp_estimates[2,], "Stochastic"= gcomp_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "G-comp. (ours) estimated counterfactuals",
@@ -989,7 +1004,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
               "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,"tmle_est_var_bin"=tmle_est_var_bin,
               "yhat_gcomp"= gcomp_estimates, "bias_gcomp"= bias_gcomp,"CP_gcomp"= CP_gcomp,"CIW_gcomp"=CIW_gcomp,"gcomp_est_var"=gcomp_est_var,
               "yhat_iptw"= iptw_estimates,"bias_iptw"= bias_iptw,"CP_iptw"= CP_iptw,"CIW_iptw"=CIW_iptw,"iptw_est_var"=iptw_est_var,
-              "yhat_iptw_bin"= iptw_bin_estimates,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=iptw_est_var_bin))
+              "yhat_iptw_bin"= iptw_bin_estimates,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=iptw_est_var_bin, "estimator"=estimator))
 }
 
 #####################

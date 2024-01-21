@@ -233,7 +233,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
   }
   
   # targeting step - refit outcome model using clever covariates
-  if(unique(initial_model_for_Y$data$t)<t.end){ # use actual Y for t=T
+  if(all(initial_model_for_Y$data$t<t.end)){ # use actual Y for t=T
     updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(QAW$QA ~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
   }else{
     updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(initial_model_for_Y$data$Y~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset

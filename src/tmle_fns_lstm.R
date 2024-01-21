@@ -10,8 +10,8 @@ static_mtp_lstm <- function(row){
     shifted <- factor(4, levels=levels(row$A))
   }else if(row$mdd==1){
     shifted <- factor(1, levels=levels(row$A))
-  }else if(row$schiz==-1 & row$bipolar==-1 & row$mdd==-1){
-    shifted <- row
+  }else if(row$schiz==-1 | row$bipolar==-1 | row$mdd==-1){
+    shifted <- factor(0, levels=levels(row$A))
   }
   return(shifted)
 }
@@ -29,6 +29,8 @@ dynamic_mtp_lstm <- function(row){
         shifted <- factor(4, levels=levels(row$A)) # switch to quet.
       }else if(row$mdd==1){
         shifted <- factor(1, levels=levels(row$A)) # switch to arip
+      }else if(row$schiz==-1 | row$bipolar==-1 | row$mdd==-1){
+        shifted <- factor(0, levels=levels(row$A))
       }
     }else{
       shifted <- factor(5, levels=levels(row$A))  # otherwise stay on risp.
@@ -38,12 +40,24 @@ dynamic_mtp_lstm <- function(row){
 }
 
 stochastic_mtp_lstm <- function(row){
-  # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution
-  if(row$t==0){ # do nothing first period
-    shifted <- row[grep("A",colnames(row), value=TRUE)]  
-  }else if(row$t>=1){
-    random_treat <- Multinom(1, StochasticFun(row[grep("A",colnames(row), value=TRUE)], d=c(0,0,0,0,0,0))[as.numeric(levels(row$A))[row$A]])
-    shifted <- random_treat
+  # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distribution
+  if(row$t == 0) { 
+    # Do nothing in the first period
+    shifted <- row$A
+  } else {
+    if(row$A == 0) {
+      # Do nothing if current treatment is 0
+      shifted <- row$A 
+    } else {
+      # Calculate probabilities
+      prob_vector <- StochasticFun(row$A, d = c(0,0,0,0,0,0))
+      if(all(prob_vector <= 0)) {
+        shifted <- row$A # Fallback in case of non-positive probabilities
+      } else {
+        # Generate a new treatment based on the probability vector
+        shifted <- which(rmultinom(1, 1, prob_vector) == 1)
+      }
+    }
   }
   return(shifted)
 }
@@ -53,13 +67,13 @@ stochastic_mtp_lstm <- function(row){
 # estimate each treatment rule-specific mean                      #
 ###################################################################
 
-getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end){
+getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end, window.size){
   
   C <- initial_model_for_Y$data$C # 1=Censored
   
   for(rule in names(tmle_rules)){
     # Determine batch size
-    batch_size <- 1000  # Adjust based on your data size and memory constraints
+    batch_size <- 2000  # Adjust based on your data size and memory constraints
     
     # Number of batches
     num_batches <- ceiling(nrow(initial_model_for_Y_data) / batch_size)
@@ -88,15 +102,38 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     # Combine all batch results
     shifted <- do.call(rbind, batch_results)
     
-    newdata <- cbind(data,shifted)
+    data <- initial_model_for_Y_data[grep("A",colnames(initial_model_for_Y_data), value=TRUE, invert=TRUE)]
+    
+    newdata <- cbind(data,"A"=shifted)
+    newdata <- reshape(newdata, idvar = "t", timevar = "ID", direction = "wide") # T x N
     assign(paste0("Q_",rule), lstm(data=newdata[c(grep("Y",colnames(newdata),value = TRUE),tmle_covars_Y)], outcome=grep("Y",colnames(newdata),value = TRUE), covariates=tmle_covars_Y, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir, inference=TRUE))
     rm(data,shifted,newdata)
   }
   
-  Qs <- mget(c(paste0("Q_", names(tmle_rules)))) # list of treatment.rule
-  Qs <- do.call(cbind, Qs)
+  # Initialize Qs with lists of predictions
+  Qs <- list("Q_static"=Q_static, "Q_dynamic"=Q_dynamic, "Q_stochastic"=Q_stochastic) # list of 3, each 29 vectors of length n
   
-  QAW <- data.frame(apply(cbind(QA=initial_model_for_Y_preds,Qs), 2, boundProbs, bounds=ybound)) # bound predictions
+  # Iterate over each rule in Qs and extend the predictions
+  for (rule in names(Qs)) {
+    # Extend the predictions to have t.end + 1 elements by replicating the first element
+    Q_extended <- lapply(1:(t.end + 1), function(i) {
+      if (i <= window.size + 1) {
+        return(Qs[[rule]][[1]])
+      } else {
+        return(Qs[[rule]][[i - (window.size + 1)]])
+      }
+    })
+    
+    # Reassign the extended predictions back to Qs for the current rule
+    Qs[[rule]] <- Q_extended
+  }
+  
+  # Combine the predictions into a matrix
+  Qs_matrix <- do.call(cbind, lapply(Qs, function(x) do.call(c, x))) # 370000 by 3
+  combined_matrix <- cbind(QA = rep(initial_model_for_Y_preds, each = 37), Qs_matrix)
+  
+  # Bound the probabilities
+  QAW <- data.frame(apply(combined_matrix, 2, boundProbs, bounds = ybound)) # data.frame': 370000 obs. of 4 variables
   
   # inverse probs. only used for subset of patients following treatment rule and uncensored (=0 for those excluded)
   clever_covariates <- (obs.rules[initial_model_for_Y_data$ID,]*(1-C)) # numerator
@@ -107,11 +144,23 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     weights <- clever_covariates/rowSums(obs.treatment[initial_model_for_Y_data$ID,]*boundProbs(g_preds_bounded*C_preds_bounded, bounds = gbound)) # denominator: clever covariate used as weight in regression
   }
   
+  # Initialize updated_model_for_Y as an empty list
+  updated_model_for_Y <- vector("list", ncol(clever_covariates))
+  
   # targeting step - refit outcome model using clever covariates
-  if(unique(initial_model_for_Y$data$t)<t.end){ # use actual Y for t=T
-    updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(QAW$QA ~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
-  }else{
-    updated_model_for_Y <- lapply(1:ncol(clever_covariates), function(i) glm(initial_model_for_Y$data$Y~ 1 + offset(qlogis(QAW[,(i+1)])), weights=weights[,i], family=quasibinomial())) # plug-in predicted outcome used as offset
+  for (i in 1:ncol(clever_covariates)) {
+    # Filter rows where Y is not -1 (NA)
+    valid_rows <- initial_model_for_Y$data$Y != -1
+    
+    if (all(initial_model_for_Y$data$t < t.end)) { # use actual Y for t=T
+      updated_model_for_Y[[i]] <- glm(QAW$QA[valid_rows] ~ 1 + offset(qlogis(QAW[valid_rows, (i + 1)])), 
+                                      weights = weights[valid_rows, i], 
+                                      family = quasibinomial())
+    } else {
+      updated_model_for_Y[[i]] <- glm(initial_model_for_Y$data$Y[valid_rows] ~ 1 + offset(qlogis(QAW[valid_rows, (i + 1)])), 
+                                      weights = weights[valid_rows, i], 
+                                      family = quasibinomial())
+    }
   }
   
   Qstar <- lapply(1:ncol(clever_covariates), function(i) predict(updated_model_for_Y[[i]], type="response"))
