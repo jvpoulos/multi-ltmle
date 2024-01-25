@@ -47,6 +47,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     source('./src/SL3_fns.R', local =TRUE)
   }
   
+  source('./src/tmle_IC.R')
   source('./src/misc_fns.R')
   
   if(J!=6){
@@ -251,176 +252,173 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   CP_iptw_bin <- list()
   CIW_iptw_bin <- list()
   
-  if(estimator%in%c("tmle", "tmle-lstm")){
-    tmle_dat <- DF.to.long(Odat)
+  tmle_dat <- DF.to.long(Odat)
+  
+  if(estimator=="tmle"){
+    tmle_dat <- 
+      tmle_dat %>%
+      group_by(ID) %>% # create first, second, and third-order lags
+      mutate(Y.lag = dplyr::lag(Y, n = 1, default = NA),
+             Y.lag2 = dplyr::lag(Y, n = 2, default = NA),
+             Y.lag3 = dplyr::lag(Y, n = 3, default = NA),
+             L1.lag = dplyr::lag(L1, n = 1, default = NA),
+             L1.lag2 = dplyr::lag(L1, n = 2, default = NA),
+             L1.lag3 = dplyr::lag(L1, n = 3, default = NA),
+             L2.lag = dplyr::lag(L2, n = 1, default = NA),
+             L2.lag2 = dplyr::lag(L2, n = 2, default = NA),
+             L2.lag3 = dplyr::lag(L2, n = 3, default = NA),
+             L3.lag = dplyr::lag(L3, n = 1, default = NA),
+             L3.lag2 = dplyr::lag(L3, n = 2, default = NA),
+             L3.lag3 = dplyr::lag(L3, n = 3, default = NA),
+             A.lag = dplyr::lag(A, n = 1, default = NA), 
+             A.lag2 = dplyr::lag(A, n = 2, default = NA),
+             A.lag3 = dplyr::lag(A, n = 3, default = NA))
     
-    if(estimator=="tmle"){
-      tmle_dat <- 
-        tmle_dat %>%
-        group_by(ID) %>% # create first, second, and third-order lags
-        mutate(Y.lag = dplyr::lag(Y, n = 1, default = NA),
-               Y.lag2 = dplyr::lag(Y, n = 2, default = NA),
-               Y.lag3 = dplyr::lag(Y, n = 3, default = NA),
-               L1.lag = dplyr::lag(L1, n = 1, default = NA),
-               L1.lag2 = dplyr::lag(L1, n = 2, default = NA),
-               L1.lag3 = dplyr::lag(L1, n = 3, default = NA),
-               L2.lag = dplyr::lag(L2, n = 1, default = NA),
-               L2.lag2 = dplyr::lag(L2, n = 2, default = NA),
-               L2.lag3 = dplyr::lag(L2, n = 3, default = NA),
-               L3.lag = dplyr::lag(L3, n = 1, default = NA),
-               L3.lag2 = dplyr::lag(L3, n = 2, default = NA),
-               L3.lag3 = dplyr::lag(L3, n = 3, default = NA),
-               A.lag = dplyr::lag(A, n = 1, default = NA), 
-               A.lag2 = dplyr::lag(A, n = 2, default = NA),
-               A.lag3 = dplyr::lag(A, n = 3, default = NA))
-      
-      
-      tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2), dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
-      
-      if(scale.continuous){
-        tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
-      }
-      
-      colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "Y.lag", "Y.lag2", "Y.lag3", "L1.lag", "L1.lag2","L1.lag3","L2.lag", "L2.lag2","L2.lag3", "L3.lag", "L3.lag2","L3.lag3","A.lag","A.lag2", "A.lag3","white", "black", "latino", "other", "mdd", "bipolar", "schiz", 
-                              "A1", "A2", "A3", "A4", "A5", "A6", "A1.lag", "A2.lag", "A3.lag", "A4.lag", "A5.lag", "A6.lag","A1.lag2", "A2.lag2", "A3.lag2", "A4.lag2", "A5.lag2", "A6.lag2","A1.lag3", "A2.lag3", "A3.lag3", "A4.lag3", "A5.lag3", "A6.lag3")
-      
-      tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
-      tmle_covars_Y <- colnames(tmle_dat)[!colnames(tmle_dat)%in%c("ID","t","A","A.lag","A.lag2","A.lag3","Y","C")] #incl lagged Y
-      tmle_covars_A <- tmle_covars_Y[!tmle_covars_Y%in%c("Y.lag","Y.lag2","Y.lag3","A1", "A2", "A3", "A4", "A5", "A6")] # incl lagged A
-      tmle_covars_C <- c(tmle_covars_A, "A1", "A2", "A3", "A4", "A5", "A6")
-      
-      tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")][is.na(tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")])] <- 0 # make lagged NAs zero
-      
-      tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
-      tmle_dat$A <- factor(tmle_dat$A)
-    }else if(estimator=="tmle-lstm"){
-      tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2)) # binarize categorical covariates
-      
-      if(scale.continuous){
-        tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
-      }
-      
-      colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
-      
-      tmle_dat$A <- factor(tmle_dat$A)
-      
-      # Reshape the time-varying variables to wide format
-      tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
-      
-      tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
-      tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), 
-                         grep("A", colnames(tmle_dat), value = TRUE), 
-                         grep("V", colnames(tmle_dat), value = TRUE),
-                         grep("white", colnames(tmle_dat), value = TRUE),
-                         grep("black", colnames(tmle_dat), value = TRUE),
-                         grep("latino", colnames(tmle_dat), value = TRUE),
-                         grep("other", colnames(tmle_dat), value = TRUE),
-                         grep("mdd", colnames(tmle_dat), value = TRUE),
-                         grep("bipolar", colnames(tmle_dat), value = TRUE),
-                         grep("schiz", colnames(tmle_dat), value = TRUE))
-      tmle_covars_A <- setdiff(tmle_covars_Y, grep("A", colnames(tmle_dat), value = TRUE))
-      tmle_covars_C <- tmle_covars_A
-      
-      # set NAs to -1 (except treatment NA=0)
-      tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)])] <- -1
-      tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)])] <- -1
-      
-      tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
+    
+    tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2), dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
+    
+    if(scale.continuous){
+      tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
     }
     
-    ##  fit initial treatment model
+    colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "Y.lag", "Y.lag2", "Y.lag3", "L1.lag", "L1.lag2","L1.lag3","L2.lag", "L2.lag2","L2.lag3", "L3.lag", "L3.lag2","L3.lag3","A.lag","A.lag2", "A.lag3","white", "black", "latino", "other", "mdd", "bipolar", "schiz", 
+                            "A1", "A2", "A3", "A4", "A5", "A6", "A1.lag", "A2.lag", "A3.lag", "A4.lag", "A5.lag", "A6.lag","A1.lag2", "A2.lag2", "A3.lag2", "A4.lag2", "A5.lag2", "A6.lag2","A1.lag3", "A2.lag3", "A3.lag3", "A4.lag3", "A5.lag3", "A6.lag3")
     
-    # multinomial
+    tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
+    tmle_covars_Y <- colnames(tmle_dat)[!colnames(tmle_dat)%in%c("ID","t","A","A.lag","A.lag2","A.lag3","Y","C")] #incl lagged Y
+    tmle_covars_A <- tmle_covars_Y[!tmle_covars_Y%in%c("Y.lag","Y.lag2","Y.lag3","A1", "A2", "A3", "A4", "A5", "A6")] # incl lagged A
+    tmle_covars_C <- c(tmle_covars_A, "A1", "A2", "A3", "A4", "A5", "A6")
     
-    if(estimator=="tmle"){
-      
-      initial_model_for_A_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                             learners = if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
-                                             metalearner = metalearner_A,
-                                             keep_extra=FALSE)
-      
-      initial_model_for_A <- lapply(0:t.end, function(t){ # going forward in time
-        
-        tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("Y","C")]
-        
-        folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
-        
-        # define task 
-        
-        initial_model_for_A_task <- make_sl3_Task(tmle_dat_sub, 
-                                                  covariates = tmle_covars_A,
-                                                  outcome = "A", 
-                                                  outcome_type="categorical", 
-                                                  folds = folds) 
-        
-        # train
-        initial_model_for_A_sl_fit <- initial_model_for_A_sl$train(initial_model_for_A_task)
-        
-        return(list("preds"=initial_model_for_A_sl_fit$predict(initial_model_for_A_task),
-                    "folds"= folds,
-                    "task"=initial_model_for_A_task,
-                    "fit"=initial_model_for_A_sl_fit,
-                    "data"=tmle_dat_sub)) 
-      })
-      
-      g_preds <- lapply(1:length(initial_model_for_A), function(i) data.frame(matrix(unlist(lapply(initial_model_for_A[[i]]$preds, unlist)), nrow=length(lapply(initial_model_for_A[[i]]$preds, unlist)), byrow=TRUE)) ) # t length list of estimated propensity scores 
-      g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
-      
-      g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist))) 
-      
-      g_preds_cuml <- vector("list", length(g_preds))
-      
-      g_preds_cuml[[1]] <- g_preds[[1]]
-      
-      for (i in 2:length(g_preds)) {
-        g_preds_cuml[[i]] <- g_preds[[i]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] * g_preds_cuml[[i-1]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),]
-      }
-      
-      g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
-      
-    } else if(estimator=="tmle-lstm"){ 
-      window.size <- 7
-      
-      lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir) # list of 27 matrices
-      
-      lstm_A_preds <- c(replicate((window.size+1), lstm_A_preds[[1]], simplify = FALSE), lstm_A_preds) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1
-      
-      initial_model_for_A <- list("preds"= lstm_A_preds,
-                                  "data"=tmle_dat)
-      
-      g_preds <- lapply(1:length(lstm_A_preds), function(i) { # list of 37 matrices of size n by J
-        # Remove the first column (class 0) from each element
-        modified_matrix <- lstm_A_preds[[i]][, -1]
-        
-        # Reshape the modified matrix to the desired size (10000 by 6)
-        reshaped_matrix <- matrix(modified_matrix, nrow = n, ncol = J, byrow = TRUE)
-        
-        # Naming the columns
-        colnames(reshaped_matrix) <- paste0("A", 1:J)
-        
-        reshaped_matrix
-      })
-      
-      g_preds_cuml <- vector("list", length(g_preds))
-      
-      g_preds_cuml[[1]] <- g_preds[[1]]
-      
-      for (i in 2:length(g_preds)) {
-        g_preds_cuml[[i]] <- g_preds[[i]] * g_preds_cuml[[i-1]]
-      }
-      
-      g_preds_cuml_bounded <- lapply(1:length(g_preds), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
+    tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")][is.na(tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")])] <- 0 # make lagged NAs zero
+    
+    tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
+    tmle_dat$A <- factor(tmle_dat$A)
+  }else if(estimator=="tmle-lstm"){
+    tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2)) # binarize categorical covariates
+    
+    if(scale.continuous){
+      tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
     }
     
+    colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
+    
+    tmle_dat$A <- factor(tmle_dat$A)
+    
+    # Reshape the time-varying variables to wide format
+    tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
+    
+    tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
+    tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), 
+                       grep("A", colnames(tmle_dat), value = TRUE), 
+                       grep("V", colnames(tmle_dat), value = TRUE),
+                       grep("white", colnames(tmle_dat), value = TRUE),
+                       grep("black", colnames(tmle_dat), value = TRUE),
+                       grep("latino", colnames(tmle_dat), value = TRUE),
+                       grep("other", colnames(tmle_dat), value = TRUE),
+                       grep("mdd", colnames(tmle_dat), value = TRUE),
+                       grep("bipolar", colnames(tmle_dat), value = TRUE),
+                       grep("schiz", colnames(tmle_dat), value = TRUE))
+    tmle_covars_A <- setdiff(tmle_covars_Y, grep("A", colnames(tmle_dat), value = TRUE))
+    tmle_covars_C <- tmle_covars_A
+    
+    # set NAs to -1 (except treatment NA=0)
+    tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)])] <- -1
+    tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)])] <- -1
+    
+    tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
+  }
+  
+  ##  fit initial treatment model
+  
+  # multinomial
+  
+  if(estimator=="tmle"){
+    
+    initial_model_for_A_sl <- make_learner(Lrnr_sl, # cross-validates base models
+                                           learners = if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
+                                           metalearner = metalearner_A,
+                                           keep_extra=FALSE)
+    
+    initial_model_for_A <- lapply(0:t.end, function(t){ # going forward in time
+      
+      tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("Y","C")]
+      
+      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
+      
+      # define task 
+      
+      initial_model_for_A_task <- make_sl3_Task(tmle_dat_sub, 
+                                                covariates = tmle_covars_A,
+                                                outcome = "A", 
+                                                outcome_type="categorical", 
+                                                folds = folds) 
+      
+      # train
+      initial_model_for_A_sl_fit <- initial_model_for_A_sl$train(initial_model_for_A_task)
+      
+      return(list("preds"=initial_model_for_A_sl_fit$predict(initial_model_for_A_task),
+                  "folds"= folds,
+                  "task"=initial_model_for_A_task,
+                  "fit"=initial_model_for_A_sl_fit,
+                  "data"=tmle_dat_sub)) 
+    })
+    
+    g_preds <- lapply(1:length(initial_model_for_A), function(i) data.frame(matrix(unlist(lapply(initial_model_for_A[[i]]$preds, unlist)), nrow=length(lapply(initial_model_for_A[[i]]$preds, unlist)), byrow=TRUE)) ) # t length list of estimated propensity scores 
+    g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
+    
+    g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist))) 
+    
+    g_preds_cuml <- vector("list", length(g_preds))
+    
+    g_preds_cuml[[1]] <- g_preds[[1]]
+    
+    for (i in 2:length(g_preds)) {
+      g_preds_cuml[[i]] <- g_preds[[i]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] * g_preds_cuml[[i-1]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),]
+    }
+    
+    g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
+    
+  } else if(estimator=="tmle-lstm"){ 
+    window.size <- 7
+    
+    lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir) # list of 27 matrices
+    
+    lstm_A_preds <- c(replicate((window.size+1), lstm_A_preds[[1]], simplify = FALSE), lstm_A_preds) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1
+    
+    initial_model_for_A <- list("preds"= lstm_A_preds,
+                                "data"=tmle_dat)
+    
+    g_preds <- lapply(1:length(lstm_A_preds), function(i) { # list of 37 matrices of size n by J
+      # Remove the first column (class 0) from each element
+      modified_matrix <- lstm_A_preds[[i]][, -1]
+      
+      # Reshape the modified matrix to the desired size (10000 by 6)
+      reshaped_matrix <- matrix(modified_matrix, nrow = n, ncol = J, byrow = TRUE)
+      
+      # Naming the columns
+      colnames(reshaped_matrix) <- paste0("A", 1:J)
+      
+      reshaped_matrix
+    })
+    
+    g_preds_cuml <- vector("list", length(g_preds))
+    
+    g_preds_cuml[[1]] <- g_preds[[1]]
+    
+    for (i in 2:length(g_preds)) {
+      g_preds_cuml[[i]] <- g_preds[[i]] * g_preds_cuml[[i-1]]
+    }
+    
+    g_preds_cuml_bounded <- lapply(1:length(g_preds), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
   }
   
   # binomial
@@ -1026,7 +1024,7 @@ doMPI <- as.logical(args[4])
 
 n <- as.numeric(thisrun[,1]) # total sample size
 
-treatment.rule <- ifelse(estimator=="tmle", "all", as.character(thisrun[,2])) # tmle calculates calculates counterfactual means under all treatment rules
+treatment.rule <- ifelse(estimator=="tmle" | estimator=="tmle-lstm", "all", as.character(thisrun[,2])) # calculate counterfactual means under all treatment rules
 
 J <- 6 # number of treatments
 

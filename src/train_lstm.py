@@ -54,7 +54,6 @@ def create_model(n_pre, nb_features, output_dim, lr, dr, n_hidden, hidden_activa
     else:
         output= Dense(output_dim, activation=out_activation, name='Dense')(lstm_2)
 
-
     if loss_fn=="sparse_categorical_crossentropy":
         model = Model(inputs, softmax_output) 
     else:
@@ -93,8 +92,8 @@ def test_model():
     n_pre = int(window_size)
     seq_len = int(t_end)
 
-    x = np.array(pd.read_csv("{}input_data.csv".format(output_dir)))
-    y = np.array(pd.read_csv("{}output_data.csv".format(output_dir)))
+    x = np.array(pd.read_csv("{}input_data.csv".format(output_dir), low_memory=False))
+    y = np.array(pd.read_csv("{}output_data.csv".format(output_dir), low_memory=False))
 
     print('raw x shape', x.shape)   
     print('raw y shape', y.shape) 

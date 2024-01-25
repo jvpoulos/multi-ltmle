@@ -49,6 +49,7 @@ source env/bin/activate
 # install Tensorflow and TensorRT
 pip install --upgrade pip
 pip install tensorflow-gpu
+# pip install tensorflow-cpu # for CPU-only build
 pip install tensorrt
 
 python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))" # verify the CPU setup
@@ -138,9 +139,11 @@ Instructions
 
 4. Download in the local directory simulated data from [simdata_from_basevars.RData](https://github.com/jvpoulos/multi-tmle/blob/4286f7899ec0a9fc27474ff88871dbd6cae85dbd/simdata_from_basevars.RData) These simulated data are for illustrative purposes and are provided in the cross-sectional study repo [multi-tmle](https://github.com/jvpoulos/multi-tmle/). The file ***add_tv_simulated.R*** quickly generates time-varying covariates to demonstrate for the longituninal analysis.
 
-5. For ITT analysis on simulated data, run: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4] [arg5]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a character specifying the treatment rule ['static',dynamic','stochastic',or 'all' for estimator='tmle'], `[arg3]` is a string that specified the folder of previously saved weights (e.g., '20230329/') or 'none', `[arg4]` is a logical flag if super learner estimation is to be used, and , `[arg5]` is a logical flag if simulated data is to be used; e.g, 
+5. For ITT analysis on simulated data, run: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4] [arg5]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a character specifying the treatment rule ['all' for estimating 'static',dynamic', and 'stochastic' rules at once], `[arg3]` is a string that specified the folder of previously saved weights (e.g., '20230329/') or 'none', `[arg4]` is a logical flag if super learner estimation is to be used, and , `[arg5]` is a logical flag if simulated data is to be used; e.g, 
 
 `Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'`
+
+CPU computation is used if "tmle-lstm" is selected for the estimator.
 
 Simulation example
 ------

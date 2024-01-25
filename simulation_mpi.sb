@@ -2,8 +2,8 @@
 #SBATCH --job-name="tmle"
 #SBATCH -e tmle.err
 #SBATCH -p mpi
-#SBATCH -n 100
-#SBATCH --mem-per-cpu=23GB
+#SBATCH -n 120
+#SBATCH --mem-per-cpu=20GB
 #SBATCH -t 3-00:00:00
 #SBATCH --array=1
 

@@ -17,7 +17,7 @@ def test_model():
     n_pre = int(window_size)
     seq_len = int(t_end)
 
-    x = np.array(pd.read_csv("{}input_data.csv".format(output_dir)))
+    x = np.array(pd.read_csv("{}input_data.csv".format(output_dir), low_memory=False))
 
     print('raw x shape', x.shape)   
 

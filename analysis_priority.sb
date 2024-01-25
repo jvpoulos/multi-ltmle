@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name="analysis"
-#SBATCH -e analysis.err
+#SBATCH --job-name="tmle_analysis"
+#SBATCH -e tmle_analysis.err
 #SBATCH -p priority
 #SBATCH -c 20
 #SBATCH --mem=150GB
 #SBATCH -t 5-00:00:00
 
 # Load R
-module load gcc/6.2.0 R/4.0.1 git2/1.1.0
+module load gcc/9.2.0 R/4.3.1
 
 #Run the job
-Rscript ltmle_analysis.R 'tmle' 'all' '20230907/' 'TRUE' 'TRUE'
+Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'
