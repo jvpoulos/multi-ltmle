@@ -889,13 +889,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # calc CIs 
   
-  tmle_est_var <- TMLE_IC_lstm(tmle_contrasts, initial_model_for_Y, time.censored)
-  tmle_est_var_bin <- TMLE_IC_lstm(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored)
+  tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored)
+  tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored)
   
-  iptw_est_var <- TMLE_IC_lstm(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE)
-  iptw_est_var_bin <- TMLE_IC_lstm(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE)
+  iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE)
+  iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE)
   
-  gcomp_est_var <- TMLE_IC_lstm(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE)
+  gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE)
   
   # store results
   

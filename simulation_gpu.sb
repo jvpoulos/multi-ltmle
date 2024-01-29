@@ -3,7 +3,7 @@
 #SBATCH -e tmle-lstm.err
 #SBATCH -p gpu_requeue --gres=gpu:1
 #SBATCH -c 20
-#SBATCH --mem=202GB
+#SBATCH --mem=100GB
 #SBATCH -t 3-00:00:00
 #SBATCH --array=1
 

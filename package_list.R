@@ -20,12 +20,9 @@ if(dependencies){
 }
 
 # development packages
-devtools::install_github("nt-williams/lmtp@sl3")
 remotes::install_github("tlverse/sl3")
 remotes::install_github("jvpoulos/Rsolnp") # v1.16
 
-devtools::install_github('osofr/gridisl', build_vignettes = FALSE)
-devtools::install_github('osofr/stremr')
 devtools::install_github('osofr/simcausal', build_vignettes = FALSE)
 
 # doMPI
@@ -40,7 +37,7 @@ if(doMPI){
 }
 
 # keras/TensorFlow
-keras <- FALSE
+keras <- TRUE
 if(keras){
   install.packages("tensorflow", repos = "http://cran.us.r-project.org")
   install.packages("keras", repos = "http://cran.us.r-project.org")

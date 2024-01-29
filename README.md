@@ -58,8 +58,12 @@ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'
 # start R in virtual environment where python3 and Tensorflow are installed
 R
 ```
-* The following Python packages are required: numpy (tested on 1.19.5) and pandas (tested on 1.1.5)
-* Additional **R** packages are required by setting the *keras* flag in ***package_list.R*** to TRUE
++ The following Python packages are required: numpy (tested on 1.19.5) and pandas (tested on 1.1.5)
+```
+pip install numpy
+pip install pandas
+```
++ Additional **R** packages are required by setting the *keras* flag in ***package_list.R*** to TRUE
 
 Contents
 ------
@@ -73,12 +77,6 @@ Contents
 * ***src/simcausal_fns***: defines distribution functions for *simcausal* software.
 
 * ***src/simcausal_dgp***: defines data generating process for *simcausal* software.
-
-<!-- * ***src/SL_fns***: pre-specified super learner functions and library definitions for *ltmle* software.
-
-* ***src/lmtp_fns***: define treatment rule functions for *lmtp* software. 
-
-* ***src/ltmle_fns***: define treatment rule functions for *ltmle* software.  -->
 
 * ***src/tmle_fns***: define treatment rule functions for our implementation. 
 
@@ -95,7 +93,6 @@ Contents
 * ***simulation.R***: longitudinal setting simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
 
 	+ *estimator*: Select which estimator to use: 'tmle' for our TMLE implementation (multinomial and multiple binary),  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates).
-	<!-- 'lmtp-tmle' for TMLE with the *lmtp* package; 'lmtp-iptw' for IPTW with the *lmtp* package ; 'lmtp-gcomp' for g-computation with the *lmtp* package; 'lmtp-sdr' for sequentially doubly-robust regression (SDR) with the *lmtp* package; 'ltmle-tmle' for TMLE with the *ltmle* package (also returns IPTW estimates); and  'ltmle-gcomp' for g-computation with the *ltmle* package. **estimator='tmle' is currently the only functional option**. -->
 
 	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
 
@@ -126,10 +123,9 @@ Contents
 Instructions
 ------
 
-1. Install require **R** packages: `Rscript package_list.R`
+1. Install require **R** packages: `Rscript package_list.R` and follow Python installation instructions in the Prerequsites section.
 
 2. For simulations, run: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a number specifying the treatment rule [1 for all treatment rules should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
-<!-- "lmtp-tmle","lmtp-iptw","lmtp-gcomp","lmtp-sdr","ltmle-tmle","ltmle-gcomp", -->
 
 	`Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'`
 

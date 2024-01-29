@@ -27,6 +27,8 @@ if gpu < 3:
     from tensorflow.python.client import device_lib
     print(device_lib.list_local_devices())
 
+os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+
 def custom_loss(y_true, y_pred):
     y_true_reshaped = tf.reshape(y_true, [-1, 1])
     y_pred_reshaped = tf.reshape(y_pred, [-1, 7]) # The model's output is already shaped as (batch_size, 10000, 7)
@@ -75,8 +77,16 @@ def train_model(model, dataX, dataY, epoch_count, batches):
 
     terminate = TerminateOnNaN()
 
-    # Model fit
+    # Set memory growth
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print(e)
 
+    # Model fit
     history = model.fit(x=dataX, 
         y=dataY, 
         batch_size=batches, 

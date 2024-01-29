@@ -164,7 +164,7 @@ source("./ltmle_analysis_eda.R")
 
 # Identify unique combinations of hcp_patient_id and month_number
 unique_combinations <- Odat %>%
-  select(hcp_patient_id, month_number) %>%
+  dplyr::select(hcp_patient_id, month_number) %>%
   distinct()
 
 # Create a dataframe of all combinations of unique hcp_patient_id and month_number
@@ -178,7 +178,7 @@ Odat <- merge(complete_combinations, Odat,
 
 # Remove unwanted columns
 Odat <- Odat %>%
-  select(-c("death_36", "diabetes_36"))
+  dplyr::select(-c("death_36", "diabetes_36"))
 
 # baseline covariates
 
@@ -382,110 +382,100 @@ Ahat_tmle_bin <- list()
 prob_share_bin <- list()
 Chat_tmle_bin <- list()
 
-if(estimator=="tmle"){ 
-  
-  tmle_dat <- data.frame("ID"=Odat$hcp_patient_id,"month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
-  
-  tmle_dat$L1 <- c(sapply(1:(t.end+1), function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  
-  tmle_dat$L2 <- c(sapply(1:(t.end+1), function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  
-  tmle_dat$L3 <- c(sapply(1:(t.end+1), function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
-  
-  tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
-  
-  tmle_dat$Y <- c(sapply(1:(t.end+1), function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
-  
-  tmle_dat$A <- c(sapply(1:(t.end+1), function(t) obs.treatment[,paste0("A_", t)]))
-  tmle_dat$A <- factor(tmle_dat$A)
-  levels(tmle_dat$A) <- drug.levels
-  
-  tmle_dat$C <- c(sapply(1:(t.end+1), function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
-  
-  tmle_dat <- 
-    tmle_dat %>%
-    arrange(ID, month_number) %>%  # Ensure data is ordered by hcp_patient_id and month_number
-    group_by(ID) %>% # create first, second, and third-order lags
-    mutate(Y.lag = dplyr::lag(Y, n = 1, default = NA),
-           Y.lag2 = dplyr::lag(Y, n = 2, default = NA),
-           Y.lag3 = dplyr::lag(Y, n = 3, default = NA),
-           L1.lag = dplyr::lag(L1, n = 1, default = NA),
-           L1.lag2 = dplyr::lag(L1, n = 2, default = NA),
-           L1.lag3 = dplyr::lag(L1, n = 3, default = NA),
-           L2.lag = dplyr::lag(L2, n = 1, default = NA), 
-           L2.lag2 = dplyr::lag(L2, n = 2, default = NA),
-           L2.lag3 = dplyr::lag(L2, n = 3, default = NA),
-           L3.lag = dplyr::lag(L3, n = 1, default = NA), 
-           L3.lag2 = dplyr::lag(L3, n = 2, default = NA),
-           L3.lag3 = dplyr::lag(L3, n = 3, default = NA),
-           A.lag = dplyr::lag(A, n = 1, default = NA), 
-           A.lag2 = dplyr::lag(A, n = 2, default = NA),
-           A.lag3 = dplyr::lag(A, n = 3, default = NA))
-  
-  tmle_dat <- cbind(tmle_dat, dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
-  
-  if(scale.continuous){
-    tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
-  }
-  
-  treat.names <-  c("A1","A2","A3","A4","A5","A6","A0","A1.lag","A2.lag","A3.lag","A4.lag","A5.lag","A6.lag","A0.lag","A1.lag2","A2.lag2","A3.lag2","A4.lag2","A5.lag2","A6.lag2","A0.lag2","A1.lag3","A2.lag3","A3.lag3","A4.lag3","A5.lag3","A6.lag3","A0.lag3")
-  
-  colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[(length(colnames(tmle_dat))-length(treat.names)+1):length(colnames(tmle_dat))]] <- treat.names
-  
-  tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
-  tmle_covars_Y <- c(colnames(L), colnames(tv), treat.names, "Y.lag", "Y.lag2", "Y.lag3") #incl lagged Y
-  tmle_covars_A <- tmle_covars_Y[!tmle_covars_Y%in%c("Y.lag","Y.lag2","Y.lag3","A1", "A2", "A3", "A4", "A5", "A6")] # incl lagged A
-  tmle_covars_C <- c(tmle_covars_A, "A1", "A2", "A3", "A4", "A5", "A6")
-  
-  tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")][is.na(tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")])] <- 0 # make lagged NAs zero
-  
-  tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
-  tmle_dat$A <- factor(tmle_dat$A)
-  
-  tmle_dat$t <- tmle_dat$month_number
-  
-}else if(estimator=="tmle-lstm"){
-  tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2)) # binarize categorical covariates
-  
-  if(scale.continuous){
-    tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
-  }
-  
-  colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
-  
-  tmle_dat$A <- factor(tmle_dat$A)
+tmle_dat <- data.frame("ID"=Odat$hcp_patient_id,"month_number"=Odat$month_number,L,tv, "days_to_censored"=Odat$days_to_censored, "drug_group"=Odat$drug_group, "days_to_death"=Odat$days_to_death, "days_to_diabetes"=Odat$days_to_diabetes)
+
+tmle_dat$L1 <- c(sapply(1:(t.end+1), function(t) ifelse((tmle_dat$monthly_ever_rx_antidiab==1 | tmle_dat$monthly_ever_rx_cm_nondiab==1) & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+
+tmle_dat$L2 <- c(sapply(1:(t.end+1), function(t) ifelse(tmle_dat$monthly_ever_mt_gluc_or_lip==1 & tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+
+tmle_dat$L3 <- c(sapply(1:(t.end+1), function(t) ifelse((tmle_dat$monthly_los_mhsa>0 | tmle_dat$monthly_er_mhsa>0)& tmle_dat$month_number <=t,1,0)[tmle_dat$month_number==t]))
+
+tv <- cbind(tv, "L1"=tmle_dat$L1, "L2"=tmle_dat$L2, "L3"=tmle_dat$L3)
+
+tmle_dat$Y <- c(sapply(1:(t.end+1), function(t) obs.Y[,paste0("Y_", t)][which(tmle_dat$month_number ==t)]))
+
+tmle_dat$A <- c(sapply(1:(t.end+1), function(t) obs.treatment[,paste0("A_", t)]))
+tmle_dat$A <- factor(tmle_dat$A)
+levels(tmle_dat$A) <- drug.levels
+
+tmle_dat$C <- c(sapply(1:(t.end+1), function(t) obs.censored[,paste0("C_", t)][which(tmle_dat$month_number ==t)]))
+
+tmle_dat <- 
+  tmle_dat %>%
+  arrange(ID, month_number) %>%  # Ensure data is ordered by hcp_patient_id and month_number
+  group_by(ID) %>% # create first, second, and third-order lags
+  mutate(Y.lag = dplyr::lag(Y, n = 1, default = NA),
+         Y.lag2 = dplyr::lag(Y, n = 2, default = NA),
+         Y.lag3 = dplyr::lag(Y, n = 3, default = NA),
+         L1.lag = dplyr::lag(L1, n = 1, default = NA),
+         L1.lag2 = dplyr::lag(L1, n = 2, default = NA),
+         L1.lag3 = dplyr::lag(L1, n = 3, default = NA),
+         L2.lag = dplyr::lag(L2, n = 1, default = NA), 
+         L2.lag2 = dplyr::lag(L2, n = 2, default = NA),
+         L2.lag3 = dplyr::lag(L2, n = 3, default = NA),
+         L3.lag = dplyr::lag(L3, n = 1, default = NA), 
+         L3.lag2 = dplyr::lag(L3, n = 2, default = NA),
+         L3.lag3 = dplyr::lag(L3, n = 3, default = NA),
+         A.lag = dplyr::lag(A, n = 1, default = NA), 
+         A.lag2 = dplyr::lag(A, n = 2, default = NA),
+         A.lag3 = dplyr::lag(A, n = 3, default = NA))
+
+tmle_dat <- cbind(tmle_dat, dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
+
+if(scale.continuous){
+  tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
+}
+
+treat.names <-  c("A1","A2","A3","A4","A5","A6","A0","A1.lag","A2.lag","A3.lag","A4.lag","A5.lag","A6.lag","A0.lag","A1.lag2","A2.lag2","A3.lag2","A4.lag2","A5.lag2","A6.lag2","A0.lag2","A1.lag3","A2.lag3","A3.lag3","A4.lag3","A5.lag3","A6.lag3","A0.lag3")
+
+colnames(tmle_dat)[colnames(tmle_dat) %in% colnames(tmle_dat)[(length(colnames(tmle_dat))-length(treat.names)+1):length(colnames(tmle_dat))]] <- treat.names
+
+tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
+tmle_covars_Y <- c(colnames(L), colnames(tv), treat.names, "Y.lag", "Y.lag2", "Y.lag3") #incl lagged Y
+tmle_covars_A <- tmle_covars_Y[!tmle_covars_Y%in%c("Y.lag","Y.lag2","Y.lag3","A1", "A2", "A3", "A4", "A5", "A6")] # incl lagged A
+tmle_covars_C <- c(tmle_covars_A, "A1", "A2", "A3", "A4", "A5", "A6")
+
+tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")][is.na(tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")])] <- 0 # make lagged NAs zero
+
+tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
+tmle_dat$A <- factor(tmle_dat$A)
+
+tmle_dat$t <- tmle_dat$month_number
+
+if(estimator=="tmle-lstm"){
   
   # Reshape the time-varying variables to wide format
-  tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
+  tmle_dat_wide <- reshape(data.frame(tmle_dat[, !colnames(tmle_dat) %in% c(grep("lag",colnames(tmle_dat), value=TRUE), "A0","A1","A2","A3","A4","A5","A6")]), idvar = "t", timevar = "ID", direction = "wide") # T x N
   
-  tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
-  tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), 
-                     grep("A", colnames(tmle_dat), value = TRUE), 
-                     grep("V", colnames(tmle_dat), value = TRUE),
-                     grep("white", colnames(tmle_dat), value = TRUE),
-                     grep("black", colnames(tmle_dat), value = TRUE),
-                     grep("latino", colnames(tmle_dat), value = TRUE),
-                     grep("other", colnames(tmle_dat), value = TRUE),
-                     grep("mdd", colnames(tmle_dat), value = TRUE),
-                     grep("bipolar", colnames(tmle_dat), value = TRUE),
-                     grep("schiz", colnames(tmle_dat), value = TRUE))
-  tmle_covars_A <- setdiff(tmle_covars_Y, grep("A", colnames(tmle_dat), value = TRUE))
+  tmle_covars_Y <- c(grep("monthly",colnames(tmle_dat_wide),value = TRUE), 
+                     grep("preperiod",colnames(tmle_dat_wide),value = TRUE),
+                     grep("A", colnames(tmle_dat_wide), value = TRUE), 
+                     grep("L", colnames(tmle_dat_wide), value = TRUE), 
+                     grep("California", colnames(tmle_dat_wide), value = TRUE),
+                     grep("Georgia", colnames(tmle_dat_wide), value = TRUE),
+                     grep("Iowa", colnames(tmle_dat_wide), value = TRUE),
+                     grep("Mississippi", colnames(tmle_dat_wide), value = TRUE),
+                     grep("Oklahoma", colnames(tmle_dat_wide), value = TRUE),
+                     grep("South_Dakota", colnames(tmle_dat_wide), value = TRUE),
+                     grep("West_Virginia", colnames(tmle_dat_wide), value = TRUE),
+                     grep("year", colnames(tmle_dat_wide), value = TRUE),
+                     grep("payer_index_mdcr", colnames(tmle_dat_wide), value = TRUE),
+                     grep("calculated_age", colnames(tmle_dat_wide), value = TRUE),
+                     grep("female", colnames(tmle_dat_wide), value = TRUE),
+                     grep("white", colnames(tmle_dat_wide), value = TRUE),
+                     grep("black", colnames(tmle_dat_wide), value = TRUE),
+                     grep("latino", colnames(tmle_dat_wide), value = TRUE),
+                     grep("other", colnames(tmle_dat_wide), value = TRUE),
+                     grep("mdd", colnames(tmle_dat_wide), value = TRUE),
+                     grep("bipolar", colnames(tmle_dat_wide), value = TRUE),
+                     grep("schiz", colnames(tmle_dat_wide), value = TRUE))
+  tmle_covars_A <- setdiff(tmle_covars_Y, grep("A", colnames(tmle_dat_wide), value = TRUE))
   tmle_covars_C <- tmle_covars_A
   
   # set NAs to -1 (except treatment NA=0)
-  tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("Y",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("C",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("L",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("V3",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("white",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("black",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("latino",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("other",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)])] <- -1
-  tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)])] <- -1
-  
-  tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
+  tmle_dat_wide[,grep("A",colnames(tmle_dat_wide),value = TRUE, invert = TRUE)][is.na(tmle_dat_wide[,grep("A",colnames(tmle_dat_wide),value = TRUE, invert = TRUE)])] <- -1
+
+  tmle_dat_wide[grep("A", colnames(tmle_dat_wide), value = TRUE)] <- lapply(tmle_dat_wide[grep("A", colnames(tmle_dat_wide), value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
 }
 
 ##  fit initial treatment model
@@ -561,12 +551,12 @@ if(estimator=="tmle"){
 } else if(estimator=="tmle-lstm"){ 
   window.size <- 7
   
-  lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir) # list of 27 matrices
+  lstm_A_preds <- lstm(data=tmle_dat_wide[c(grep("A",colnames(tmle_dat_wide),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat_wide), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir) # list of 27 matrices
   
   lstm_A_preds <- c(replicate((window.size+1), lstm_A_preds[[1]], simplify = FALSE), lstm_A_preds) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1
   
   initial_model_for_A <- list("preds"= lstm_A_preds,
-                              "data"=tmle_dat)
+                              "data"=tmle_dat_wide)
   
   g_preds <- lapply(1:length(lstm_A_preds), function(i) { # list of 37 matrices of size n by J
     # Remove the first column (class 0) from each element
@@ -668,14 +658,14 @@ if(estimator=="tmle"){
     print(paste0("Class ", k, " in ", num_classes))
     
     # Create a binary matrix for the outcomes where each 'A' column is compared to class k
-    A_binary_matrix <- sapply(grep("A", colnames(tmle_dat), value = TRUE), function(col_name) {
-      as.numeric(tmle_dat[[col_name]] == k)  # 1 if treatment is class k, 0 otherwise
+    A_binary_matrix <- sapply(grep("A", colnames(tmle_dat_wide), value = TRUE), function(col_name) {
+      as.numeric(tmle_dat_wide[[col_name]] == k)  # 1 if treatment is class k, 0 otherwise
     })
     
     print(dim(A_binary_matrix))
     
     # Combine with covariates data
-    lstm_input_data <- cbind(A_binary_matrix, tmle_dat[tmle_covars_A])
+    lstm_input_data <- cbind(A_binary_matrix, tmle_dat_wide[tmle_covars_A])
     
     # Train the LSTM model with the prepared data
     lstm_A_preds_bin[[k]] <- lstm(data = lstm_input_data, 
@@ -721,12 +711,12 @@ if(estimator=="tmle"){
   # Check the dimension of the first matrix in lstm_A_preds_bin
   dim(lstm_A_preds_bin[[1]])
   
-  initial_model_for_A_bin <- list("preds" = lstm_A_preds_bin, "data" = tmle_dat)
+  initial_model_for_A_bin <- list("preds" = lstm_A_preds_bin, "data" = tmle_dat_wide)
   
   # Process each matrix in lstm_A_preds_bin
   g_preds_bin <- lstm_A_preds_bin  # No need to reshape
   
-  g_preds_bin_ID <- tmle_dat$ID
+  g_preds_bin_ID <- tmle_dat_wide$ID
   
   # Initialize g_preds_bin_cuml and compute cumulative predictions
   g_preds_bin_cuml <- vector("list", length(g_preds_bin))
@@ -831,18 +821,18 @@ if(estimator=="tmle"){
   
 }else if(estimator=="tmle-lstm"){ 
   
-  lstm_C_preds <- lstm(data=tmle_dat[c(grep("C",colnames(tmle_dat),value = TRUE),tmle_covars_C)], outcome=grep("C",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_C, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir) # list of 27, n preds
+  lstm_C_preds <- lstm(data=tmle_dat_wide[c(grep("C",colnames(tmle_dat_wide),value = TRUE),tmle_covars_C)], outcome=grep("C",colnames(tmle_dat_wide),value = TRUE), covariates=tmle_covars_C, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir) # list of 27, n preds
   
   # Transform lstm_C_preds into a data matrix of n x 37
   transformed_C_preds <- c(replicate(window.size, lstm_C_preds[[1]], simplify = FALSE), lstm_C_preds)
   
   # Initialize initial_model_for_C with the transformed predictions
-  initial_model_for_C <- list("preds" = transformed_C_preds, "data" = tmle_dat)
+  initial_model_for_C <- list("preds" = transformed_C_preds, "data" = tmle_dat_wide)
   
   # Process the transformed predictions
   C_preds <- lapply(1:length(initial_model_for_C$preds), function(i) 1 - initial_model_for_C$preds[[i]])
   
-  # Assuming tmle_dat has a column 'ID' that contains the IDs
+  # Assuming tmle_dat_wide has a column 'ID' that contains the IDs
   C_preds_ID <- replicate(length(C_preds), 1:n, simplify = FALSE)
   
   # Initialize C_preds_cuml and compute cumulative predictions

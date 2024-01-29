@@ -25,10 +25,6 @@ nontimevar_count_vars <- c("preperiod_er_mhsa", "preperiod_er_nonmhsa", "preperi
                            "preperiod_cond_nonmhsa", "preperiod_cond_injury",
                            "preperiod_los_mhsa", "preperiod_los_nonmhsa", "preperiod_los_injury")
 
-
-# Set the seed for reproducibility
-set.seed(123)
-
 # continuous variable ("monthly_olanzeq_dose_total")
 simdata_from_basevars$monthly_olanzeq_dose_total <- simdata_from_basevars$preperiod_olanzeq_dose_total + RnormTrunc(nrow(simdata_from_basevars), mean = mean(simdata_from_basevars$preperiod_olanzeq_dose_total)-1303.43051967477, sd = sd(simdata_from_basevars$preperiod_olanzeq_dose_total)-1467.6408871971, minval = 0, maxval = max(simdata_from_basevars$preperiod_olanzeq_dose_total)-20329.8514516875)
 simdata_from_basevars$monthly_olanzeq_dose_total <- RnormTrunc(nrow(simdata_from_basevars), mean = mean(simdata_from_basevars$preperiod_olanzeq_dose_total), sd = sd(simdata_from_basevars$preperiod_olanzeq_dose_total), minval = 0, maxval = max(simdata_from_basevars$preperiod_olanzeq_dose_total), 
@@ -36,17 +32,17 @@ simdata_from_basevars$monthly_olanzeq_dose_total <- RnormTrunc(nrow(simdata_from
 
 # count variables
 for(i in 1:length(timevar_count_vars)){
-  simdata_from_basevars[,timevar_count_vars[i]] <- NegBinom(nrow(simdata_from_basevars), ifelse(simdata_from_basevars[,nontimevar_count_vars[i]]>0,0.25, 0.05))
+  simdata_from_basevars[,timevar_count_vars[i]] <- NegBinom(nrow(simdata_from_basevars), ifelse(simdata_from_basevars[,nontimevar_count_vars[i]]>0,0.25, 0.01))
 }
 
 # binary variables
 for(i in 1:length(timevar_binary_vars)){
-  simdata_from_basevars[,timevar_binary_vars[i]] <- rbern(nrow(simdata_from_basevars), ifelse(simdata_from_basevars[,nontimevar_binary_vars[i]]==1, 0.25, .05))
+  simdata_from_basevars[,timevar_binary_vars[i]] <- rbern(nrow(simdata_from_basevars), ifelse(simdata_from_basevars[,nontimevar_binary_vars[i]]==1, 0.25, .01))
 }
 
 # cumulative binary variables
 for(i in 1:length(timevar_bincum_vars)){
-  simdata_from_basevars[,timevar_bincum_vars[i]] <- rbern(nrow(simdata_from_basevars), ifelse(simdata_from_basevars[,nontimevar_bin_vars[i]]==1,1,0.05))
+  simdata_from_basevars[,timevar_bincum_vars[i]] <- rbern(nrow(simdata_from_basevars), ifelse(simdata_from_basevars[,nontimevar_bin_vars[i]]==1,1,0.01))
 }
 
 ####################################################################################################
@@ -56,24 +52,21 @@ for(i in 1:length(timevar_bincum_vars)){
 # Create a vector of drugs based on the condition with the desired distribution
 create_drug_vector <- function(condition, size) {
   if (condition == "bipolar") {
-    sample(levels(as.factor(simdata_from_basevars$drug_group)), size = size, replace = TRUE, prob = c(0.025, 0.025, 0.025, 0.7, 0.2, 0.025))
+    sample(levels(as.factor(simdata_from_basevars$drug_group)), size = size, replace = TRUE, prob = c(0.01, 0.01, 0.01, 0.48, 0.48, 0.01))
   } else if (condition == "schiz") {
-    sample(levels(as.factor(simdata_from_basevars$drug_group)), size = size, replace = TRUE, prob = c(0.025, 0.7, 0.025, 0.025, 0.2, 0.025))
+    sample(levels(as.factor(simdata_from_basevars$drug_group)), size = size, replace = TRUE, prob = c(0.01, 0.48, 0.01, 0.01, 0.48, 0.01))
   } else {  # Assuming this is for MDD
-    sample(levels(as.factor(simdata_from_basevars$drug_group)), size = size, replace = TRUE, prob = c(0.7, 0.025, 0.025, 0.025, 0.2, 0.025))
+    sample(levels(as.factor(simdata_from_basevars$drug_group)), size = size, replace = TRUE, prob = c(0.48, 0.01, 0.01, 0.01, 0.48, 0.01))
   }
 } # ARIPIPRAZOLE  HALOPERIDOL   OLANZAPINE   QUETIAPINE  RISPERIDONE  ZIPRASIDONE
 
 # Apply the function for each condition group
-bipolar_drugs <- create_drug_vector("bipolar", sum(simdata_from_basevars$smi_condition == "bipolar"))
-schiz_drugs <- create_drug_vector("schiz", sum(simdata_from_basevars$smi_condition == "schiz"))
-mdd_drugs <- create_drug_vector("MDD", sum(simdata_from_basevars$smi_condition == "MDD"))
+bipolar_drugs <- create_drug_vector("bipolar", sum(simdata_from_basevars$smi_condition == "bipolar" & simdata_from_basevars$month_number==0))
+schiz_drugs <- create_drug_vector("schiz", sum(simdata_from_basevars$smi_condition == "schiz" & simdata_from_basevars$month_number==0))
+mdd_drugs <- create_drug_vector("MDD", sum(simdata_from_basevars$smi_condition == "MDD" & simdata_from_basevars$month_number==0))
 
 # Combine the vectors and assign them back to simdata_from_basevars
 simdata_from_basevars$drug_group[simdata_from_basevars$smi_condition == "bipolar"] <- bipolar_drugs
 simdata_from_basevars$drug_group[simdata_from_basevars$smi_condition == "schiz"] <- schiz_drugs
 simdata_from_basevars$drug_group[simdata_from_basevars$smi_condition == "MDD"] <- mdd_drugs
-
-
-
 
