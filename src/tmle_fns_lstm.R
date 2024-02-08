@@ -149,24 +149,22 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   
   # targeting step - refit outcome model using clever covariates
   for (i in 1:ncol(clever_covariates)) {
-    # Print the column being processed
-    print(paste("Processing column:", i + 1))
+    print(paste("Processing column:", i))
     
-    # Check if the column is numeric
-    print(paste("Is numeric:", is.numeric(QAW[, i + 1])))
-    
-    # Convert to Numeric if Needed
-    QAW[, i + 1] <- as.numeric(as.character(QAW[, i + 1]))
+    # Check if the column is numeric and print the result
+    is_numeric <- is.numeric(QAW[, i])
+    print(paste("Is numeric:", is_numeric))
     
     # Filter rows where Y is not -1 (NA)
     valid_rows <- initial_model_for_Y$data$Y != -1
     
+    # Adjusted column index for glm functions (no need to +1 here since we've corrected loop index)
     if (all(initial_model_for_Y$data$t < t.end)) { # use actual Y for t=T
-      updated_model_for_Y[[i]] <- glm(QAW$QA[valid_rows] ~ 1 + offset(qlogis(QAW[valid_rows, (i + 1)])), 
+      updated_model_for_Y[[i]] <- glm(QAW$QA[valid_rows] ~ 1 + offset(qlogis(QAW[valid_rows, i])), 
                                       weights = weights[valid_rows, i], 
                                       family = quasibinomial())
     } else {
-      updated_model_for_Y[[i]] <- glm(initial_model_for_Y$data$Y[valid_rows] ~ 1 + offset(qlogis(QAW[valid_rows, (i + 1)])), 
+      updated_model_for_Y[[i]] <- glm(initial_model_for_Y$data$Y[valid_rows] ~ 1 + offset(qlogis(QAW[valid_rows, i])), 
                                       weights = weights[valid_rows, i], 
                                       family = quasibinomial())
     }
@@ -179,9 +177,41 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   Qstar_iptw <- lapply(1:ncol(clever_covariates), function(i) boundProbs(weights[,i]*initial_model_for_Y$data$Y, bound=ybound)) 
   names(Qstar_iptw) <- colnames(obs.rules)
   
-  # gcomp estimate
-  Qstar_gcomp <- lapply(1:ncol(clever_covariates), function(i) QAW[,(i+1)])
-  names(Qstar_gcomp) <- colnames(obs.rules)
+  # Assuming QAW is your dataframe and obs.rules is another dataframe or a list whose column names you want to use
+  
+  # First, ensure QAW has the expected number of columns
+  # This is a basic check. You might need a more sophisticated check depending on your data structure
+  if (ncol(QAW) < 2) {
+    stop("QAW does not have enough columns.")
+  }
+  
+  # Correctly populate Qstar_gcomp only with existing columns from QAW
+  # Adjust the lapply function to only iterate over existing columns
+  Qstar_gcomp <- lapply(1:(ncol(QAW) - 1), function(i) {
+    if (i + 1 <= ncol(QAW)) {
+      return(QAW[, i + 1])
+    } else {
+      return(NULL) # Return NULL for non-existing columns
+    }
+  })
+  
+  # Filter out NULL values which represent non-existing columns
+  Qstar_gcomp <- Qstar_gcomp[sapply(Qstar_gcomp, is.null) == FALSE]
+  
+  # Now, assign names to Qstar_gcomp elements based on the available names from obs.rules
+  if (length(Qstar_gcomp) <= length(colnames(obs.rules))) {
+    names(Qstar_gcomp) <- colnames(obs.rules)[1:length(Qstar_gcomp)]
+  } else {
+    stop("The number of elements in Qstar_gcomp exceeds the number of columns in obs.rules")
+  }
+  
+  # Debugging prints - Remove or comment out in production code
+  print("Converting to list")
+  print("Returning predictions")
+  for (i in 1:length(Qstar_gcomp)) {
+    print(paste("Processing column:", i))
+    print(paste("Is numeric:", is.numeric(QAW[, i + 1])))
+  }
   
   return(list("Qs"=Qs,"QAW"=QAW,"clever_covariates"=clever_covariates,"weights"=weights,"updated_model_for_Y"=updated_model_for_Y, "Qstar"=Qstar, "Qstar_iptw"=Qstar_iptw, "Qstar_gcomp"=Qstar_gcomp, "ID"=initial_model_for_Y_data$ID))
 }

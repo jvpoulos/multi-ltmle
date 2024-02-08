@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name="tmle-lstm"
-#SBATCH -e tmle-lstm.err
+#SBATCH --job-name="lstm_gpu"
+#SBATCH -e lstm_gpu.err
 #SBATCH -p gpu_requeue --gres=gpu:1
 #SBATCH -c 20
-#SBATCH --mem=100GB
+#SBATCH --mem=250GB
 #SBATCH -t 3-00:00:00
 #SBATCH --array=1
 

@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
+simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
   
   # libraries
   library(simcausal)
@@ -401,7 +401,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       # Remove the first column (class 0) from each element
       modified_matrix <- lstm_A_preds[[i]][, -1]
       
-      # Reshape the modified matrix to the desired size (10000 by 6)
+      # Reshape the modified matrix to the desired size (n by 6)
       reshaped_matrix <- matrix(modified_matrix, nrow = n, ncol = J, byrow = TRUE)
       
       # Naming the columns
@@ -509,17 +509,17 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       time_step_preds <- lstm_A_preds_bin[[class]]
       
       # Combine the predictions into a single matrix (n by timesteps)
-      # Assuming each element in time_step_preds is a vector of length 10000
+      # Assuming each element in time_step_preds is a vector of length n
       combined_matrix <- do.call(cbind, time_step_preds)
       
       # Assign the combined matrix to the transformed list
       transformed_preds_bin[[class]] <- combined_matrix
-    } # Now, transformed_preds_bin is a list of 6 elements, each a 10000 by 27 matrix
+    } # Now, transformed_preds_bin is a list of 6 elements, each a n by 27 matrix
     
     for (i in 1:length(transformed_preds_bin)) {
       # Get the first column and replicate it (window.size) times
       first_col_replicated <- matrix(rep(transformed_preds_bin[[i]][, 1], window.size), 
-                                     nrow = 10000, ncol = window.size)
+                                     nrow = n, ncol = window.size)
       
       # Combine the replicated columns with the original matrix
       extended_matrix <- cbind(first_col_replicated, transformed_preds_bin[[i]])
@@ -559,7 +559,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for (i in 1:t.end) {
       # Extract predictions for each treatment class at time point i
       temp_matrices <- lapply(lstm_A_preds_bin, function(x) {
-        # Convert each element of lstm_A_preds_bin into a 10000 x 37 matrix
+        # Convert each element of lstm_A_preds_bin into a n x 37 matrix
         matrix(x, nrow = n, ncol = t.end)
       })
       
@@ -1010,7 +1010,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
 #####################
 
 # define settings for simulation
-settings <- expand.grid("n"=c(10000), 
+settings <- expand.grid("n"=c(12500), 
                         treatment.rule = c("static","dynamic","stochastic")) 
 
 options(echo=TRUE)
@@ -1030,7 +1030,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 275 # number of simulation runs
+R <- 325 # number of simulation runs
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -1054,16 +1054,19 @@ if(doMPI){
   print(paste0("cluster size: ", clusterSize(cl)))
   
 } else{
-  library(parallel)
-  library(doParallel)
   library(foreach)
   
-  cores <- parallel::detectCores()
-  print(paste0("number of cores used: ", cores))
-  
-  cl <- parallel::makeCluster(cores, outfile="")
-  
-  doParallel::registerDoParallel(cl) # register cluster
+  if(estimator!='tmle-lstm'){
+    library(parallel)
+    library(doParallel)
+    
+    cores <- (parallel::detectCores())
+    print(paste0("number of cores used: ", cores))
+    
+    cl <- parallel::makeCluster(cores, outfile="")
+    
+    doParallel::registerDoParallel(cl) # register cluster
+  }
 }
 
 # output directory
@@ -1113,9 +1116,16 @@ library_vector <- c(
   "keras"
 )
 
-sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE, .inorder=FALSE) %dopar% {
-  simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
+if(estimator=='tmle-lstm'){ # run sequentially
+  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE) %do% {
+    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
+  }
+}else{ # run in parallel
+  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE, .inorder=FALSE) %dopar% {
+    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
+  }
 }
+
 
 saveRDS(sim.results, filename)
 
@@ -1123,5 +1133,7 @@ if(doMPI){
   closeCluster(cl) # close down MPIcluster
   mpi.finalize()
 }else{
-  stopCluster(cl)
+  if(estimator!='tmle-lstm'){
+    stopCluster(cl)
+  }
 }

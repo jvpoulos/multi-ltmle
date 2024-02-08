@@ -7,20 +7,17 @@ N.b.: We cannot provide the actual Centers for Medicare & Medicaid Services (CMS
 Please cite the following papers if you use this repo:
 
 ```
-@misc{https://doi.org/10.48550/arxiv.2206.15367,
-  doi = {10.48550/ARXIV.2206.15367},
-  url = {https://arxiv.org/abs/2206.15367},
-  author = {Poulos, Jason and Horvitz-Lennon, Marcela and Zelevinsky, Katya and Cristea-Platon, Tudor and Huijskens, Thomas and Tyagi, Pooja and Yan, Jiaju and Diaz, Jordi and Normand, Sharon-Lise},
-  keywords = {Applications (stat.AP), Methodology (stat.ME), FOS: Computer and information sciences, FOS: Computer and information sciences},
-  title = {Targeted learning in observational studies with multi-level treatments: An evaluation of antipsychotic drug treatment safety},
-  publisher = {arXiv},
-  year = {2022},
-  copyright = {arXiv.org perpetual, non-exclusive license}
+@article{https://doi.org/10.1002/sim.10003,
+  title={Targeted learning in observational studies with multi-valued treatments: An evaluation of antipsychotic drug treatment safety.},
+  author={Poulos, Jason and Horvitz-Lennon, Marcela and Zelevinsky, Katya and Cristea-Platon, Tudor and Huijskens, Thomas and Tyagi, Pooja and Yan, Jiaju and Diaz, Jordi and Normand, Sharon-Lise},
+  journal={Statistics in Medicine},
+  year={2024},
+   publisher={Wiley Online Library}
 }
 ```
 
 ```
-@article{poulos2023antipsychotics,
+@article{https://doi.org/10.1017/S0033291723001502,
   title={Antipsychotics and the risk of diabetes and death among adults with serious mental illnesses},
   author={Poulos, Jason and Normand, Sharon-Lise T and Zelevinsky, Katya and Newcomer, John W and Agniel, Denis and Abing, Haley K and Horvitz-Lennon, Marcela},
   journal={Psychological Medicine},
@@ -100,11 +97,11 @@ Contents
 
 	+ *J*: number of treatments; must be J=6.
 
-	+ *n*: sample size. Defaults to 10000.
+	+ *n*: sample size. Defaults to 12500.
 
 	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
 
-	+ *R*: number of simulation runs. Default is 100. 
+	+ *R*: number of simulation runs. Default is 325. 
 
 	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
 

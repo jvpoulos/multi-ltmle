@@ -12,12 +12,13 @@ library(gtable)
 
 # Define parameters
 J <- 6
-n <- 10000
-R <- 200
+n <- 10000 #15000
+R <- 275 #325
 t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
 
+estimator <- "tmle"
 estimators <- c("tmle","tmle_bin","gcomp","iptw","iptw_bin")
 
 n.estimators <-as.numeric(length(estimators))
@@ -26,7 +27,7 @@ n.rules <-as.numeric(length(treatment.rules))
 # Load results data
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20240108") args <- c("outputs/20230818")
+args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20240130")
 output.path <- as.character(args[1])
 
 filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)
@@ -34,6 +35,7 @@ filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)
 filenames <- filenames[grep(paste0("J_",J),filenames)]
 filenames <- filenames[grep(paste0("R_",R),filenames)]
 filenames <- filenames[grep(paste0("n_",n,"_"),filenames)]
+filenames <- filenames[grep(paste0("estimator_",estimator,"_"),filenames)]
 
 if(any( duplicated(substring(filenames, 18)))){
   print("removing duplicate filenames")

@@ -3,8 +3,8 @@
 #SBATCH -e tmle.err
 #SBATCH -p mpi
 #SBATCH -n 120
-#SBATCH --mem-per-cpu=19GB
-#SBATCH -t 2-06:00:00
+#SBATCH --mem-per-cpu=29GB
+#SBATCH -t 3-00:00:00
 #SBATCH --array=1
 
 ulimit -l unlimited

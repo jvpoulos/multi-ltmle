@@ -31,7 +31,7 @@ os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
 def custom_loss(y_true, y_pred):
     y_true_reshaped = tf.reshape(y_true, [-1, 1])
-    y_pred_reshaped = tf.reshape(y_pred, [-1, 7]) # The model's output is already shaped as (batch_size, 10000, 7)
+    y_pred_reshaped = tf.reshape(y_pred, [-1, 7]) # The model's output is already shaped as (batch_size, n, J+1)
     loss = tf.keras.losses.sparse_categorical_crossentropy(y_true_reshaped, y_pred_reshaped)
     return tf.reduce_mean(loss)
 
