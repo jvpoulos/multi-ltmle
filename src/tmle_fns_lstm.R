@@ -4,6 +4,7 @@
 
 static_mtp_lstm <- function(row){ 
   # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
+  shifted <- factor(0, levels=levels(row$A))
   if(row$schiz==1){
     shifted <- factor(2, levels=levels(row$A))
   }else if(row$bipolar==1){
@@ -19,6 +20,7 @@ static_mtp_lstm <- function(row){
 dynamic_mtp_lstm <- function(row){ 
   # Dynamic: Everyone starts with risp.
   # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quetiap. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise stay on risp.
+  shifted <- factor(0, levels=levels(row$A))
   if(row$t==0){ 
     shifted <- factor(5, levels=levels(row$A))
   }else if(row$t>=1){
@@ -41,6 +43,7 @@ dynamic_mtp_lstm <- function(row){
 
 stochastic_mtp_lstm <- function(row){
   # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distribution
+  shifted <- factor(0, levels=levels(row$A))
   if(row$t == 0) { 
     # Do nothing in the first period
     shifted <- row$A

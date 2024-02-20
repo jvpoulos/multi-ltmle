@@ -4,7 +4,7 @@
 #SBATCH -p mpi
 #SBATCH -n 120
 #SBATCH --mem-per-cpu=29GB
-#SBATCH -t 3-00:00:00
+#SBATCH -t 5-00:00:00
 #SBATCH --array=1
 
 ulimit -l unlimited

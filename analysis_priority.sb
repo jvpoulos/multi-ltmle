@@ -10,4 +10,4 @@
 module load gcc/6.2.0 R/4.0.1
 
 #Run the job
-Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'
+Rscript ltmle_analysis.R 'tmle' 'all' '20240215/' 'TRUE' 'TRUE'

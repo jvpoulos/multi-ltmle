@@ -869,23 +869,23 @@ if(estimator=="tmle"){
 ## the outcome is the observed Y for t=T and updated Y if t<T
 
 if(estimator=="tmle"){
-  if(weights.loc!='none'){
-    initial_model_for_Y <-  readRDS(paste0(output_dir,
-                                           "initial_model_for_Y_",
-                                           "estimator_",estimator,
-                                           "_treatment_rule_",treatment.rule,
-                                           "_n_folds_",n.folds,
-                                           "_scale_continuous_",scale.continuous,
-                                           "_use_SL_", use.SL,".rds"))
-    
-    initial_model_for_Y_bin <-  readRDS(paste0(output_dir,
-                                               "initial_model_for_Y_bin_",
-                                               "estimator_",estimator,
-                                               "_treatment_rule_",treatment.rule,
-                                               "_n_folds_",n.folds,
-                                               "_scale_continuous_",scale.continuous,
-                                               "_use_SL_", use.SL,".rds"))
-  }else{
+  # if(weights.loc!='none'){
+  #   initial_model_for_Y <-  readRDS(paste0(output_dir,
+  #                                          "initial_model_for_Y_",
+  #                                          "estimator_",estimator,
+  #                                          "_treatment_rule_",treatment.rule,
+  #                                          "_n_folds_",n.folds,
+  #                                          "_scale_continuous_",scale.continuous,
+  #                                          "_use_SL_", use.SL,".rds"))
+  #   
+  #   initial_model_for_Y_bin <-  readRDS(paste0(output_dir,
+  #                                              "initial_model_for_Y_bin_",
+  #                                              "estimator_",estimator,
+  #                                              "_treatment_rule_",treatment.rule,
+  #                                              "_n_folds_",n.folds,
+  #                                              "_scale_continuous_",scale.continuous,
+  #                                              "_use_SL_", use.SL,".rds"))
+  # }else{
     initial_model_for_Y_sl <- make_learner(Lrnr_sl, # cross-validates base models
                                            learners = if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
                                            metalearner = metalearner_Y,
@@ -900,7 +900,7 @@ if(estimator=="tmle"){
     initial_model_for_Y_bin <- list() # updated Y's are used as outcomes for t<T
     initial_model_for_Y[[t.end]] <- sequential_g(t=t.end, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t.end)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl, ybound) # for t=T fit on measured Y
     initial_model_for_Y_bin[[t.end]] <- initial_model_for_Y[[t.end]] # same
-  }
+  # }
   
   # Update equations, calculate point estimate and variance
   # backward in time: T.end, ..., 1

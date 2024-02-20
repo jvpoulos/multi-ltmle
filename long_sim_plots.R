@@ -12,8 +12,8 @@ library(gtable)
 
 # Define parameters
 J <- 6
-n <- 10000 #15000
-R <- 275 #325
+n <- 12500
+R <- 325
 t.end <- 36
 
 treatment.rules <- c("static","dynamic","stochastic")
@@ -27,7 +27,7 @@ n.rules <-as.numeric(length(treatment.rules))
 # Load results data
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20240130")
+args <- commandArgs(trailingOnly = TRUE) # args <- c("outputs/20240215")
 output.path <- as.character(args[1])
 
 filenames <- list.files(path=output.path, pattern = ".rds", full.names = TRUE)

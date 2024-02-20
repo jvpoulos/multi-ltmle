@@ -104,6 +104,7 @@ static_quet_on <- function(row,lags=TRUE) {
 
 static_mtp <- function(row){ 
   # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
+  shifted <- factor(0, levels=levels(row$A))
   if(row$t==0){ # first-, second-, and third-order lags are 0
     if(row$schiz==1){
       shifted <- static_halo_on(row,lags=TRUE)
@@ -111,6 +112,8 @@ static_mtp <- function(row){
       shifted <- static_quet_on(row,lags=TRUE)
     }else if(row$mdd==1){
       shifted <- static_arip_on(row,lags=TRUE)
+    }else{
+      shifted <- factor(0, levels=levels(row$A))
     }
   }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
@@ -120,6 +123,8 @@ static_mtp <- function(row){
       shifted <- unlist(c(static_quet_on(row,lags = FALSE),lags)) # switch to quet
     }else if(row$mdd==1){
       shifted <- unlist(c(static_arip_on(row,lags = FALSE),lags)) # switch to arip
+    }else{
+      shifted <- factor(0, levels=levels(row$A))
     }
   }
   return(shifted)
@@ -128,6 +133,7 @@ static_mtp <- function(row){
 dynamic_mtp <- function(row){ 
   # Dynamic: Everyone starts with risp.
   # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quetiap. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise stay on risp.
+  shifted <- factor(0, levels=levels(row$A))
   if(row$t==0){ # first-, second-, and third-order lags are 0
     shifted <- static_risp_on(row,lags=TRUE)
   }else if(row$t>=1){
@@ -148,6 +154,7 @@ dynamic_mtp <- function(row){
 }
 
 stochastic_mtp <- function(row){
+  shifted <- factor(0, levels=levels(row$A))
   # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distibution
   if(row$t==0){ # do nothing first period
     shifted <- row[grep("A[0-9]",colnames(row), value=TRUE)]  # first and second-order lags are 0
