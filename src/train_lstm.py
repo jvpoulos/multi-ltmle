@@ -10,6 +10,7 @@ import pandas as pd
 
 import keras
 import tensorflow as tf
+print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
 from keras import backend as K
 from keras.models import Model

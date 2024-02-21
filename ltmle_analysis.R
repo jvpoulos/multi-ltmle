@@ -107,6 +107,7 @@ filename <- paste0(output_dir,
 if(estimator=='tmle-lstm'){
   library(reticulate)
   use_python("~/multi-ltmle/env/bin/python")
+  print(py_config()) # Check Python configuration
   
   library(tensorflow)
   library(keras)

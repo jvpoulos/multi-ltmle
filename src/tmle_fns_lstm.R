@@ -24,7 +24,7 @@ dynamic_mtp_lstm <- function(row){
   if(row$t==0){ 
     shifted <- factor(5, levels=levels(row$A))
   }else if(row$t>=1){
-    if((row$L1 >0 | row$L2 >0 | row$L3 >0)){
+    if (!is.na(row$L1) && !is.na(row$L2) && !is.na(row$L3) && (row$L1 > 0 | row$L2 > 0 | row$L3 > 0)) {
       if(row$schiz==1){
         shifted <- factor(2, levels=levels(row$A)) # switch to halo
       }else if(row$bipolar==1){

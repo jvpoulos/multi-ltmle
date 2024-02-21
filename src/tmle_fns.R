@@ -138,7 +138,7 @@ dynamic_mtp <- function(row){
     shifted <- static_risp_on(row,lags=TRUE)
   }else if(row$t>=1){
     lags <- row[grep("A",grep("lag",colnames(row), value=TRUE), value=TRUE)]
-    if((row$L1 >0 | row$L2 >0 | row$L3 >0)){
+    if (!is.na(row$L1) && !is.na(row$L2) && !is.na(row$L3) && (row$L1 > 0 | row$L2 > 0 | row$L3 > 0)) {
       if(row$schiz==1){
         shifted <- unlist(c(static_halo_on(row,lags = FALSE),lags)) # switch to halo
       }else if(row$bipolar==1){

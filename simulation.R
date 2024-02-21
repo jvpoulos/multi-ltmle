@@ -29,6 +29,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   if(estimator=='tmle-lstm'){
     library(reticulate)
     use_python("~/multi-ltmle/env/bin/python")
+    print(py_config()) # Check Python configuration
     
     library(tensorflow)
     library(keras)
