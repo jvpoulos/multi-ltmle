@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
+simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
   
   # libraries
   library(simcausal)
@@ -762,7 +762,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     tmle_contrasts_bin[[t.end]] <- getTMLELongLSTM(
       initial_model_for_Y_preds = initial_model_for_Y$preds[, t.end], 
-      initial_model_for_Y_data = initial_model_for_Y$data, 
+      initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y=tmle_covars_Y, 
       g_preds_bounded=g_preds_bin_cuml_bounded[[t.end]], 
@@ -772,40 +772,45 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
     )
     
-    for (t in (t.end-1):1) {
-      # Update the references inside the loop similarly
-      tmle_contrasts[[t]] <- sapply(1:length(tmle_rules), function(i) {
-        # Ensure correct referencing of the transformed predictions
+    # Pre-compute lengths and other constants outside the loop
+    tmle_rules_length <- length(tmle_rules)
+    initial_model_for_Y_data <- initial_model_for_Y$data
+    
+    # Use parallel processing to compute tmle_contrasts
+    tmle_contrasts <- mclapply(1:(t.end - 1), function(t) {
+      sapply(1:tmle_rules_length, function(i) {
         getTMLELongLSTM(
-          initial_model_for_Y_preds = initial_model_for_Y$preds[, t], 
-          initial_model_for_Y_data = initial_model_for_Y$data, 
+          initial_model_for_Y_preds = initial_model_for_Y$preds[, t],
+          initial_model_for_Y_data = initial_model_for_Y_data,
           tmle_rules = tmle_rules,
-          tmle_covars_Y=tmle_covars_Y, 
-          g_preds_bounded=g_preds_cuml_bounded[[t+1]], 
-          C_preds_bounded=C_preds_cuml_bounded[[t]], 
-          obs.treatment=treatments[[t+1]], 
-          obs.rules=obs.rules[[t+1]], 
-          gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
+          tmle_covars_Y = tmle_covars_Y,
+          g_preds_bounded = g_preds_cuml_bounded[[t + 1]],
+          C_preds_bounded = C_preds_cuml_bounded[[t]],
+          obs.treatment = treatments[[t + 1]],
+          obs.rules = obs.rules[[t + 1]],
+          gbound = gbound, ybound = ybound, t.end = t.end, window.size = window.size
         )
       })
-      
-      # Similar update for tmle_contrasts_bin
-      tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) {
-        # Ensure correct referencing
+    }, mc.cores = cores)
+    
+    # Use parallel processing to compute tmle_contrasts_bin
+    tmle_contrasts_bin <- mclapply(1:(t.end - 1), function(t) {
+      sapply(1:tmle_rules_length, function(i) {
         getTMLELongLSTM(
-          initial_model_for_Y_preds = initial_model_for_Y_bin$preds[, t],
-          initial_model_for_Y_data = initial_model_for_Y$data,
+          initial_model_for_Y_preds = initial_model_for_Y$preds[, t],
+          initial_model_for_Y_data = initial_model_for_Y_data,
           tmle_rules = tmle_rules,
-          tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t]],
-          C_preds_bounded=C_preds_cuml_bounded[[t]],
-          obs.treatment=treatments[[t+1]],
-          obs.rules=obs.rules[[t+1]],
-          gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
+          tmle_covars_Y = tmle_covars_Y,
+          g_preds_bounded = g_preds_bin_cuml_bounded[[t]],
+          C_preds_bounded = C_preds_cuml_bounded[[t]],
+          obs.treatment = treatments[[t + 1]],
+          obs.rules = obs.rules[[t + 1]],
+          gbound = gbound, ybound = ybound, t.end = t.end, window.size = window.size
         )
       })
-    }
+    }, mc.cores = cores)
   }
-  
+    
   # plot estimated survival curves
   
   tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
@@ -1031,7 +1036,20 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 325 # number of simulation runs
+R <- 1#325 # number of simulation runs
+
+# full_vector <- 1:325
+# 
+# # Specify the values to be omitted
+# omit_values <- c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72, 
+#                  101, 113, 51, 108, 81, 57, 80, 70, 64, 105, 96, 74, 
+#                  38, 73, 65, 122, 130, 134, 131, 132, 140, 139, 133, 
+#                  151, 152, 162, 160, 169, 176, 191, 183, 202, 207, 204, 
+#                  209, 223, 217, 237, 233, 236, 243, 244, 247, 255, 263, 
+#                  269, 282, 279, 294, 306, 311, 316, 324)
+# 
+# # Remove the specified values from the full vector
+# final_vector <- full_vector[!full_vector %in% omit_values]
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -1056,17 +1074,16 @@ if(doMPI){
   
 } else{
   library(foreach)
-  
-  if(estimator!='tmle-lstm'){
     library(parallel)
     library(doParallel)
     
     cores <- (parallel::detectCores())
     print(paste0("number of cores used: ", cores))
     
-    cl <- parallel::makeCluster(cores, outfile="")
+    if(estimator!='tmle-lstm'){
+      cl <- parallel::makeCluster(cores, outfile="")
     
-    doParallel::registerDoParallel(cl) # register cluster
+      doParallel::registerDoParallel(cl) # register cluster
   }
 }
 
@@ -1114,19 +1131,19 @@ library_vector <- c(
   "tidyr",
   "reticulate",
   "tensorflow",
-  "keras"
+  "keras",
+  "parallel"
 )
 
 if(estimator=='tmle-lstm'){ # run sequentially
   sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE) %do% {
-    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
+    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, cores=cores, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
   }
 }else{ # run in parallel
   sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE, .inorder=FALSE) %dopar% {
-    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
+    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, cores=cores, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
   }
 }
-
 
 saveRDS(sim.results, filename)
 

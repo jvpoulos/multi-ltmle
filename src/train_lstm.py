@@ -103,8 +103,12 @@ def test_model():
     n_pre = int(window_size)
     seq_len = int(t_end)
 
-    x = np.array(pd.read_csv("{}input_data.csv".format(output_dir), low_memory=False))
-    y = np.array(pd.read_csv("{}output_data.csv".format(output_dir), low_memory=False))
+    if loss_fn=="sparse_categorical_crossentropy":
+        x = np.array(pd.read_csv("{}input_cat_data.csv".format(output_dir), low_memory=False))
+        y = np.array(pd.read_csv("{}output_cat_data.csv".format(output_dir), low_memory=False))
+    else:
+        x = np.array(pd.read_csv("{}input_bin_data.csv".format(output_dir), low_memory=False))
+        y = np.array(pd.read_csv("{}output_bin_data.csv".format(output_dir), low_memory=False))
 
     print('raw x shape', x.shape)   
     print('raw y shape', y.shape) 
@@ -136,7 +140,10 @@ def test_model():
     train_model(model, dataX, dataY, int(epochs), int(nb_batches))
 
     # Save the trained model
-    model_path = os.path.join(output_dir, 'trained_model.h5')
+    if loss_fn=="sparse_categorical_crossentropy":
+        model_path = os.path.join(output_dir, 'trained_cat_model.h5')
+    else:
+        model_path = os.path.join(output_dir, 'trained_bin_model.h5')
 
     print('Saving model to {}'.format(model_path))
     model.save(model_path)
@@ -151,9 +158,12 @@ def test_model():
 
     # Save predictions
 
-    print('Saving to {}lstm_preds.npy'.format(output_dir))
-
-    np.save("{}lstm_preds.npy".format(output_dir), preds_test)
+    if loss_fn=="sparse_categorical_crossentropy":
+        print('Saving to {}lstm_preds.npy'.format(output_dir))
+        np.save("{}lstm_cat_preds.npy".format(output_dir), preds_test)
+    else:
+        print('Saving to {}lstm_preds.npy'.format(output_dir))
+        np.save("{}lstm_bin_preds.npy".format(output_dir), preds_test)
 
 def main():
     test_model()
