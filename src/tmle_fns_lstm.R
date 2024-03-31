@@ -122,15 +122,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     selected_cols <- selected_cols[selected_cols %in% names(newdata)]
     
     print("Begin to update Qs")
-    assign(paste0("Q_", rule), lstm(data = newdata[, selected_cols],
-                                    outcome = y_cols,
-                                    covariates = tmle_covars_Y,
-                                    t_end = t.end,
-                                    window_size = window.size,
-                                    out_activation = "sigmoid",
-                                    loss_fn = "binary_crossentropy",
-                                    output_dir,
-                                    inference = TRUE))
+    assign(paste0("Q_", rule), lstm(data = newdata[, selected_cols], outcome = y_cols, covariates = tmle_covars_Y, t_end = t.end, window_size = window.size, out_activation = "sigmoid", loss_fn = "binary_crossentropy", output_dir, J = J))
     print("Updated Qs")
     rm(data, shifted, newdata)
     print("Cleared temporary data")

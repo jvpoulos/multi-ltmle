@@ -306,7 +306,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_dat$A <- factor(tmle_dat$A)
     
     # Reshape the time-varying variables to wide format
-    tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
+    #tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
+    tmle_dat <- reshape(tmle_dat, idvar = "ID", timevar = "t", direction = "wide") # N x T
     
     tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
     tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), 
@@ -391,24 +392,27 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   } else if(estimator=="tmle-lstm"){ 
     window.size <- 7
     
-    lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir) # list of 27 matrices
+    lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir, J=7) # list of 27 matrices
     
-    lstm_A_preds <- c(replicate((window.size+1), lstm_A_preds[[1]], simplify = FALSE), lstm_A_preds) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1
-    
+    lstm_A_preds <- c(replicate((window.size), lstm_A_preds[[window.size+1]], simplify = FALSE), lstm_A_preds[(window.size+1):length(lstm_A_preds)]) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1    
     initial_model_for_A <- list("preds"= lstm_A_preds,
                                 "data"=tmle_dat)
     
-    g_preds <- lapply(1:length(lstm_A_preds), function(i) { # list of 37 matrices of size n by J
-      # Remove the first column (class 0) from each element
-      modified_matrix <- lstm_A_preds[[i]][, -1]
-      
-      # Reshape the modified matrix to the desired size (n by 6)
-      reshaped_matrix <- matrix(modified_matrix, nrow = n, ncol = J, byrow = TRUE)
-      
-      # Naming the columns
-      colnames(reshaped_matrix) <- paste0("A", 1:J)
-      
-      reshaped_matrix
+    g_preds <- lapply(lstm_A_preds, function(prediction_matrix) {
+      # Check if the matrix has the expected dimensions (n by J+1)
+      dims <- dim(prediction_matrix)
+      if (length(dims) == 2 && dims[2] == J + 1) {
+        # Extract the columns corresponding to classes 1 to J
+        reshaped_matrix <- prediction_matrix[, -1, drop = FALSE]
+        
+        # Naming the columns
+        colnames(reshaped_matrix) <- paste0("A", 1:J)
+        
+        return(reshaped_matrix)
+      } else {
+        warning("Incorrect dimensions for prediction matrix")
+        return(NULL)
+      }
     })
     
     g_preds_cuml <- vector("list", length(g_preds))
@@ -733,10 +737,13 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Convert all columns to numeric except 'A', which is converted to a factor
     long_data <- long_data %>%
-      mutate(across(-A, as.numeric),  # Convert all columns except 'A' to numeric
+      mutate(across(where(is.character), as.numeric),  # Convert all character columns to numeric
              A = as.factor(A))  # Convert 'A' to a factor
     
     long_data <- as.data.frame(long_data)
+    
+    # Rename the columns to remove the "ID" suffix
+    names(long_data) <- gsub("\\.ID", "", names(long_data))
     
     # Create initial_model_for_Y using the transformed predictions
     initial_model_for_Y <- list("preds" = boundProbs(transformed_Y_preds, ybound), "data" = long_data)
@@ -1038,14 +1045,14 @@ t.end <- 36 # number of time points after t=0
 
 R <- 1#325 # number of simulation runs
 
-# full_vector <- 1:325
+# full_vector <- 1:R
 # 
 # # Specify the values to be omitted
-# omit_values <- c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72, 
-#                  101, 113, 51, 108, 81, 57, 80, 70, 64, 105, 96, 74, 
-#                  38, 73, 65, 122, 130, 134, 131, 132, 140, 139, 133, 
-#                  151, 152, 162, 160, 169, 176, 191, 183, 202, 207, 204, 
-#                  209, 223, 217, 237, 233, 236, 243, 244, 247, 255, 263, 
+# omit_values <- c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72,
+#                  101, 113, 51, 108, 81, 57, 80, 70, 64, 105, 96, 74,
+#                  38, 73, 65, 122, 130, 134, 131, 132, 140, 139, 133,
+#                  151, 152, 162, 160, 169, 176, 191, 183, 202, 207, 204,
+#                  209, 223, 217, 237, 233, 236, 243, 244, 247, 255, 263,
 #                  269, 282, 279, 294, 306, 311, 316, 324)
 # 
 # # Remove the specified values from the full vector
@@ -1074,17 +1081,17 @@ if(doMPI){
   
 } else{
   library(foreach)
-    library(parallel)
-    library(doParallel)
-    
-    cores <- (parallel::detectCores())
-    print(paste0("number of cores used: ", cores))
-    
-    if(estimator!='tmle-lstm'){
-      cl <- parallel::makeCluster(cores, outfile="")
-    
-      doParallel::registerDoParallel(cl) # register cluster
-  }
+  library(parallel)
+  library(doParallel)
+  
+  cores <- (parallel::detectCores())
+  print(paste0("number of cores used: ", cores))
+  
+  if(estimator!='tmle-lstm'){
+    cl <- parallel::makeCluster(cores, outfile="")
+  
+    doParallel::registerDoParallel(cl) # register cluster
+}
 }
 
 # output directory
