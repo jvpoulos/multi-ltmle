@@ -45,29 +45,31 @@ source env/bin/activate
 
 # install Tensorflow and TensorRT
 pip install --upgrade pip
-pip install tensorflow-gpu
-# pip install tensorflow-cpu # for CPU-only build
+# pip install tensorflow-gpu # for GPU build
+pip install tensorflow-cpu # for CPU-only build
 pip install tensorrt
 
 python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))" # verify the CPU setup
-python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))" # verify the GPU setup
-
-# start R in virtual environment where python3 and Tensorflow are installed
-R
+# python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))" # verify the GPU setup
 ```
 + The following Python packages are required: numpy (tested on 1.19.5) and pandas (tested on 1.1.5)
 ```
 pip install numpy
 pip install pandas
 ```
-+ Additional **R** packages are required by setting the *keras* flag in ***package_list.R*** to TRUE
++ Additional **R** packages are required by setting the *keras* flag in ***package_list.R*** to TRUE. Make sure to install these packages in the virtual environment where python3 and Tensorflow are installed.
+
++ Ensure that the path in *use_python()* in **simulation.R** corresponds to the virtual environment python path, which you can find using
+```
+which python
+```
 
 Contents
 ------
 
 * ***package_list.R*** install required **R** packages.
 	+ *doMPI*: logical flag. When TRUE, install packages needed for MPI parallel processing. Defaults to FALSE.
-	+ *keras*: logical flag. When TRUE, install packages needed for Keras/TensorFlow. Defaults to FALSE.
+	+ *keras*: logical flag. When TRUE, install packages needed for Keras/TensorFlow. Defaults to TRUE.
 
 * ***src/misc_fns***: includes misc. functions, including a function to bound predicted probabilities; functions generate different distributions; and a forest plot function. 
 
@@ -120,7 +122,7 @@ Contents
 Instructions
 ------
 
-1. Install require **R** packages: `Rscript package_list.R` and follow Python installation instructions in the Prerequsites section.
+1. Install require **R** packages: `Rscript package_list.R` and follow Python installation instructions in the Prerequsites section. Make sure to start **R** in virtual environment where python3 and Tensorflow are installed.
 
 2. For simulations, run: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a number specifying the treatment rule [1 for all treatment rules should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
 

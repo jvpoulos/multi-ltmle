@@ -20,6 +20,7 @@ if(dependencies){
 }
 
 # development packages
+install.packages("https://cran.r-project.org/src/contrib/Archive/imputeMissings/imputeMissings_0.0.3.tar.gz")
 remotes::install_github("tlverse/sl3")
 remotes::install_github("jvpoulos/Rsolnp") # v1.16
 

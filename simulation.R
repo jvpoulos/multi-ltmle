@@ -84,7 +84,18 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   if(r==1){
     png(paste0(output_dir,"DAG_plot.png"))
-    plotDAG(Dset, excludeattrs=c("C_0","Y_0"), xjitter=0.8, tmax = 3) # plot DAG
+    plotDAG(Dset, 
+            excludeattrs=c("C_0","Y_0"), 
+            xjitter=0.95, 
+            yjitter=0.2, 
+            tmax = 3,
+            customvlabs = c("V^1_0", "V^2_0", "V^3_0",
+                            "L^1_0", "L^2_0", "L^3_0",
+                            "L^1_1", "L^2_1", "L^3_1",
+                            "L^1_2", "L^2_2", "L^3_2",
+                            "L^1_3", "L^2_3", "L^3_3",
+                            "A_0", "A_1", "A_2", "A_3", 
+                            "C_1", "C_2","C_3","Y_1","Y_2","Y_3")) # plot DAG
     dev.off()
   }
   

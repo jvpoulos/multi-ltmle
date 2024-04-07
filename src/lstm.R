@@ -17,38 +17,23 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   
   print(paste0("input_data dimensions: ", dim(input_data)))
   print(paste0("output_data dimensions: ", dim(output_data)))
-  
-  if (loss_fn == "sparse_categorical_crossentropy") {
-    # Write the input data in long format with 't' column
-    input_data_long <- data.frame(
-      t = rep(1:nrow(input_data), times = ncol(input_data)),
-      feature = rep(colnames(input_data), each = nrow(input_data)),
-      value = c(t(input_data))
-    )
-    write.csv(input_data_long, paste0(output_dir, "input_cat_data.csv"), row.names = FALSE)
-    
-    # Write the output data in long format with 't' column
-    output_data_long <- data.frame(
-      t = rep(1:nrow(output_data), times = ncol(output_data)),
-      output = c(t(output_data))
-    )
-    write.csv(output_data_long, paste0(output_dir, "output_cat_data.csv"), row.names = FALSE)
-  } else {
-    write.csv(input_data, paste0(output_dir, "input_bin_data.csv"), row.names = FALSE)
-    write.csv(output_data, paste0(output_dir, "output_bin_data.csv"), row.names = FALSE)
-  }
-  
-  if (file.exists(paste0(output_dir, "input_cat_data.csv"))) {
-    print(paste0("File ", output_dir, "input_cat_data.csv written successfully."))
-  } else {
-    print(paste0("Error writing file ", output_dir, "input_cat_data.csv."))
-  }
-  
-  if (file.exists(paste0(output_dir, "output_cat_data.csv"))) {
-    print(paste0("File ", output_dir, "output_cat_data.csv written successfully."))
-  } else {
-    print(paste0("Error writing file ", output_dir, "output_cat_data.csv."))
-  }
+
+
+  output_data_long <- data.frame(
+  id = rep(1:ncol(output_data), each = nrow(output_data)),
+  t = rep(1:nrow(output_data), times = ncol(output_data)),
+  output = c(t(output_data))
+  )
+
+  input_data_long <- data.frame(
+  id = rep(1:ncol(input_data), each = nrow(input_data)),
+  t = rep(1:nrow(input_data), times = ncol(input_data)),
+  feature = rep(colnames(input_data), each = nrow(input_data)),
+  value = c(t(input_data))
+  )
+
+  write.csv(input_data_long, paste0(output_dir, "input_cat_data.csv"), row.names = FALSE)
+  write.csv(output_data_long, paste0(output_dir, "output_cat_data.csv"), row.names = FALSE)
   
   py <- import_main()
   py$J <- as.integer(J)
@@ -110,27 +95,21 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   
   # Get the dimensions of the predictions array
   preds_dim <- dim(preds_r_array)
-  
-  # Add a new dimension to the predictions array if necessary
-  if (length(preds_dim) == 1) {
-    preds_r_array <- array(preds_r_array, dim = c(preds_dim, 1))
-    preds_dim <- dim(preds_r_array)
+
+  # Check if preds_r_array has at least 3 dimensions
+  if (length(preds_dim) < 3) {
+    stop("Predictions array does not have the expected number of dimensions.")
   }
-  
+
   # Initialize an empty list to store the predictions
-  lstm_preds <- vector("list", length = t.end + 1)
-  
-  for (t in 1:(t.end + 1)) {
-    if (out_activation == "sigmoid") {
-      # Fill the list with prediction vectors for binary classification
-      lstm_preds[[t]] <- preds_r_array[, t]
-    } else if (out_activation == "softmax") {
-      # Fill the list with matrices for multiclass classification
-      lstm_preds[[t]] <- preds_r_array[, t]
-    }
+  lstm_preds <- vector("list", length = t_end + 1)
+
+  for (t in 1:(t_end + 1)) {
+    # Fill the list with prediction matrices for each time step
+    lstm_preds[[t]] <- preds_r_array[, , t]
   }
   
-  print(paste0("Dimensions of preds_r_array: ", paste(dim(preds_r_array), collapse = " x ")))
+  print(paste0("Dimensions of preds_r_array: ", paste(preds_dim, collapse = " x ")))
   print(paste0("Length of lstm_preds: ", length(lstm_preds)))
   
   print("Returning predictions")

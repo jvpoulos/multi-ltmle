@@ -1,142 +1,70 @@
 ###################################################################
-# treatment regime functions                                      #
-###################################################################
-
-static_mtp_lstm <- function(row){ 
-  # Static: Everyone gets quetiap (if bipolar), halo (if schizophrenia), ari (if MDD) and stays on it
-  shifted <- factor(0, levels=levels(row$A))
-  if(row$schiz==1){
-    shifted <- factor(2, levels=levels(row$A))
-  }else if(row$bipolar==1){
-    shifted <- factor(4, levels=levels(row$A))
-  }else if(row$mdd==1){
-    shifted <- factor(1, levels=levels(row$A))
-  }else if(row$schiz==-1 | row$bipolar==-1 | row$mdd==-1){
-    shifted <- factor(0, levels=levels(row$A))
-  }
-  return(shifted)
-}
-
-dynamic_mtp_lstm <- function(row){ 
-  # Dynamic: Everyone starts with risp.
-  # If (i) any antidiabetic or non-diabetic cardiometabolic drug is filled OR metabolic testing is observed, or (ii) any acute care for MH is observed, then switch to quetiap. (if bipolar), halo. (if schizophrenia), ari (if MDD); otherwise stay on risp.
-  shifted <- factor(0, levels=levels(row$A))
-  if(row$t==0){ 
-    shifted <- factor(5, levels=levels(row$A))
-  }else if(row$t>=1){
-    if (!is.na(row$L1) && !is.na(row$L2) && !is.na(row$L3) && (row$L1 > 0 | row$L2 > 0 | row$L3 > 0)) {
-      if(row$schiz==1){
-        shifted <- factor(2, levels=levels(row$A)) # switch to halo
-      }else if(row$bipolar==1){
-        shifted <- factor(4, levels=levels(row$A)) # switch to quet.
-      }else if(row$mdd==1){
-        shifted <- factor(1, levels=levels(row$A)) # switch to arip
-      }else if(row$schiz==-1 | row$bipolar==-1 | row$mdd==-1){
-        shifted <- factor(0, levels=levels(row$A))
-      }
-    }else{
-      shifted <- factor(5, levels=levels(row$A))  # otherwise stay on risp.
-    }
-  }
-  return(shifted)
-}
-
-stochastic_mtp_lstm <- function(row){
-  # Stochastic: at each t>0, 95% chance of staying with treatment at t-1, 5% chance of randomly switching according to Multinomial distribution
-  shifted <- factor(0, levels=levels(row$A))
-  if(row$t == 0) { 
-    # Do nothing in the first period
-    shifted <- row$A
-  } else {
-    if(row$A == 0) {
-      # Do nothing if current treatment is 0
-      shifted <- row$A 
-    } else {
-      # Calculate probabilities
-      prob_vector <- StochasticFun(row$A, d = c(0,0,0,0,0,0))
-      if(all(prob_vector <= 0)) {
-        shifted <- row$A # Fallback in case of non-positive probabilities
-      } else {
-        # Generate a new treatment based on the probability vector
-        shifted <- which(rmultinom(1, 1, prob_vector) == 1)
-      }
-    }
-  }
-  return(shifted)
-}
-
-###################################################################
 # TMLE targeting step:                                            #
 # estimate each treatment rule-specific mean                      #
 ###################################################################
 
-getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end, window.size) {
+getTMLELongLSTM <- function(initial_model_for_Y_preds,initial_model_for_Y_data, tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end, window.size) {
   
-  library(parallel)
-  library(data.table)
+  window.size <- length(initial_model_for_Y_preds) - t.end
   
-  C <- initial_model_for_Y_data$C
+  # Reshape tmle_data to wide format
+  tmle_data_wide <- pivot_wider(initial_model_for_Y_data, names_from = "covariate", values_from = "value", id_cols = "ID")
   
-  n_rows <- nrow(initial_model_for_Y_data)
-  batch_size <- 10000
-  num_batches <- ceiling(n_rows / batch_size)
+  # Get IDs sorted by 't' and 'ID'
+  IDs <- tmle_data_wide %>% arrange(ID) %>% pull(ID)
   
-  batch_results <- vector("list", length = length(names(tmle_rules)))
-  names(batch_results) <- names(tmle_rules)
+  # Pre-allocate space for predictions
+  predicted_Y <- predict_Qstar <- matrix(NA, nrow = length(IDs), ncol = length(tmle_rules))
+  observed_Y <- rep(NA, length(IDs))
+  epsilon <- rep(0,length(IDs))
   
-  for (rule in names(tmle_rules)) {
-    batch_results[[rule]] <- vector("list", num_batches)
+  for (i in 1:length(tmle_rules)) {
     
-    for (i in 1:num_batches) {
-      batch_indices <- ((i - 1) * batch_size + 1):min(i * batch_size, n_rows)
-      batch_data <- initial_model_for_Y_data[batch_indices, ]
-      
-      batch_results[[rule]][[i]] <- mclapply(seq_len(nrow(batch_data)), function(j) {
-        row_df <- batch_data[j, , drop = FALSE]
-        as.data.frame(tmle_rules[[rule]](row_df))  # Convert the result to a data.frame
-      }, mc.cores = detectCores())
-      
-      batch_results[[rule]][[i]] <- rbindlist(batch_results[[rule]][[i]])  # Combine the data.frames
-    }
+    # Subset observed rule covariate
+    obs.rule <- obs.rules[,i]
     
-    shifted <- rbindlist(batch_results[[rule]])
+    pred_g <- g_preds_bounded[IDs, obs.treatment[obs.rule == 1]] # observed
+    pred_C <- C_preds_bounded[IDs] # censoring probs.
     
-    data <- initial_model_for_Y_data[, !grepl("^A", names(initial_model_for_Y_data))]
+    HAW <- tmle_rules[[i]](tmle_data_wide)
     
-    newdata <- cbind(data, shifted)
+    HAW <- HAW[!is.na(HAW[,1]),] # exclude subjects that are censored before this time point
     
-    # Check if there are any columns starting with "A"
-    if (any(grepl("^A", names(newdata)))) {
-      newdata <- newdata %>%
-        pivot_longer(cols = starts_with("A"), names_to = "t", values_to = "A") %>%
-        pivot_wider(names_from = t, values_from = A)
-    }
+    # Obtain initial predictions
+    pred_Q <- initial_model_for_Y_preds
     
-    # Get the names of columns starting with "Y"
-    y_cols <- grep("^Y", names(newdata), value = TRUE)
+    observed_Y[as.character(IDs) %in% as.character(HAW[,"ID"])] <- tmle_data_wide[tmle_data_wide$ID %in% HAW$ID,"Y"] # add observed
     
-    # Combine the "Y" columns with the specified covariates
-    selected_cols <- c(y_cols, tmle_covars_Y)
+    predicted_Y[,i] <- predict_Qstar[,i] <- pred_Q  # add predictions
     
-    # Filter out any non-existing columns
-    selected_cols <- selected_cols[selected_cols %in% names(newdata)]
+    # Clever covariate universal least favorable submodel 
+    H <- (1/boundProbs(pred_g*pred_C,gbound)) * HAW[,obs.treatment[obs.rule==1]]
     
-    print("Begin to update Qs")
-    assign(paste0("Q_", rule), lstm(data = newdata[, selected_cols], outcome = y_cols, covariates = tmle_covars_Y, t_end = t.end, window_size = window.size, out_activation = "sigmoid", loss_fn = "binary_crossentropy", output_dir, J = J))
-    print("Updated Qs")
-    rm(data, shifted, newdata)
-    print("Cleared temporary data")
+    # TMLE update
+    suppressWarnings(epsilon <-coef(glm(observed_Y ~ -1 + offset(qlogis(pred_Q))+ H, family=binomial)))
+    
+    predict_Qstar[,i] <- plogis(qlogis(pred_Q) + epsilon*H)
   }
   
-  # Rest of the code remains the same
-  
-  return(list("Qs" = Qs, 
-              "QAW" = QAW, 
-              "clever_covariates" = clever_covariates, 
-              "weights" = weights, 
-              "updated_model_for_Y" = updated_model_for_Y, 
-              "Qstar" = Qstar, 
-              "Qstar_iptw" = Qstar_iptw, 
-              "Qstar_gcomp" = Qstar_gcomp, 
-              "ID" = initial_model_for_Y_data$ID))
+  list("Qstar"=boundProbs(predict_Qstar,ybound),
+       "epsilon"=epsilon,
+       "Qstar_gcomp"= boundProbs(predicted_Y,ybound),
+       "Qstar_iptw"=sapply(1:ncol(predict_Qstar), function(i) boundProbs(weighted.mean(x=predicted_Y[,i], w =(1/boundProbs(g_preds_bounded[IDs,obs.treatment[obs.rules[,i]==1]] ,gbound)),na.rm=TRUE), ybound)),
+       "Y"=observed_Y)
+}
+
+static_mtp_lstm <- function(tmle_dat) {
+  IDs <- tmle_dat %>% group_by(ID) %>% filter(row_number() == n()) %>% ungroup() %>% pull(ID)
+  data.frame('ID' = IDs,"A0"=ifelse(tmle_dat[IDs, 'mdd'] == 1 & tmle_dat[IDs, 't'] == 1, 1, ifelse(tmle_dat[IDs, 'bipolar'] == 1 & tmle_dat[IDs, 't'] == 1, 4, ifelse(tmle_dat[IDs, 'schiz'] == 1 & tmle_dat[IDs, 't'] == 1, 2, 0))))
+}
+
+dynamic_mtp_lstm <- function(tmle_dat) {
+  IDs <- tmle_dat %>% group_by(ID) %>% filter(row_number() == n()) %>% ungroup() %>% pull(ID)
+  data.frame('ID' = IDs,"A0"=ifelse(tmle_dat[IDs, 'mdd'] == 1 & (tmle_dat[IDs, 'L1'] > 0 | tmle_dat[IDs, 'L2'] > 0 | tmle_dat[IDs, 'L3'] > 0), 1, ifelse(tmle_dat[IDs, 'bipolar'] == 1 & (tmle_dat[IDs, 'L1'] > 0 | tmle_dat[IDs, 'L2'] > 0 | tmle_dat[IDs, 'L3'] > 0), 4, ifelse(tmle_dat[IDs, 'schiz'] == 1 & (tmle_dat[IDs, 'L1'] > 0 | tmle_dat[IDs, 'L2'] > 0 | tmle_dat[IDs, 'L3'] > 0), 2, 5))))
+}
+
+stochastic_mtp_lstm <- function(tmle_dat) {
+  IDs <- tmle_dat %>% group_by(ID) %>% filter(row_number() == n()) %>% ungroup() %>% pull(ID)
+  prev_treat <- as.numeric(tmle_dat[IDs, grep("A", colnames(tmle_dat), value = TRUE)])
+  data.frame('ID' = IDs, "A0" = sapply(1:length(prev_treat), function(x) sample(c(1:6), size=1, prob=c(0, 0.01, 0.01, 0.01, 0.01, 0.96)[prev_treat[x]])))
 }
