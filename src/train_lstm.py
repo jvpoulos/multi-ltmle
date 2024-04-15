@@ -33,7 +33,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, o
     lstm_1 = LSTM(int(n_hidden), dropout=dr, activation=hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1")(masked_input) 
     lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, activation=hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_2")(lstm_1) 
 
-    output = Dense(int(J), activation='linear', name='Dense')(lstm_2)
+    output = Dense(int(J) + 1, activation='linear', name='Dense')(lstm_2)  # Output has J + 1 classes (including missing class)
 
     model = Model(inputs, output)
 
@@ -74,8 +74,16 @@ def test_model():
 
     output_data = pd.read_csv("{}output_cat_data.csv".format(output_dir), low_memory=False)
     output_col = output_data.columns[2]  # Assuming the third column is the output
-    y = output_data.pivot_table(index=[id_col, time_step_col], columns=output_col, aggfunc='first').values
+    y = pd.crosstab(index=[output_data[id_col], output_data[time_step_col]], columns=output_data[output_col]).values
 
+    if np.min(y) < 0 or np.max(y) > J:
+        raise ValueError("y values are outside the expected range of 0 to J.")
+
+    if np.min(output_data['output']) < 0 or np.max(output_data['output']) > J:
+        raise ValueError("Output values in output_data are outside the expected range of 0 to J.")
+
+    print("y shape:", y.shape)
+    print("y contains NaN:", np.isnan(y).any())
     print("Unique values in y:", np.unique(y))
 
     print('raw x shape', x.shape)   
@@ -85,17 +93,12 @@ def test_model():
     num_timesteps = x.shape[1]
     num_features = x.shape[2] if len(x.shape) == 3 else 1
 
-    dataX = np.zeros((num_individuals, num_timesteps - n_pre + 1, n_pre, 1))
-    dataY = np.zeros((num_individuals, num_timesteps - n_pre + 1, y.shape[1]))
+    dataX = np.zeros((num_individuals, num_timesteps - n_pre + 1, n_pre, num_features))
+    dataY = np.zeros((num_individuals, num_timesteps - n_pre + 1, y.shape[-1]), dtype=np.int32)
 
-    for i in range(num_individuals):
-        for j in range(num_timesteps - n_pre + 1):
-            if len(x.shape) == 3:
-                dataX[i, j, :, 0] = x[i, j:j+n_pre, 0]
-            else:
-                dataX[i, j, :, 0] = x[i, j:j+n_pre]
-            dataY[i, j, :] = y[j+n_pre-1, :]
-
+    dataX[..., :num_features] = np.stack([x[i, j:j+n_pre] for i in range(num_individuals) for j in range(num_timesteps - n_pre + 1)], axis=0)
+    dataY[..., :y.shape[-1]] = np.stack([y[i, j+n_pre-1] for i in range(num_individuals) for j in range(num_timesteps - n_pre + 1)], axis=0)
+                
     print('dataX shape:', dataX.shape)
     print('dataY shape:', dataY.shape)
 
@@ -118,10 +121,10 @@ def test_model():
         print("Maximum value in dataY:", np.max(dataY))
         print("Unique values in dataY:", np.unique(dataY))
         
-        # Clip the values in dataY to be within the range of 1 to 7
-        dataY = np.clip(dataY, 1, 7)
+        # Shift the values in dataY by 1 to ensure 0 represents missing
+        dataY = dataY + 1
         
-        print("dataY after clipping:")
+        print("dataY after shifting:")
         print(dataY)
         print("Minimum value in dataY:", np.min(dataY))
         print("Maximum value in dataY:", np.max(dataY))
@@ -138,7 +141,7 @@ def test_model():
   
     # create and fit the LSTM network
     print('creating model...')
-    model = create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J)
+    model = create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J + 1)  # J + 1 classes
 
     train_model(model, dataX, dataY, int(epochs), int(nb_batches))
 

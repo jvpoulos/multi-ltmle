@@ -3,7 +3,7 @@
 ###################################
 
 lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE, J=7){
-  # lstm() function calls train_lstm.py, which inputs the data and outputs predictions. The prediction task is to predict 10,000 outcomes,
+  # lstm() function calls train_lstm.py, which inputs the data and outputs predictions. The prediction task is to predict n outcomes,
   # all are factor variables with 7 classes (0,1,2,3,4,5,6), where 0 represents missing values.
   #
   # data: data.frame in T x N format
@@ -18,22 +18,29 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   print(paste0("input_data dimensions: ", dim(input_data)))
   print(paste0("output_data dimensions: ", dim(output_data)))
 
-
   output_data_long <- data.frame(
-  id = rep(1:ncol(output_data), each = nrow(output_data)),
-  t = rep(1:nrow(output_data), times = ncol(output_data)),
-  output = c(t(output_data))
+    id = rep(1:ncol(output_data), each = nrow(output_data)),
+    t = rep(1:nrow(output_data), times = ncol(output_data)),
+    output = c(t(output_data))
   )
+  write.csv(output_data_long, paste0(output_dir, "output_cat_data.csv"), row.names = FALSE)
 
+  if (min(output_data_long$output) < 1 || max(output_data_long$output) > 7) {
+  stop("Output values in output_data_long are outside the expected range of 1 to 7.")
+ }
+  
   input_data_long <- data.frame(
-  id = rep(1:ncol(input_data), each = nrow(input_data)),
-  t = rep(1:nrow(input_data), times = ncol(input_data)),
-  feature = rep(colnames(input_data), each = nrow(input_data)),
-  value = c(t(input_data))
+    id = rep(1:ncol(input_data), each = nrow(input_data)),
+    t = rep(1:nrow(input_data), times = ncol(input_data)),
+    feature = rep(colnames(input_data), each = nrow(input_data)),
+    value = c(t(input_data))
   )
-
   write.csv(input_data_long, paste0(output_dir, "input_cat_data.csv"), row.names = FALSE)
   write.csv(output_data_long, paste0(output_dir, "output_cat_data.csv"), row.names = FALSE)
+
+  if (min(output_data) < 1 || max(output_data) > 7) {
+    stop("Output values in output_data are outside the expected range of 1 to 7.")
+  }
   
   py <- import_main()
   py$J <- as.integer(J)

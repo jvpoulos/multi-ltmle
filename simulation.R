@@ -141,9 +141,10 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   Odat <- sim(DAG = Dset, n = n, LTCF = "Y", rndseed = r) # survival outcome =1 after first occurance
   
+  print(summary(Odat))
   anodes <- grep("A",colnames(Odat),value=TRUE)
   cnodes <- grep("C",colnames(Odat),value=TRUE)
-  ynodes <- grep("Y",colnames(Odat),value=TRUE)
+  ynodes <- grep("Y", colnames(Odat), value = TRUE)
   
   # store observed treatment assignment
   obs.treatment <- Odat[,anodes] # t=0,2,...,T
