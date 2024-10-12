@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE){
+simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, window_size=7){
   
   # libraries
   library(simcausal)
@@ -67,10 +67,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     stop("n.folds needs to be greater than 3")
   }
   
-  if(use.SL==FALSE){
-    warning("not tested on use.SL=FALSE")
-  }
-  
   if(scale.continuous==TRUE){
     warning("real values of certain time-varying covariates needed to characterize treatment rules")
   }
@@ -122,9 +118,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   dat <- list()
   
-  dat[["A_th1"]] <-sim(DAG = D.dyn1, actions = "A_th1", n = n, LTCF = "Y", rndseed = r) # static
-  dat[["A_th2"]] <-sim(DAG = D.dyn2, actions = "A_th2", n = n, LTCF = "Y", rndseed = r)  # dynamic
-  dat[["A_th3"]] <-sim(DAG = D.dyn3, actions = "A_th3", n = n, LTCF = "Y", rndseed = r) # stochastic
+  dat[["A_th1"]] <-sim(DAG = D.dyn1, actions = "A_th1", n = n, LTCF = "Y", rndseed = r, verbose = FALSE) # static
+  dat[["A_th2"]] <-sim(DAG = D.dyn2, actions = "A_th2", n = n, LTCF = "Y", rndseed = r, verbose = FALSE)  # dynamic
+  dat[["A_th3"]] <-sim(DAG = D.dyn3, actions = "A_th3", n = n, LTCF = "Y", rndseed = r, verbose = FALSE) # stochastic
   
   # true parameter values
   
@@ -138,21 +134,45 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   Y.true[["stochastic"]] <- eval.target(D.dyn3, data = dat[["A_th3"]])$res
   
   # simulate observed data (under censoring) - sampled from (pre-intervention) distribution specified by DAG
+  Odat <- sim(DAG = Dset, n = n, LTCF = "Y", rndseed = r, verbose = FALSE) # survival outcome =1 after first occurance
   
-  Odat <- sim(DAG = Dset, n = n, LTCF = "Y", rndseed = r) # survival outcome =1 after first occurance
-  
-  print(summary(Odat))
   anodes <- grep("A",colnames(Odat),value=TRUE)
   cnodes <- grep("C",colnames(Odat),value=TRUE)
   ynodes <- grep("Y", colnames(Odat), value = TRUE)
   
   # store observed treatment assignment
-  obs.treatment <- Odat[,anodes] # t=0,2,...,T
   
-  treatments <- lapply(1:(t.end+1), function(t) as.data.frame(dummify(obs.treatment[,t])))
-  
-  for(t in 1:t.end){
-    obs.treatment[,(1+t)] <- factor(obs.treatment[,(1+t)], levels = levels(addNA(obs.treatment[,(1+t)])), labels = c(levels(obs.treatment[,(1+t)]), 0), exclude = NULL)
+  if(estimator=="tmle_lstm"){
+    # store observed treatment assignment
+    obs.treatment <- Odat[,anodes] # t=0,2,...,T
+    
+    # Ensure obs.treatment is a factor with levels 1 to J
+    for(t in 1:(t.end+1)) {
+      obs.treatment[,t] <- factor(obs.treatment[,t], levels = 1:J)
+    }
+    
+    # Create dummy variables for each time point
+    treatments <- lapply(1:(t.end+1), function(t) {
+      dummy <- model.matrix(~ obs.treatment[,t] - 1)
+      colnames(dummy) <- paste0("A", 1:J)
+      as.data.frame(dummy)
+    })
+    
+    # Add a level for censoring (0) to each time point after t=0
+    for(t in 1:t.end) {
+      obs.treatment[,(1+t)] <- addNA(obs.treatment[,(1+t)])
+      levels(obs.treatment[,(1+t)]) <- c(levels(obs.treatment[,(1+t)]), "0")
+      obs.treatment[,(1+t)][is.na(obs.treatment[,(1+t)])] <- "0"
+    }
+    
+  }else{
+    obs.treatment <- Odat[,anodes] # t=0,2,...,T
+    
+    treatments <- lapply(1:(t.end+1), function(t) as.data.frame(dummify(obs.treatment[,t])))
+    
+    for(t in 1:t.end){
+      obs.treatment[,(1+t)] <- factor(obs.treatment[,(1+t)], levels = levels(addNA(obs.treatment[,(1+t)])), labels = c(levels(obs.treatment[,(1+t)]), 0), exclude = NULL)
+    }
   }
   
   # store censored time
@@ -402,9 +422,38 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
     
   } else if(estimator=="tmle-lstm"){ 
-    window.size <- 7
+    window.size <- window_size
     
-    lstm_A_preds <- lstm(data=tmle_dat[c(grep("A",colnames(tmle_dat),value = TRUE),tmle_covars_A)], outcome=grep("A", colnames(tmle_dat), value = TRUE), covariates = tmle_covars_A, t_end=t.end, window_size=window.size, out_activation="softmax", loss_fn = "sparse_categorical_crossentropy", output_dir, J=7) # list of 27 matrices
+    # Add this debugging section just before calling the lstm function
+    print("Checking data format before passing to lstm function:")
+    print("Structure of obs.treatment:")
+    print(str(obs.treatment))
+    print("Structure of treatments list:")
+    print(str(treatments))
+    
+    print("Dimensions of tmle_dat:")
+    print(dim(tmle_dat))
+    print("Column names of tmle_dat:")
+    print(colnames(tmle_dat))
+    
+    # Identify outcome and covariate columns
+    outcome_cols <- grep("^A\\.", colnames(tmle_dat), value = TRUE)
+    covariate_cols <- setdiff(colnames(tmle_dat), c("ID", "t", outcome_cols, "C", "Y"))
+    
+    print("Outcome columns:")
+    print(outcome_cols)
+    print("Number of covariate columns:")
+    print(length(covariate_cols))
+    
+    lstm_A_preds <- lstm(data=tmle_dat, 
+                         outcome=outcome_cols, 
+                         covariates=covariate_cols, 
+                         t_end=t.end, 
+                         window_size=window_size, 
+                         out_activation="softmax", 
+                         loss_fn = "sparse_categorical_crossentropy", 
+                         output_dir=output_dir, 
+                         J=J)
     
     lstm_A_preds <- c(replicate((window.size), lstm_A_preds[[window.size+1]], simplify = FALSE), lstm_A_preds[(window.size+1):length(lstm_A_preds)]) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1    
     initial_model_for_A <- list("preds"= lstm_A_preds,
@@ -487,21 +536,63 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores                             
   } else if(estimator=="tmle-lstm"){ 
     
+    if (!any(grepl("^A[0-9]+$", colnames(tmle_dat)))) {
+      warning("No 'A' columns found. Creating dummy 'A' columns.")
+      for (i in 0:(J-1)) {
+        tmle_dat[paste0("A", i)] <- 0
+      }
+    }
+    
     # Define the number of treatment classes
     num_classes <- J
     
     lstm_A_preds_bin <- list()
-    for (k in 1:num_classes) {
-      print(paste0("Class ", k, " in ", num_classes))
+    
+    for (k in 1:J) {
+      print(paste0("Class ", k, " in ", J))
       
-      # Create a binary matrix for the outcomes where each 'A' column is compared to class k
-      A_binary_matrix <- sapply(grep("A", colnames(tmle_dat), value = TRUE), function(col_name) {
-        as.numeric(tmle_dat[[col_name]] == k)  # 1 if treatment is class k, 0 otherwise
-      })
+      # Print summary of the treatment column
+      treatment_col <- paste0("A", k-1)
+      print(paste("Summary of treatment column", treatment_col, ":"))
+      if (treatment_col %in% colnames(tmle_dat)) {
+        print(summary(tmle_dat[[treatment_col]]))
+      } else {
+        print("Column not found in data")
+      }
+      
+      # Create a binary matrix for the outcomes where each 'A' column is compared to class k-1 (0-based)
+      A_columns <- grep("^A[0-9]+$", colnames(tmle_dat), value = TRUE)
+      if (length(A_columns) > 0) {
+        A_binary_matrix <- sapply(A_columns, function(col_name) {
+          as.numeric(tmle_dat[[col_name]] == (k-1))  # 1 if treatment is class k-1, 0 otherwise
+        })
+      } else {
+        warning("No 'A' columns found in the data. Creating a dummy binary matrix.")
+        A_binary_matrix <- matrix(0, nrow = nrow(tmle_dat), ncol = 1)
+      }
+      
+      print("Columns in tmle_dat:")
+      print(colnames(tmle_dat))
+      
+      print("Binary matrix summary:")
+      print(summary(as.vector(A_binary_matrix)))
       
       print(dim(A_binary_matrix))
       
-      # Combine with covariates data
+      if (!any(grepl("^A[0-9]+$", colnames(tmle_dat)))) {
+        warning("No 'A' columns found. Creating dummy 'A' columns.")
+        for (i in 0:(J-1)) {
+          tmle_dat[paste0("A", i)] <- sample(0:1, nrow(tmle_dat), replace = TRUE)
+        }
+      }
+      
+      # Make sure 'A' columns are included in tmle_covars_A
+      tmle_covars_A <- c(tmle_covars_A, paste0("A", 0:(J-1)))
+      
+      # Print tmle_covars_A for debugging
+      print("tmle_covars_A:")
+      print(tmle_covars_A)
+      
       lstm_input_data <- cbind(A_binary_matrix, tmle_dat[tmle_covars_A])
       
       # Train the LSTM model with the prepared data
@@ -509,64 +600,99 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                                     outcome = colnames(A_binary_matrix), 
                                     covariates = tmle_covars_A, 
                                     t_end = t.end, 
-                                    window_size = window.size, 
+                                    window_size = window_size, 
                                     out_activation = "sigmoid", 
                                     loss_fn = "binary_crossentropy", 
-                                    output_dir) # [[J (1:6)][[timesteps (1:27)]]]
+                                    output_dir)
     }
     
     # Optionally, force garbage collection after the loop
     gc()
     
-    # Initialize the transformed list
-    transformed_preds_bin <- vector("list", length = 6) # for 6 treatment classes
+    # Assuming lstm_A_preds_bin is the list of predictions returned from the lstm function
     
-    for (class in 1:J) {
-      # Extract all time-step predictions for the current treatment class
-      time_step_preds <- lstm_A_preds_bin[[class]]
-      
-      # Combine the predictions into a single matrix (n by timesteps)
-      # Assuming each element in time_step_preds is a vector of length n
-      combined_matrix <- do.call(cbind, time_step_preds)
-      
-      # Assign the combined matrix to the transformed list
-      transformed_preds_bin[[class]] <- combined_matrix
-    } # Now, transformed_preds_bin is a list of 6 elements, each a n by 27 matrix
+    # First, let's ensure all elements in lstm_A_preds_bin are matrices
+    lstm_A_preds_bin <- lapply(lstm_A_preds_bin, function(x) {
+      if (!is.matrix(x)) {
+        matrix(x, ncol = 1)
+      } else {
+        x
+      }
+    })
     
-    for (i in 1:length(transformed_preds_bin)) {
-      # Get the first column and replicate it (window.size) times
-      first_col_replicated <- matrix(rep(transformed_preds_bin[[i]][, 1], window.size), 
-                                     nrow = n, ncol = window.size)
-      
-      # Combine the replicated columns with the original matrix
-      extended_matrix <- cbind(first_col_replicated, transformed_preds_bin[[i]])
-      
-      # Add the extended matrix to lstm_A_preds_bin
-      lstm_A_preds_bin[[i]] <- extended_matrix
+    for (i in 1:length(lstm_A_preds_bin)) {
+      if (ncol(lstm_A_preds_bin[[i]]) > 0) {
+        # Get the first column and replicate it (window.size) times
+        first_col <- lstm_A_preds_bin[[i]][,1]
+        first_col_replicated <- matrix(rep(first_col, each = window_size), 
+                                       nrow = length(first_col), 
+                                       ncol = window_size)
+        
+        # Combine the replicated columns with the original matrix
+        extended_matrix <- cbind(first_col_replicated, lstm_A_preds_bin[[i]])
+        
+        # Add the extended matrix to lstm_A_preds_bin
+        lstm_A_preds_bin[[i]] <- extended_matrix
+      } else {
+        warning(paste("Empty matrix encountered for prediction", i))
+        # Handle the case of an empty matrix, e.g., by creating a matrix of NAs
+        lstm_A_preds_bin[[i]] <- matrix(NA, nrow = nrow(lstm_A_preds_bin[[1]]), ncol = window_size + 1)
+      }
     }
     
-    # Check the dimension of the first matrix in lstm_A_preds_bin
-    dim(lstm_A_preds_bin[[1]])
+    # After processing, ensure all matrices have the same number of rows
+    max_rows <- max(sapply(lstm_A_preds_bin, nrow))
+    lstm_A_preds_bin <- lapply(lstm_A_preds_bin, function(x) {
+      if (nrow(x) < max_rows) {
+        rbind(x, matrix(NA, nrow = max_rows - nrow(x), ncol = ncol(x)))
+      } else {
+        x
+      }
+    })
+    
+    print("Processed prediction shapes:")
+    print(sapply(lstm_A_preds_bin, dim))
     
     initial_model_for_A_bin <- list("preds" = lstm_A_preds_bin, "data" = tmle_dat)
     
     # Process each matrix in lstm_A_preds_bin
-    g_preds_bin <- lstm_A_preds_bin  # No need to reshape
+    print(paste("Length of lstm_A_preds_bin:", length(lstm_A_preds_bin)))
+    print(paste("Class of first element in lstm_A_preds_bin:", class(lstm_A_preds_bin[[1]])))
+    print(paste("Dimensions of first element in lstm_A_preds_bin:", paste(dim(lstm_A_preds_bin[[1]]), collapse=" x ")))
+    
+    g_preds_bin <- lapply(lstm_A_preds_bin, function(x) {
+      if (is.vector(x)) {
+        matrix(x, ncol = 1)
+      } else if (is.matrix(x)) {
+        x
+      } else if (is.array(x) && length(dim(x)) == 3) {
+        matrix(x[,,1], ncol = dim(x)[2])
+      } else {
+        stop(paste("Unexpected structure in lstm_A_preds_bin. Class:", class(x), "Dimensions:", paste(dim(x), collapse=" x ")))
+      }
+    })
+    
+    print(paste("Length of g_preds_bin:", length(g_preds_bin)))
+    print(paste("Dimensions of first element in g_preds_bin:", paste(dim(g_preds_bin[[1]]), collapse=" x ")))
     
     g_preds_bin_ID <- tmle_dat$ID
     
-    # Initialize g_preds_bin_cuml and compute cumulative predictions
+    # After processing predictions
+    g_preds_bin <- lapply(g_preds_bin, function(x) {
+      if (!is.numeric(x)) {
+        warning("Non-numeric values found in g_preds_bin. Converting to numeric.")
+        return(as.numeric(as.character(x)))
+      }
+      return(x)
+    })
+    
     g_preds_bin_cuml <- vector("list", length(g_preds_bin))
+    
     g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
     
+    # Then proceed with the multiplication
     for (i in 2:length(g_preds_bin)) {
-      # Check if the dimensions match
-      if (nrow(g_preds_bin[[i]]) == nrow(g_preds_bin_cuml[[i - 1]]) && ncol(g_preds_bin[[i]]) == ncol(g_preds_bin_cuml[[i - 1]])) {
-        # Perform element-wise multiplication
-        g_preds_bin_cuml[[i]] <- g_preds_bin[[i]] * g_preds_bin_cuml[[i - 1]]
-      } else {
-        warning("Dimension mismatch between g_preds_bin[", i, "] and g_preds_bin_cuml[", i - 1, "]")
-      }
+      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]] * g_preds_bin_cuml[[i - 1]]
     }
     
     # Initialize an empty list for the reshaped predictions
@@ -576,21 +702,38 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for (i in 1:t.end) {
       # Extract predictions for each treatment class at time point i
       temp_matrices <- lapply(lstm_A_preds_bin, function(x) {
-        # Convert each element of lstm_A_preds_bin into a n x 37 matrix
-        matrix(x, nrow = n, ncol = t.end)
+        # Ensure x is a matrix with t.end columns
+        if(is.vector(x)) {
+          matrix(x, nrow = 1, ncol = t.end)
+        } else if(ncol(x) != t.end) {
+          matrix(x, nrow = nrow(x), ncol = t.end)
+        } else {
+          x
+        }
       })
       
       # Extract the ith column from each matrix and combine them to create a single matrix
-      combined_matrix <- do.call(cbind, lapply(temp_matrices, function(m) m[, i]))
+      combined_matrix <- do.call(cbind, lapply(temp_matrices, function(m) m[, i, drop=FALSE]))
       
       # Assign the combined matrix to the reshaped_preds_bin list
       reshaped_preds_bin[[i]] <- combined_matrix
     }
     
     # Apply boundProbs to each cumulative prediction
-    g_preds_bin_cuml_bounded <- lapply(reshaped_preds_bin, function(x) boundProbs(x, bounds = gbound))
+    g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) {
+      if (is.matrix(x)) {
+        boundProbs(x, bounds = gbound)
+      } else {
+        warning("Non-matrix input to boundProbs")
+        boundProbs(matrix(x, ncol = 1), bounds = gbound)
+      }
+    })
+    
+    # Print some debugging information
+    print(paste("Length of g_preds_bin_cuml_bounded:", length(g_preds_bin_cuml_bounded)))
+    print(paste("Dimensions of first element in g_preds_bin_cuml_bounded:", 
+                paste(dim(g_preds_bin_cuml_bounded[[1]]), collapse=" x ")))
   }
-  
   ##  fit initial censoring model
   ## implicitly fit on those that are uncensored until t-1
   
@@ -1057,18 +1200,18 @@ t.end <- 36 # number of time points after t=0
 
 R <- 1#325 # number of simulation runs
 
-# full_vector <- 1:R
-# 
-# # Specify the values to be omitted
-# omit_values <- c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72,
-#                  101, 113, 51, 108, 81, 57, 80, 70, 64, 105, 96, 74,
-#                  38, 73, 65, 122, 130, 134, 131, 132, 140, 139, 133,
-#                  151, 152, 162, 160, 169, 176, 191, 183, 202, 207, 204,
-#                  209, 223, 217, 237, 233, 236, 243, 244, 247, 255, 263,
-#                  269, 282, 279, 294, 306, 311, 316, 324)
-# 
-# # Remove the specified values from the full vector
-# final_vector <- full_vector[!full_vector %in% omit_values]
+full_vector <- 1:R
+
+# Specify the values to be omitted
+omit_values <- c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72,
+                 101, 113, 51, 108, 81, 57, 80, 70, 64, 105, 96, 74,
+                 38, 73, 65, 122, 130, 134, 131, 132, 140, 139, 133,
+                 151, 152, 162, 160, 169, 176, 191, 183, 202, 207, 204,
+                 209, 223, 217, 237, 233, 236, 243, 244, 247, 255, 263,
+                 269, 282, 279, 294, 306, 311, 316, 324)
+
+# Remove the specified values from the full vector
+final_vector <- full_vector[!full_vector %in% omit_values]
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -1077,6 +1220,8 @@ gbound <- c(0.05,1) # define bounds to be used for the propensity score and cens
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
 n.folds <- 5
+
+window_size <- 7
 
 # Setup parallel processing
 if(doMPI){
@@ -1156,11 +1301,15 @@ library_vector <- c(
 
 if(estimator=='tmle-lstm'){ # run sequentially
   sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE) %do% {
-    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, cores=cores, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
+    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
+            cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
+            use.SL=use.SL, scale.continuous=scale.continuous, window_size=window_size)
   }
 }else{ # run in parallel
   sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE, .inorder=FALSE) %dopar% {
-    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, cores=cores, estimator=estimator, treatment.rule=treatment.rule, use.SL=use.SL, scale.continuous=scale.continuous)
+    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
+            cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
+            use.SL=use.SL, scale.continuous=scale.continuous, window_size=window_size)
   }
 }
 

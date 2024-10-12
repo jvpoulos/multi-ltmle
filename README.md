@@ -1,13 +1,11 @@
 # multi-ltmle
 
-Longitudinal TMLE (LTMLE) with multi-valued treatments. 
-
-N.b.: We cannot provide the actual Centers for Medicare & Medicaid Services (CMS) data used in the application because they are protected. The simulated data provided in this repo are for illustrative purposes.
+Simulation code for Longitudinal TMLE (LTMLE) with multi-valued treatments. 
 
 Please cite the following papers if you use this repo:
 
 ```
-@article{https://doi.org/10.1002/sim.10003,
+@article{doi:10.1002/sim.10003,
   title={Targeted learning in observational studies with multi-valued treatments: An evaluation of antipsychotic drug treatment safety.},
   author={Poulos, Jason and Horvitz-Lennon, Marcela and Zelevinsky, Katya and Cristea-Platon, Tudor and Huijskens, Thomas and Tyagi, Pooja and Yan, Jiaju and Diaz, Jordi and Normand, Sharon-Lise},
   journal={Statistics in Medicine},
@@ -17,7 +15,7 @@ Please cite the following papers if you use this repo:
 ```
 
 ```
-@article{https://doi.org/10.1017/S0033291723001502,
+@article{doi:10.1017/S0033291723001502,
   title={Antipsychotics and the risk of diabetes and death among adults with serious mental illnesses},
   author={Poulos, Jason and Normand, Sharon-Lise T and Zelevinsky, Katya and Newcomer, John W and Agniel, Denis and Abing, Haley K and Horvitz-Lennon, Marcela},
   journal={Psychological Medicine},
@@ -25,6 +23,19 @@ Please cite the following papers if you use this repo:
   number={16},
   pages={7677--7684},
   year={2023},
+  publisher={Cambridge University Press}
+}
+```
+
+```
+@article{doi:10.1192/bjo.2024.727,
+  title={Revisiting diabetes risk of olanzapine versus aripiprazole in serious mental illness care},
+  author={Agniel, Denis and Normand, Sharon-Lise T and Newcomer, John W and Zelevinsky, Katya and Poulos, Jason and Tsuei, Jeannette and Horvitz-Lennon, Marcela},
+  journal={BJPsych Open},
+  volume={10},
+  number={5},
+  pages={e144},
+  year={2024},
   publisher={Cambridge University Press}
 }
 ```
@@ -115,10 +126,6 @@ Contents
 
 * ***long_sim_plots.R*** combine output from ***simulation.R*** and plot.
 
-* ***ltmle_analysis.R*** code for analysis on actual CMS data in the longitudinal setting (T>1) and J=6 levels of treatment.
-	+ ***add_tv_simulated.R*** code for quickly generating time-varying variables in the simulated dataset (for illustrative purposes)
-	* ***ltmle_analysis_eda.R*** code for producing descriptive plots and tables for the analysis. 
-
 Instructions
 ------
 
@@ -128,17 +135,14 @@ Instructions
 
 	`Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'`
 
+	or 
+
+`Rscript simulation.R 'tmle-lstm' 1 'FALSE' 'FALSE'`
+
 3. To plot simulation results, run: `Rscript long_sim_plots.R [arg1]`; where `[arg1]` specifies the output path of the simulation results. E.g., 
 	
 	`Rscript long_sim_plots.R 'outputs/20240215'`
 
-4. Download in the local directory simulated data from [simdata_from_basevars.RData](https://github.com/jvpoulos/multi-tmle/blob/4286f7899ec0a9fc27474ff88871dbd6cae85dbd/simdata_from_basevars.RData) These simulated data are for illustrative purposes and are provided in the cross-sectional study repo [multi-tmle](https://github.com/jvpoulos/multi-tmle/). The file ***add_tv_simulated.R*** quickly generates time-varying covariates to demonstrate for the longituninal analysis.
-
-5. For ITT analysis on simulated data, run: `Rscript ltmle_analysis.R [arg1] [arg2] [arg3] [arg4] [arg5]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a character specifying the treatment rule ['all' for estimating 'static',dynamic', and 'stochastic' rules at once], `[arg3]` is a string that specified the folder of previously saved weights (e.g., '20240215/') or 'none', `[arg4]` is a logical flag if super learner estimation is to be used, and , `[arg5]` is a logical flag if simulated data is to be used; e.g, 
-
-`Rscript ltmle_analysis.R 'tmle' 'all' 'none' 'TRUE' 'TRUE'`
-
-CPU computation is used if "tmle-lstm" is selected for the estimator.
 
 Simulation example
 ------

@@ -3,7 +3,7 @@
 #SBATCH -e lstm_gpu.err
 #SBATCH -p gpu_requeue --gres=gpu:1
 #SBATCH -c 20
-#SBATCH --mem=250GB
+#SBATCH --mem=70GB
 #SBATCH -t 3-00:00:00
 #SBATCH --array=1
 
@@ -19,10 +19,10 @@ module load cuda/11.2
 nvcc -V
 nvidia-smi
 
-# srun --pty -p gpu_requeue --gres=gpu:1 -t 0-06:00 --mem 100G -c 10 bash
+# srun --pty -p gpu_requeue --gres=gpu:1 -t 0-06:00 --mem 70G -c 1 bash
 
 # Log GPU utilization
 /n/cluster/bin/job_gpu_monitor.sh &
 
 #Run the job
-Rscript simulation.R 'tmle-lstm' ${SLURM_ARRAY_TASK_ID} 'TRUE' 'FALSE'
+Rscript simulation.R 'tmle-lstm' ${SLURM_ARRAY_TASK_ID} 'FALSE' 'FALSE'

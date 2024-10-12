@@ -1,124 +1,76 @@
-###################################
-# LSTM for Simulations #
-###################################
-
 lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE, J=7){
-  # lstm() function calls train_lstm.py, which inputs the data and outputs predictions. The prediction task is to predict n outcomes,
-  # all are factor variables with 7 classes (0,1,2,3,4,5,6), where 0 represents missing values.
-  #
-  # data: data.frame in T x N format
-  # output_dir: character string output directory
-  # out_activation: Activation function to use for the output step
-  # loss_fn: Loss function corresponding to output type
+  print(paste("Data dimensions:", paste(dim(data), collapse="x")))
+  print(paste("Outcome:", paste(outcome, collapse=", ")))
+  print(paste("Covariates:", paste(covariates, collapse=", ")))
   
-  # Converting the data to a floating point matrix
-  input_data <- data.matrix(data[covariates]) # T x N
-  output_data <- data.matrix(data[outcome]) # T x N
-  
-  print(paste0("input_data dimensions: ", dim(input_data)))
-  print(paste0("output_data dimensions: ", dim(output_data)))
-
-  output_data_long <- data.frame(
-    id = rep(1:ncol(output_data), each = nrow(output_data)),
-    t = rep(1:nrow(output_data), times = ncol(output_data)),
-    output = c(t(output_data))
-  )
-  write.csv(output_data_long, paste0(output_dir, "output_cat_data.csv"), row.names = FALSE)
-
-  if (min(output_data_long$output) < 1 || max(output_data_long$output) > 7) {
-  stop("Output values in output_data_long are outside the expected range of 1 to 7.")
- }
-  
-  input_data_long <- data.frame(
-    id = rep(1:ncol(input_data), each = nrow(input_data)),
-    t = rep(1:nrow(input_data), times = ncol(input_data)),
-    feature = rep(colnames(input_data), each = nrow(input_data)),
-    value = c(t(input_data))
-  )
-  write.csv(input_data_long, paste0(output_dir, "input_cat_data.csv"), row.names = FALSE)
-  write.csv(output_data_long, paste0(output_dir, "output_cat_data.csv"), row.names = FALSE)
-
-  if (min(output_data) < 1 || max(output_data) > 7) {
-    stop("Output values in output_data are outside the expected range of 1 to 7.")
+  # Ensure ID column exists
+  if(!"ID" %in% colnames(data)) {
+    data$ID <- 1:nrow(data)
   }
   
-  py <- import_main()
+  # Separate input and output data
+  input_data <- data[, c("ID", covariates)]
+  output_data <- data[, c("ID", outcome)]
+  
+  # Write data to CSV
+  input_file <- paste0(output_dir, "input_data.csv")
+  output_file <- paste0(output_dir, "output_data.csv")
+  write.csv(input_data, input_file, row.names = FALSE)
+  write.csv(output_data, output_file, row.names = FALSE)
+  
+  # Print summary
+  print("Input data summary (sample):")
+  print(summary(input_data))
+  print("Output data summary (sample):")
+  print(summary(output_data))
+  
+  # Set Python variables
   py$J <- as.integer(J)
   py$output_dir <- output_dir
-  py$epochs <- 200
-  py$n_hidden <- 32
+  py$epochs <- as.integer(100)
+  py$n_hidden <- as.integer(64)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
   py$loss_fn <- loss_fn
   py$lr <- 0.001
   py$dr <- 0.5
-  py$nb_batches <- 16
-  py$patience <- 10
-  py$t_end <- as.integer((t_end + 1))
+  py$nb_batches <- as.integer(8)
+  py$patience <- as.integer(2)
+  py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)
+  py$outcome <- outcome
+  py$covariates <- covariates
   
-  np <- import('numpy')
-  
-  # Checks
-  if (py_available()) {
-    print("Python environment is set up correctly.")
-  } else {
-    print("Python environment is not set up correctly.")
-  }
-  
-  if (py_module_available("numpy")) {
-    print("NumPy is installed.")
-  } else {
-    print("NumPy is not installed.")
-  }
-  
-  print(paste0("J: ", py$J))
-  print(paste0("output_dir: ", py$output_dir))
-  
-  if (!(out_activation %in% c("sigmoid", "softmax"))) {
-    stop(paste0("Invalid out_activation: ", out_activation))
-  }
-
+  # Run Python script
   if (inference) {
-    source_python("src/test_lstm.py")
-    print("Reading predictions")
-    if (loss_fn == "sparse_categorical_crossentropy") {
-      preds <- np$load(paste0(output_dir, 'lstm_new_cat_preds.npy'))
-    } else {
-      preds <- np$load(paste0(output_dir, 'lstm_new_bin_preds.npy'))
-    }
+    tryCatch({
+      source_python("src/test_lstm.py")
+    }, error = function(e) {
+      print("Error in test_lstm.py:")
+      print(e$message)
+      print(paste("Error details:", reticulate::py_last_error()))
+    })
   } else {
-    source_python("src/train_lstm.py")
-    print("Reading predictions")
-    if (loss_fn == "sparse_categorical_crossentropy") {
-      preds <- np$load(paste0(output_dir, 'lstm_cat_preds.npy'))
-    } else {
-      preds <- np$load(paste0(output_dir, 'lstm_bin_preds.npy'))
-    }
+    tryCatch({
+      source_python("src/train_lstm.py")
+    }, error = function(e) {
+      print("Error in train_lstm.py:")
+      print(e$message)
+      print(paste("Error details:", reticulate::py_last_error()))
+    })
   }
   
-  print("Converting to list")
-  preds_r_array <- as.array(preds)
+  # Read and return predictions
+  preds_file <- ifelse(loss_fn == "sparse_categorical_crossentropy", 
+                       paste0(output_dir, 'lstm_cat_preds.npy'),
+                       paste0(output_dir, 'lstm_bin_preds.npy'))
   
-  # Get the dimensions of the predictions array
-  preds_dim <- dim(preds_r_array)
-
-  # Check if preds_r_array has at least 3 dimensions
-  if (length(preds_dim) < 3) {
-    stop("Predictions array does not have the expected number of dimensions.")
-  }
-
-  # Initialize an empty list to store the predictions
-  lstm_preds <- vector("list", length = t_end + 1)
-
-  for (t in 1:(t_end + 1)) {
-    # Fill the list with prediction matrices for each time step
-    lstm_preds[[t]] <- preds_r_array[, , t]
-  }
-  
-  print(paste0("Dimensions of preds_r_array: ", paste(preds_dim, collapse = " x ")))
-  print(paste0("Length of lstm_preds: ", length(lstm_preds)))
-  
-  print("Returning predictions")
-  return(lstm_preds)
+  tryCatch({
+    preds <- np$load(preds_file)
+    preds_r <- as.array(preds)
+    return(preds_r)
+  }, error = function(e) {
+    print(paste("Error loading predictions:", e$message))
+    return(NULL)
+  })
 }

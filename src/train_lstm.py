@@ -1,180 +1,211 @@
-from __future__ import print_function
-
-import os.path
-from os import path
-
-import sys
+import os
 import math
 import numpy as np
 import pandas as pd
-
-import keras
 import tensorflow as tf
-
-from keras import backend as K
-from keras.models import Model
-from keras.layers import LSTM, Input, Dense, Masking
-from keras.callbacks import CSVLogger, EarlyStopping, TerminateOnNaN
+from tensorflow.keras import Model, Input
+from tensorflow.keras.layers import LSTM, Dense, Masking
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.layers import Lambda
+from tensorflow.keras.callbacks import EarlyStopping, TerminateOnNaN, ModelCheckpoint
+from tensorflow.keras.mixed_precision import experimental as mixed_precision
+from tensorflow.keras.initializers import GlorotNormal
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import ReduceLROnPlateau
 
-def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J=int(7)):
-    """ 
-        creates, compiles and returns a RNN model 
-        @param input_shape: the shape of the input data
-    """
-    print("input_shape:", input_shape)
-    print("output_dim:", output_dim)
-    print("J:", J)
+from utils import prepare_datasets, data_generator, create_model, load_data_from_csv
 
-    # Define model parameters
-    inputs = Input(shape=input_shape, name="Inputs") 
-    masked_input = Masking(mask_value=-1.0)(inputs)
-    lstm_1 = LSTM(int(n_hidden), dropout=dr, activation=hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1")(masked_input) 
-    lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, activation=hidden_activation, recurrent_activation="sigmoid", return_sequences=True, name="LSTM_2")(lstm_1) 
+import sys
+import traceback
+import logging
 
-    output = Dense(int(J) + 1, activation='linear', name='Dense')(lstm_2)  # Output has J + 1 classes (including missing class)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    model = Model(inputs, output)
+def custom_excepthook(type, value, tb):
+    logger.error("An error occurred:")
+    logger.error(f"Type: {type}")
+    logger.error(f"Value: {value}")
+    logger.error("Traceback:")
+    traceback.print_tb(tb)
 
-    # Compile
-    model.compile(optimizer=Adam(learning_rate=lr), loss=loss_fn)
-    
-    return model
+sys.excepthook = custom_excepthook
 
-def train_model(model, dataX, dataY, epoch_count, batches):
-
-    # Prepare model checkpoints and callbacks
-
-    stopping = EarlyStopping(monitor='val_loss', patience=int(patience), min_delta=0, verbose=1, mode='min', restore_best_weights=True)
-
-    terminate = TerminateOnNaN()
-
-    # Model fit
-    history = model.fit(x=dataX, 
-        y=dataY, 
-        batch_size=batches, 
-        verbose=1,
-        epochs=epoch_count, 
-        callbacks=[stopping,terminate],
-        validation_split=0.2,
-        shuffle=False)
-
-def test_model():
-    n_pre = int(window_size)
-        
-    if loss_fn == "sparse_categorical_crossentropy":
-        input_data = pd.read_csv("{}input_cat_data.csv".format(output_dir), low_memory=False)
-    else:
-        input_data = pd.read_csv("{}input_bin_data.csv".format(output_dir), low_memory=False)
-    time_step_col = 't'
-    id_col = 'id'
-    feature_cols = 'feature'
-    x = input_data.pivot_table(index=[id_col, time_step_col], columns=feature_cols, values='value', aggfunc='first').values
-
-    output_data = pd.read_csv("{}output_cat_data.csv".format(output_dir), low_memory=False)
-    output_col = output_data.columns[2]  # Assuming the third column is the output
-    y = pd.crosstab(index=[output_data[id_col], output_data[time_step_col]], columns=output_data[output_col]).values
-
-    if np.min(y) < 0 or np.max(y) > J:
-        raise ValueError("y values are outside the expected range of 0 to J.")
-
-    if np.min(output_data['output']) < 0 or np.max(output_data['output']) > J:
-        raise ValueError("Output values in output_data are outside the expected range of 0 to J.")
-
-    print("y shape:", y.shape)
-    print("y contains NaN:", np.isnan(y).any())
-    print("Unique values in y:", np.unique(y))
-
-    print('raw x shape', x.shape)   
-    print('raw y shape', y.shape)
-
-    num_individuals = x.shape[0]
-    num_timesteps = x.shape[1]
-    num_features = x.shape[2] if len(x.shape) == 3 else 1
-
-    dataX = np.zeros((num_individuals, num_timesteps - n_pre + 1, n_pre, num_features))
-    dataY = np.zeros((num_individuals, num_timesteps - n_pre + 1, y.shape[-1]), dtype=np.int32)
-
-    dataX[..., :num_features] = np.stack([x[i, j:j+n_pre] for i in range(num_individuals) for j in range(num_timesteps - n_pre + 1)], axis=0)
-    dataY[..., :y.shape[-1]] = np.stack([y[i, j+n_pre-1] for i in range(num_individuals) for j in range(num_timesteps - n_pre + 1)], axis=0)
-                
-    print('dataX shape:', dataX.shape)
-    print('dataY shape:', dataY.shape)
-
-    input_shape = (n_pre, 1)
-    print('input_shape:', input_shape)
-
-    if loss_fn == "sparse_categorical_crossentropy":
-        print("dataY before conversion:")
-        print(dataY)
-        print("Minimum value in dataY:", np.min(dataY))
-        print("Maximum value in dataY:", np.max(dataY))
-        print("Unique values in dataY:", np.unique(dataY))
-        
-        # Convert dataY to integer type
-        dataY = dataY.astype(np.int32)
-        
-        print("dataY after conversion:")
-        print(dataY)
-        print("Minimum value in dataY:", np.min(dataY))
-        print("Maximum value in dataY:", np.max(dataY))
-        print("Unique values in dataY:", np.unique(dataY))
-        
-        # Shift the values in dataY by 1 to ensure 0 represents missing
-        dataY = dataY + 1
-        
-        print("dataY after shifting:")
-        print(dataY)
-        print("Minimum value in dataY:", np.min(dataY))
-        print("Maximum value in dataY:", np.max(dataY))
-        print("Unique values in dataY:", np.unique(dataY))
-
-    nb_features = x.shape[1]
-    output_dim = y.shape[1]
-
-    print('nb_features:', nb_features)
-    print('output_dim:', output_dim)
-
-    input_shape = dataX.shape[1:]
-    print('input_shape:', input_shape)
-  
-    # create and fit the LSTM network
-    print('creating model...')
-    model = create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J + 1)  # J + 1 classes
-
-    train_model(model, dataX, dataY, int(epochs), int(nb_batches))
-
-    # Save the trained model
-    if loss_fn=="sparse_categorical_crossentropy":
-        model_path = os.path.join(output_dir, 'trained_cat_model.h5')
-    else:
-        model_path = os.path.join(output_dir, 'trained_bin_model.h5')
-
-    print('Saving model to {}'.format(model_path))
-    model.save(model_path)
-
-    # now test
-
-    print('Generate predictions')
-
-    logits_test = model.predict(dataX, batch_size=int(nb_batches), verbose=0)
-    preds_test = np.argmax(logits_test, axis=-1)
-
-    print('predictions shape =', preds_test.shape)
-
-    # Save predictions
-
-    if loss_fn=="sparse_categorical_crossentropy":
-        print('Saving to {}lstm_preds.npy'.format(output_dir))
-        np.save("{}lstm_cat_preds.npy".format(output_dir), preds_test)
-    else:
-        print('Saving to {}lstm_preds.npy'.format(output_dir))
-        np.save("{}lstm_bin_preds.npy".format(output_dir), preds_test)
+# Enable mixed precision
+policy = mixed_precision.Policy('mixed_float16')
+mixed_precision.set_policy(policy)
 
 def main():
-    test_model()
-    return 1
+    global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size
 
+    logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Loss function: {loss_fn}")
+    logger.info(f"Epochs: {epochs}")
+    logger.info(f"Learning rate: {lr}")
+    logger.info(f"Dropout rate: {dr}")
+    logger.info(f"Hidden units: {n_hidden}")
+    logger.info(f"Hidden activation: {hidden_activation}")
+    logger.info(f"Output activation: {out_activation}")
+    logger.info(f"Patience: {patience}")
+    logger.info(f"J: {J}")
+    logger.info(f"Window size: {window_size}")
+    logger.info(f"Batch size: {nb_batches}")
+
+    n_pre = int(window_size)
+    batch_size = int(nb_batches)
+
+    try:
+        x_data, y_data = load_data_from_csv(f"{output_dir}input_data.csv", f"{output_dir}output_data.csv")
+
+        logger.info("Data loaded successfully")
+        logger.info(f"x_data shape: {x_data.shape}")
+        logger.info(f"y_data shape: {y_data.shape}")
+
+        # Ensure y_data contains the 'A' columns
+        y_columns = [col for col in y_data.columns if col.startswith('A')]
+        if not y_columns:
+            logger.warning("No 'A' columns found in y_data. Creating dummy 'A' columns.")
+            for i in range(J):
+                y_data[f'A{i}'] = 0
+            y_columns = [f'A{i}' for i in range(J)]
+
+        # Ensure 'ID' column exists in both x_data and y_data
+        if 'ID' not in x_data.columns:
+            x_data['ID'] = range(len(x_data))
+        if 'ID' not in y_data.columns:
+            y_data['ID'] = range(len(y_data))
+
+        # Keep 'ID' column in y_data
+        y_data = y_data[['ID'] + y_columns]
+
+        # Convert y_data to integer type
+        y_data[y_columns] = y_data[y_columns].astype(int)
+
+        logger.info("Data shapes:")
+        logger.info(f"x shape: {x_data.shape}")
+        logger.info(f"y shape: {y_data.shape}")
+
+        logger.info("x_data head:")
+        logger.info(x_data.head())
+        logger.info("y_data head:")
+        logger.info(y_data.head())
+
+    except Exception as e:
+        logger.error(f"Error during data loading and processing: {str(e)}")
+        logger.error(traceback.format_exc())
+        return
+
+    num_samples = len(x_data)
+    train_size = int(0.8 * num_samples)
+    
+    logger.info(f"Number of samples: {num_samples}")
+    logger.info(f"Train size: {train_size}")
+    logger.info(f"Batch size: {batch_size}")
+
+    # Adjust batch_size if it's larger than the number of samples
+    batch_size = min(batch_size, num_samples)
+
+    # Use prepare_datasets function
+    train_dataset, val_dataset, train_size, val_size = prepare_datasets(x_data, y_data[y_columns], n_pre, batch_size, validation_split=0.2, loss_fn=loss_fn)
+
+    steps_per_epoch = max(1, train_size // batch_size)
+    validation_steps = max(1, val_size // batch_size)
+
+    logger.info(f"Steps per epoch: {steps_per_epoch}")
+    logger.info(f"Validation steps: {validation_steps}")
+    logger.info(f"Train dataset size: {tf.data.experimental.cardinality(train_dataset).numpy()}")
+    logger.info(f"Validation dataset size: {tf.data.experimental.cardinality(val_dataset).numpy()}")
+
+    for x_batch, y_batch in train_dataset.take(1):
+        logger.info(f"X batch shape: {x_batch.shape}")
+        logger.info(f"Y batch shape: {y_batch.shape}")
+        
+    input_shape = (n_pre, x_data.shape[1] - 1)  # Subtract 1 to exclude the ID column
+    logger.info(f"Input shape: {input_shape}")
+    output_dim = J  # Use J instead of 1 for sparse_categorical_crossentropy
+
+    logger.info(f"Creating model with input_shape={input_shape}, output_dim={output_dim}")
+    model = create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J)
+
+    logger.info("Model summary:")
+    model.summary()
+
+    # Define callbacks
+    checkpoint = ModelCheckpoint(
+        filepath=os.path.join(output_dir, 'model_{epoch}.h5'),
+        save_best_only=True,
+        monitor='val_loss',
+        mode='min'
+    )
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=int(patience),
+        min_delta=0,
+        verbose=1,
+        mode='min',
+        restore_best_weights=True
+    )
+    terminate_on_nan = TerminateOnNaN()
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6)
+
+    try:
+        history = model.fit(
+            train_dataset.repeat(),
+            epochs=int(epochs),
+            steps_per_epoch=steps_per_epoch,
+            validation_data=val_dataset.repeat(),
+            validation_steps=validation_steps,
+            callbacks=[early_stopping, terminate_on_nan, checkpoint, reduce_lr],
+            verbose=1
+        )
+    except Exception as e:
+        logger.error(f"An error occurred during training: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
+        traceback.print_exc()
+        return
+
+    # Ensure the directory exists before saving
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save the model
+    model_path = os.path.join(output_dir, 'trained_cat_model.h5' if loss_fn == "sparse_categorical_crossentropy" else 'trained_bin_model.h5')
+    model.save(model_path)
+    logger.info(f"Model saved to: {model_path}")
+
+    # Make predictions on the entire dataset
+    all_data = tf.data.Dataset.from_generator(
+        lambda: data_generator(x_data.drop(columns=[id_column]), y_data, n_pre, batch_size, loss_fn),
+        output_signature=(
+            tf.TensorSpec(shape=(None, n_pre, x_data.shape[1] - 1), dtype=tf.float32),
+            tf.TensorSpec(shape=(None,), dtype=tf.int32)
+        )
+    ).prefetch(tf.data.AUTOTUNE)
+
+    try:
+        predictions = []
+        for batch in all_data:
+            batch_predictions = model.predict_on_batch(batch[0])
+            predictions.append(batch_predictions)
+        predictions = np.concatenate(predictions, axis=0)
+        logger.info(f"Predictions shape: {predictions.shape}")
+    except Exception as e:
+        logger.error(f"An error occurred during prediction: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
+        traceback.print_exc()
+        return
+
+    # Save predictions
+    pred_path = os.path.join(output_dir, 'lstm_cat_preds.npy' if loss_fn == "sparse_categorical_crossentropy" else 'lstm_bin_preds.npy')
+    np.save(pred_path, predictions)
+    logger.info(f"Predictions saved to: {pred_path}")
+
+    # Save detailed information
+    info_path = os.path.join(output_dir, 'lstm_cat_preds_info.npz' if loss_fn == "sparse_categorical_crossentropy" else 'lstm_bin_preds_info.npz')
+    np.savez(info_path, 
+             shape=predictions.shape,
+             dtype=str(predictions.dtype),
+             min_value=np.min(predictions),
+             max_value=np.max(predictions),
+             num_samples=num_samples)
+    
 if __name__ == "__main__":
     main()
