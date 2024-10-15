@@ -173,7 +173,7 @@ def main():
 
     # Make predictions on the entire dataset
     all_data = tf.data.Dataset.from_generator(
-        lambda: data_generator(x_data.drop(columns=[id_column]), y_data, n_pre, batch_size, loss_fn),
+        lambda: data_generator(x_data.drop(columns=['ID']), y_data, n_pre, batch_size, loss_fn),
         output_signature=(
             tf.TensorSpec(shape=(None, n_pre, x_data.shape[1] - 1), dtype=tf.float32),
             tf.TensorSpec(shape=(None,), dtype=tf.int32)

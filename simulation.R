@@ -31,6 +31,11 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     use_python("~/multi-ltmle/env/bin/python")
     print(py_config()) # Check Python configuration
     
+    np <- reticulate::import("numpy")
+    print("Checking np object:")
+    print(py_get_attr(np, "__name__"))
+    print(py_get_attr(np, "__version__"))
+    
     library(tensorflow)
     library(keras)
     print(is_keras_available())

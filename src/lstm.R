@@ -28,13 +28,13 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$J <- as.integer(J)
   py$output_dir <- output_dir
   py$epochs <- as.integer(100)
-  py$n_hidden <- as.integer(64)
+  py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
   py$loss_fn <- loss_fn
   py$lr <- 0.001
   py$dr <- 0.5
-  py$nb_batches <- as.integer(8)
+  py$nb_batches <- as.integer(64)
   py$patience <- as.integer(2)
   py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)
@@ -66,11 +66,16 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
                        paste0(output_dir, 'lstm_bin_preds.npy'))
   
   tryCatch({
-    preds <- np$load(preds_file)
-    preds_r <- as.array(preds)
-    return(preds_r)
+    if (file.exists(preds_file)) {
+      preds <- np$load(preds_file)
+      preds_r <- as.array(preds)
+      return(preds_r)
+    } else {
+      warning(paste("Predictions file not found:", preds_file))
+      return(NULL)
+    }
   }, error = function(e) {
-    print(paste("Error loading predictions:", e$message))
+    warning(paste("Error loading predictions:", e$message))
     return(NULL)
   })
 }
