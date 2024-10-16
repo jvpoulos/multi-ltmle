@@ -120,41 +120,55 @@ def prepare_datasets(x, y, n_pre, batch_size, validation_split=0.2, loss_fn="spa
     return train_dataset, val_dataset, train_size, val_size
 
 def data_generator(x_data, y_data, n_pre, batch_size, loss_fn):
-    x_data_grouped = x_data.groupby(level='id')
-    y_data_grouped = y_data.groupby(level='id')
+    print(f"x_data shape: {x_data.shape}")
+    print(f"y_data shape: {y_data.shape}")
+    print(f"n_pre: {n_pre}")
+    print(f"batch_size: {batch_size}")
+    # Check if 'id' is in the index
+    if 'id' in x_data.index.names:
+        x_data_grouped = x_data.groupby(level='id')
+        y_data_grouped = y_data.groupby(level='id')
+    # If not, check if it's a column
+    elif 'id' in x_data.columns:
+        x_data_grouped = x_data.groupby('id')
+        y_data_grouped = y_data.groupby('id')
+    # If neither, create a default id
+    else:
+        print("Warning: 'id' not found in index or columns. Creating default id.")
+        x_data['id'] = range(len(x_data))
+        y_data['id'] = range(len(y_data))
+        x_data_grouped = x_data.groupby('id')
+        y_data_grouped = y_data.groupby('id')
     
     unique_ids = sorted(set(x_data_grouped.groups.keys()) & set(y_data_grouped.groups.keys()))
     num_samples = len(unique_ids)
     
-    if num_samples == 0:
-        # If there are no samples, yield a dummy batch
-        dummy_x = np.zeros((1, n_pre, x_data.shape[1]), dtype=np.float32)
-        dummy_y = np.zeros(1, dtype=np.int32)
-        yield dummy_x, dummy_y
-    else:
-        for i in range(0, num_samples, batch_size):
-            batch_ids = unique_ids[i:min(i+batch_size, num_samples)]
-            batch_x = []
-            batch_y = []
+    for i in range(0, num_samples, batch_size):
+        batch_ids = unique_ids[i:min(i+batch_size, num_samples)]
+        batch_x = []
+        batch_y = []
+        
+        for id in batch_ids:
+            x_group = x_data_grouped.get_group(id)
+            y_group = y_data_grouped.get_group(id)
             
-            for id in batch_ids:
-                x_group = x_data_grouped.get_group(id)
-                y_group = y_data_grouped.get_group(id)
-                
-                x_seq = x_group.iloc[-n_pre:].values
-                y_val = y_group.iloc[-1].values[0]
-                
-                if x_seq.shape[0] < n_pre:
-                    pad_width = ((n_pre - x_seq.shape[0], 0), (0, 0))
-                    x_seq = np.pad(x_seq, pad_width, mode='constant', constant_values=-1)
-                
-                batch_x.append(x_seq)
-                batch_y.append(y_val)
+            x_seq = x_group.iloc[-n_pre:].values
+            y_val = y_group.iloc[-1].values[0]
             
-            batch_x = np.array(batch_x)
-            batch_y = np.array(batch_y)
+            if x_seq.shape[0] < n_pre:
+                pad_width = ((n_pre - x_seq.shape[0], 0), (0, 0))
+                x_seq = np.pad(x_seq, pad_width, mode='constant', constant_values=-1)
             
-            yield batch_x, batch_y
+            batch_x.append(x_seq)
+            batch_y.append(y_val)
+        
+        batch_x = np.array(batch_x)
+        batch_y = np.array(batch_y)
+        
+        print(f"batch_x shape: {batch_x.shape}")
+        print(f"batch_y shape: {batch_y.shape}")
+        
+        yield batch_x, batch_y
 
 def load_data(file_path, is_output=False):
     data = pd.read_csv(file_path)
