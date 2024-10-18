@@ -5,7 +5,7 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.mixed_precision import experimental as mixed_precision
 
-from utils import prepare_datasets, data_generator, load_data_from_csv
+from utils import data_generator, load_data_from_csv, get_output_signature
 
 import sys
 import traceback
@@ -33,29 +33,40 @@ def test_model():
     logger.info("Data shapes:")
     logger.info(f"x shape: {x_data.shape}")
     logger.info(f"y shape: {y_data.shape}")
-
     logger.info(x_data.head())
     logger.info(y_data.head())
 
     num_samples = len(x_data)
-
     logger.info(f"Number of samples: {num_samples}")
     logger.info(f"Batch size: {batch_size}")
 
     # Adjust batch_size if it's larger than the number of samples
     batch_size = min(batch_size, num_samples)
 
-    # Use the 'ID' column if it exists, otherwise use the first column
-    id_column = 'ID' if 'ID' in x_data.columns else x_data.columns[0]
-    
-    # Use prepare_datasets function
-    test_dataset, _, test_size, _ = prepare_datasets(x_data.drop(columns=[id_column]), y_data, n_pre, batch_size, validation_split=0, loss_fn=loss_fn)
+    # Ensure 'ID' is not in x_data
+    if 'ID' in x_data.columns:
+        x_data = x_data.drop(columns=['ID'])
+    elif 'id' in x_data.columns:
+        x_data = x_data.drop(columns=['id'])
 
-    steps = max(1, test_size // batch_size)
+    num_features = x_data.shape[1]
+    logger.info(f"Number of features: {num_features}")
+
+    # Create test dataset
+    output_signature = get_output_signature(loss_fn, J)
+
+    test_dataset = tf.data.Dataset.from_generator(
+        lambda: data_generator(x_data, y_data, n_pre, batch_size, loss_fn, J),
+        output_signature=(
+            tf.TensorSpec(shape=(None, n_pre, num_features), dtype=tf.float32),
+            output_signature
+        )
+    ).prefetch(tf.data.AUTOTUNE)
+
+    steps = max(1, num_samples // batch_size)
     logger.info(f"Steps: {steps}")
 
     model = load_model(model_path)
-
     logger.info("Model summary:")
     model.summary()
 

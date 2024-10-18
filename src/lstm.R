@@ -3,10 +3,11 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   print(paste("Outcome:", paste(outcome, collapse=", ")))
   print(paste("Covariates:", paste(covariates, collapse=", ")))
   
-  # Ensure ID column exists
+  # Ensure ID column exists and is the first column
   if(!"ID" %in% colnames(data)) {
     data$ID <- 1:nrow(data)
   }
+  data <- data[, c("ID", setdiff(colnames(data), "ID"))]
   
   # Separate input and output data
   input_data <- data[, c("ID", covariates)]
@@ -34,7 +35,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$loss_fn <- loss_fn
   py$lr <- 0.001
   py$dr <- 0.5
-  py$nb_batches <- as.integer(128)
+  py$nb_batches <- as.integer(256)
   py$patience <- as.integer(2)
   py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)
@@ -60,15 +61,15 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     })
   }
   
-  # Read and return predictions
-  preds_file <- ifelse(loss_fn == "sparse_categorical_crossentropy", 
-                       paste0(output_dir, 'lstm_cat_preds.npy'),
-                       paste0(output_dir, 'lstm_bin_preds.npy'))
-  
   tryCatch({
+    preds_file <- ifelse(loss_fn == "sparse_categorical_crossentropy", 
+                         paste0(output_dir, 'lstm_cat_preds.npy'),
+                         paste0(output_dir, 'lstm_bin_preds.npy'))
+    
     if (file.exists(preds_file)) {
       preds <- np$load(preds_file)
       preds_r <- as.array(preds)
+      print(paste("Loaded predictions shape:", paste(dim(preds_r), collapse="x")))
       return(preds_r)
     } else {
       warning(paste("Predictions file not found:", preds_file))
@@ -76,6 +77,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     }
   }, error = function(e) {
     warning(paste("Error loading predictions:", e$message))
+    print(paste("Error details:", reticulate::py_last_error()))
     return(NULL)
   })
 }

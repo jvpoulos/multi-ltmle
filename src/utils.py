@@ -11,10 +11,19 @@ from tensorflow.keras.mixed_precision import experimental as mixed_precision
 from tensorflow.keras.metrics import AUC
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import ReduceLROnPlateau
+from tensorflow.keras.initializers import GlorotUniform
 
 import sys
 import traceback
 
+def get_output_signature(loss_fn, J):
+    if loss_fn == "sparse_categorical_crossentropy":
+        return tf.TensorSpec(shape=(None,), dtype=tf.int32)
+    elif loss_fn == "binary_crossentropy":
+        return tf.TensorSpec(shape=(None,), dtype=tf.float32)
+    else:
+        raise ValueError(f"Unsupported loss function: {loss_fn}")
+        
 def load_data_from_csv(input_file, output_file):
     x_data = pd.read_csv(input_file)
     y_data = pd.read_csv(output_file)
@@ -58,87 +67,38 @@ def load_data_from_csv(input_file, output_file):
     
     return x_data, y_data
 
-def prepare_datasets(x, y, n_pre, batch_size, validation_split=0.2, loss_fn="sparse_categorical_crossentropy"):
-    # Ensure x and y are DataFrames
-    x = pd.DataFrame(x)
-    y = pd.DataFrame(y)
+def data_generator(x_data, y_data, n_pre, batch_size, loss_fn, J):
+    print(f"x_data shape in generator: {x_data.shape}")
+    print(f"y_data shape in generator: {y_data.shape}")
     
-    # Ensure 'ID' is present in both x and y
-    if 'ID' not in x.columns:
-        x['ID'] = range(len(x))
-    if 'ID' not in y.columns:
-        y['ID'] = range(len(y))
+    # Ensure 'ID' is not in x_data
+    if 'ID' in x_data.columns:
+        x_data = x_data.drop(columns=['ID'])
+    elif 'id' in x_data.columns:
+        x_data = x_data.drop(columns=['id'])
     
-    common_ids = sorted(set(x['ID']) & set(y['ID']))
-    x = x[x['ID'].isin(common_ids)]
-    y = y[y['ID'].isin(common_ids)]
-    
-    num_samples = len(common_ids)
-    val_size = max(1, int(validation_split * num_samples))
-    train_size = num_samples - val_size
-
-    # Adjust batch_size if it's larger than the number of samples
-    batch_size = min(batch_size, num_samples)
-
-    if loss_fn == "sparse_categorical_crossentropy":
-        y = y.astype(np.int32)
-    else:
-        y = y.astype(np.float32)
-    
-    y_shape = y.shape[1:]
-
-    def dataset_generator():
-        for id in common_ids:
-            x_seq = x[x['ID'] == id].drop('ID', axis=1).values[-n_pre:]
-            if loss_fn == "sparse_categorical_crossentropy":
-                y_val = y[y['ID'] == id].drop('ID', axis=1).values[-1, 0]  # Take only the first column
-            else:
-                y_val = y[y['ID'] == id].drop('ID', axis=1).values[-1]
-            if x_seq.shape[0] < n_pre:
-                pad_width = ((n_pre - x_seq.shape[0], 0), (0, 0))
-                x_seq = np.pad(x_seq, pad_width, mode='constant', constant_values=0)
-            yield x_seq, y_val
-
-    if loss_fn == "sparse_categorical_crossentropy":
-        y_shape = ()
-    else:
-        y_shape = (y.shape[1] - 1,)  # Exclude the 'ID' column
-
-    dataset = tf.data.Dataset.from_generator(
-        dataset_generator,
-        output_signature=(
-            tf.TensorSpec(shape=(n_pre, x.shape[1] - 1), dtype=tf.float32),
-            tf.TensorSpec(shape=y_shape, dtype=tf.int32 if loss_fn == "sparse_categorical_crossentropy" else tf.float32)
-        )
-    )
-
-    dataset = dataset.shuffle(buffer_size=num_samples)
-    
-    train_dataset = dataset.take(train_size).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-    val_dataset = dataset.skip(train_size).take(val_size).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-    return train_dataset, val_dataset, train_size, val_size
-
-def data_generator(x_data, y_data, n_pre, batch_size, loss_fn):
-    print(f"x_data shape: {x_data.shape}")
-    print(f"y_data shape: {y_data.shape}")
+    print(f"x_data shape after dropping ID: {x_data.shape}")
     print(f"n_pre: {n_pre}")
     print(f"batch_size: {batch_size}")
+    
+    # Normalize the input data
+    x_data = (x_data - x_data.mean()) / x_data.std()
+    
     # Check if 'id' is in the index
     if 'id' in x_data.index.names:
         x_data_grouped = x_data.groupby(level='id')
         y_data_grouped = y_data.groupby(level='id')
-    # If not, check if it's a column
-    elif 'id' in x_data.columns:
-        x_data_grouped = x_data.groupby('id')
-        y_data_grouped = y_data.groupby('id')
-    # If neither, create a default id
+    # If not, create a default id
     else:
-        print("Warning: 'id' not found in index or columns. Creating default id.")
+        print("Warning: 'id' not found in index. Creating default id.")
+        x_data = x_data.reset_index(drop=True)
+        y_data = y_data.reset_index(drop=True)
         x_data['id'] = range(len(x_data))
         y_data['id'] = range(len(y_data))
-        x_data_grouped = x_data.groupby('id')
-        y_data_grouped = y_data.groupby('id')
+        x_data = x_data.set_index('id')
+        y_data = y_data.set_index('id')
+        x_data_grouped = x_data.groupby(level='id')
+        y_data_grouped = y_data.groupby(level='id')
     
     unique_ids = sorted(set(x_data_grouped.groups.keys()) & set(y_data_grouped.groups.keys()))
     num_samples = len(unique_ids)
@@ -153,7 +113,12 @@ def data_generator(x_data, y_data, n_pre, batch_size, loss_fn):
             y_group = y_data_grouped.get_group(id)
             
             x_seq = x_group.iloc[-n_pre:].values
-            y_val = y_group.iloc[-1].values[0]
+            if loss_fn == "sparse_categorical_crossentropy":
+                y_val = y_group.iloc[-1].values[0]  # Single integer label
+            elif loss_fn == "binary_crossentropy":
+                y_val = y_group.iloc[-1].values[0]  # Use only the first column for binary classification
+            else:
+                raise ValueError(f"Unsupported loss function: {loss_fn}")
             
             if x_seq.shape[0] < n_pre:
                 pad_width = ((n_pre - x_seq.shape[0], 0), (0, 0))
@@ -165,8 +130,14 @@ def data_generator(x_data, y_data, n_pre, batch_size, loss_fn):
         batch_x = np.array(batch_x)
         batch_y = np.array(batch_y)
         
+        if loss_fn == "binary_crossentropy":
+            batch_y = (batch_y > 0).astype(int)  # Ensure binary labels
+        elif loss_fn == "sparse_categorical_crossentropy":
+            batch_y = batch_y % J  # Ensure labels are within [0, J-1]
+        
         print(f"batch_x shape: {batch_x.shape}")
         print(f"batch_y shape: {batch_y.shape}")
+        print(f"batch_y unique values: {np.unique(batch_y)}")
         
         yield batch_x, batch_y
 
@@ -189,13 +160,18 @@ def load_data(file_path, is_output=False):
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J):
     inputs = Input(shape=input_shape, name="Inputs")
     masked_input = Masking(mask_value=0.0)(inputs)
-    lstm_1 = LSTM(int(n_hidden), dropout=dr, recurrent_dropout=dr/2, activation='tanh', recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1")(masked_input)
-    lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, recurrent_dropout=dr/2, activation='tanh', recurrent_activation="sigmoid", return_sequences=False, name="LSTM_2")(lstm_1)
+    lstm_1 = LSTM(int(n_hidden), dropout=dr, recurrent_dropout=dr/2, activation='tanh', recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1", kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(masked_input)
+    lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, recurrent_dropout=dr/2, activation='tanh', recurrent_activation="sigmoid", return_sequences=False, name="LSTM_2", kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(lstm_1)
     
-    output = Dense(output_dim, activation='softmax', name='Dense')(lstm_2)
+    if loss_fn == "sparse_categorical_crossentropy":
+        output = Dense(J, activation='softmax', name='Dense', kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(lstm_2)
+    elif loss_fn == "binary_crossentropy":
+        output = Dense(1, activation='sigmoid', name='Dense', kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(lstm_2)
+    else:
+        raise ValueError(f"Unsupported loss function: {loss_fn}")
     
     model = Model(inputs, output)
     
-    optimizer = Adam(learning_rate=lr, clipnorm=1.0)
+    optimizer = Adam(learning_rate=lr, clipnorm=1.0, clipvalue=0.5)
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=['accuracy'])
     return model

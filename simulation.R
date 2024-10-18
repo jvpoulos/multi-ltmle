@@ -601,14 +601,26 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       lstm_input_data <- cbind(A_binary_matrix, tmle_dat[tmle_covars_A])
       
       # Train the LSTM model with the prepared data
-      lstm_A_preds_bin[[k]] <- lstm(data = lstm_input_data, 
-                                    outcome = colnames(A_binary_matrix), 
-                                    covariates = tmle_covars_A, 
-                                    t_end = t.end, 
-                                    window_size = window_size, 
-                                    out_activation = "sigmoid", 
-                                    loss_fn = "binary_crossentropy", 
-                                    output_dir)
+      if (length(lstm_A_preds_bin) > 0) {
+        for (i in 1:length(lstm_A_preds_bin)) {
+          if (!is.null(lstm_A_preds_bin[[i]])) {
+            lstm_A_preds_bin[[k]] <- lstm(
+              data = lstm_input_data,
+              outcome = colnames(A_binary_matrix),
+              covariates = tmle_covars_A,
+              t_end = t.end,
+              window_size = window_size,
+              out_activation = "sigmoid",
+              loss_fn = "binary_crossentropy",
+              output_dir
+            )
+          } else {
+            warning(paste("lstm_A_preds_bin[[", i, "]] is NULL", sep = ""))
+          }
+        }
+      } else {
+        warning("lstm_A_preds_bin is empty")
+      }
     }
     
     # Optionally, force garbage collection after the loop
