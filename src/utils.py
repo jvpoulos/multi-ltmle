@@ -81,8 +81,17 @@ def data_generator(x_data, y_data, n_pre, batch_size, loss_fn, J):
     print(f"n_pre: {n_pre}")
     print(f"batch_size: {batch_size}")
     
+    # Replace inf and -inf with large finite numbers
+    x_data = x_data.replace([np.inf, -np.inf], np.finfo(np.float32).max)
+    
+    # Fill NaN values with column means
+    x_data = x_data.fillna(x_data.mean())
+    
     # Normalize the input data
-    x_data = (x_data - x_data.mean()) / x_data.std()
+    x_mean = x_data.mean()
+    x_std = x_data.std()
+    x_std = x_std.replace(0, 1)  # Replace zero standard deviations with 1 to avoid division by zero
+    x_data = (x_data - x_mean) / x_std
     
     # Check if 'id' is in the index
     if 'id' in x_data.index.names:
@@ -122,25 +131,27 @@ def data_generator(x_data, y_data, n_pre, batch_size, loss_fn, J):
             
             if x_seq.shape[0] < n_pre:
                 pad_width = ((n_pre - x_seq.shape[0], 0), (0, 0))
-                x_seq = np.pad(x_seq, pad_width, mode='constant', constant_values=-1)
+                x_seq = np.pad(x_seq, pad_width, mode='constant', constant_values=0)
             
             batch_x.append(x_seq)
             batch_y.append(y_val)
         
-        batch_x = np.array(batch_x)
-        batch_y = np.array(batch_y)
+        batch_x = np.array(batch_x, dtype=np.float32)
+        batch_y = np.array(batch_y, dtype=np.int32)
         
         if loss_fn == "binary_crossentropy":
-            batch_y = (batch_y > 0).astype(int)  # Ensure binary labels
+            batch_y = (batch_y > 0).astype(np.float32)  # Ensure binary labels as float32
         elif loss_fn == "sparse_categorical_crossentropy":
             batch_y = batch_y % J  # Ensure labels are within [0, J-1]
         
         print(f"batch_x shape: {batch_x.shape}")
         print(f"batch_y shape: {batch_y.shape}")
         print(f"batch_y unique values: {np.unique(batch_y)}")
+        print(f"batch_x min: {np.min(batch_x)}, max: {np.max(batch_x)}")
+        print(f"batch_x has NaN: {np.isnan(batch_x).any()}")
         
         yield batch_x, batch_y
-
+        
 def load_data(file_path, is_output=False):
     data = pd.read_csv(file_path)
     if is_output:

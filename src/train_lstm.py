@@ -172,6 +172,25 @@ def main():
     terminate_on_nan = TerminateOnNaN()
     reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6)
 
+    class CustomCallback(tf.keras.callbacks.Callback):
+        def on_train_batch_begin(self, batch, logs=None):
+            logs = logs or {}
+            x = logs.get('x')
+            y = logs.get('y')
+            if x is not None and np.isnan(x).any():
+                print(f"NaN detected in input data (batch {batch})")
+                print(f"NaN indices: {np.argwhere(np.isnan(x))}")
+            if y is not None and np.isnan(y).any():
+                print(f"NaN detected in labels (batch {batch})")
+                print(f"NaN indices: {np.argwhere(np.isnan(y))}")
+
+        def on_epoch_end(self, epoch, logs=None):
+            logger.info(f"Epoch {epoch+1} - loss: {logs['loss']:.4f}, val_loss: {logs['val_loss']:.4f}")
+            for x_batch, y_batch in train_dataset.take(1):
+                sample_pred = self.model.predict(x_batch)
+                logger.info(f"Sample predictions: {sample_pred[:5]}")
+                logger.info(f"Sample true labels: {y_batch[:5]}")
+                logger.info(f"Sample input min: {tf.reduce_min(x_batch)}, max: {tf.reduce_max(x_batch)}")
     try:
         history = model.fit(
             train_dataset.repeat(),
@@ -179,9 +198,21 @@ def main():
             steps_per_epoch=steps_per_epoch,
             validation_data=val_dataset.repeat(),
             validation_steps=validation_steps,
-            callbacks=[early_stopping, terminate_on_nan, checkpoint, reduce_lr],
+            callbacks=[early_stopping, terminate_on_nan, checkpoint, reduce_lr, CustomCallback()],
             verbose=1
         )
+
+        # Evaluate the model on validation set
+        val_loss, val_accuracy = model.evaluate(val_dataset, steps=validation_steps)
+        logger.info(f"Validation loss: {val_loss:.4f}")
+        logger.info(f"Validation accuracy: {val_accuracy:.4f}")
+
+        # Make some predictions
+        for x_batch, y_batch in val_dataset.take(1):
+            predictions = model.predict(x_batch)
+            logger.info(f"Sample predictions: {predictions[:10]}")
+            logger.info(f"Sample true labels: {y_batch[:10]}")
+
     except Exception as e:
         logger.error(f"An error occurred during training: {str(e)}")
         logger.error(f"Error type: {type(e).__name__}")
@@ -198,7 +229,7 @@ def main():
 
     # Make predictions on the entire dataset
     all_data = tf.data.Dataset.from_generator(
-        lambda: data_generator(x_data_no_id, y_data, n_pre, batch_size, loss_fn),
+        lambda: data_generator(x_data_no_id, y_data, n_pre, batch_size, loss_fn, J),
         output_signature=(
             tf.TensorSpec(shape=(None, n_pre, num_features), dtype=tf.float32),
             tf.TensorSpec(shape=(None,), dtype=tf.int32 if loss_fn == "sparse_categorical_crossentropy" else tf.float32)
