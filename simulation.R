@@ -10,10 +10,11 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # libraries
   library(simcausal)
+  options(simcausal.verbose=FALSE)
   library(purrr)
   library(origami)
   library(sl3)
-  options(sl3.verbose = TRUE)
+  options(sl3.verbose = FALSE)
   library(nnet)
   library(ranger)
   library(xgboost)
@@ -343,7 +344,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_dat$A <- factor(tmle_dat$A)
     
     # Reshape the time-varying variables to wide format
-    #tmle_dat <- reshape(tmle_dat, idvar = "t", timevar = "ID", direction = "wide") # T x N
     tmle_dat <- reshape(tmle_dat, idvar = "ID", timevar = "t", direction = "wide") # N x T
     
     tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
@@ -429,26 +429,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   } else if(estimator=="tmle-lstm"){ 
     window.size <- window_size
     
-    # Add this debugging section just before calling the lstm function
-    print("Checking data format before passing to lstm function:")
-    print("Structure of obs.treatment:")
-    print(str(obs.treatment))
-    print("Structure of treatments list:")
-    print(str(treatments))
-    
-    print("Dimensions of tmle_dat:")
-    print(dim(tmle_dat))
-    print("Column names of tmle_dat:")
-    print(colnames(tmle_dat))
-    
     # Identify outcome and covariate columns
     outcome_cols <- grep("^A\\.", colnames(tmle_dat), value = TRUE)
     covariate_cols <- setdiff(colnames(tmle_dat), c("ID", "t", outcome_cols, "C", "Y"))
-    
-    print("Outcome columns:")
-    print(outcome_cols)
-    print("Number of covariate columns:")
-    print(length(covariate_cols))
     
     lstm_A_preds <- lstm(data=tmle_dat, 
                          outcome=outcome_cols, 
@@ -556,15 +539,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for (k in 1:J) {
       print(paste0("Class ", k, " in ", J))
       
-      # Print summary of the treatment column
-      treatment_col <- paste0("A", k-1)
-      print(paste("Summary of treatment column", treatment_col, ":"))
-      if (treatment_col %in% colnames(tmle_dat)) {
-        print(summary(tmle_dat[[treatment_col]]))
-      } else {
-        print("Column not found in data")
-      }
-      
       # Create a binary matrix for the outcomes where each 'A' column is compared to class k-1 (0-based)
       A_columns <- grep("^A[0-9]+$", colnames(tmle_dat), value = TRUE)
       if (length(A_columns) > 0) {
@@ -576,14 +550,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         A_binary_matrix <- matrix(0, nrow = nrow(tmle_dat), ncol = 1)
       }
       
-      print("Columns in tmle_dat:")
-      print(colnames(tmle_dat))
-      
-      print("Binary matrix summary:")
-      print(summary(as.vector(A_binary_matrix)))
-      
-      print(dim(A_binary_matrix))
-      
       if (!any(grepl("^A[0-9]+$", colnames(tmle_dat)))) {
         warning("No 'A' columns found. Creating dummy 'A' columns.")
         for (i in 0:(J-1)) {
@@ -593,10 +559,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       
       # Make sure 'A' columns are included in tmle_covars_A
       tmle_covars_A <- c(tmle_covars_A, paste0("A", 0:(J-1)))
-      
-      # Print tmle_covars_A for debugging
-      print("tmle_covars_A:")
-      print(tmle_covars_A)
       
       lstm_input_data <- cbind(A_binary_matrix, tmle_dat[tmle_covars_A])
       

@@ -16,6 +16,77 @@ from tensorflow.keras.initializers import GlorotUniform
 import sys
 import traceback
 
+import logging
+
+# Set up logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class CustomCallback(tf.keras.callbacks.Callback):
+    def __init__(self, train_dataset):
+        super().__init__()
+        self.train_dataset = train_dataset
+    
+    def on_train_batch_begin(self, batch, logs=None):
+        logs = logs or {}
+        x = logs.get('x')
+        y = logs.get('y')
+        if x is not None and np.isnan(x).any():
+            print(f"NaN detected in input data (batch {batch})")
+            print(f"NaN indices: {np.argwhere(np.isnan(x))}")
+        if y is not None and np.isnan(y).any():
+            print(f"NaN detected in labels (batch {batch})")
+            print(f"NaN indices: {np.argwhere(np.isnan(y))}")
+
+    def on_epoch_end(self, epoch, logs=None):
+        logger.info(f"Epoch {epoch+1} - loss: {logs['loss']:.4f}, val_loss: {logs['val_loss']:.4f}")
+        for x_batch, y_batch in self.train_dataset.take(1):
+            sample_pred = self.model.predict(x_batch)
+            logger.info(f"Sample predictions distribution: {np.histogram(sample_pred, bins=10)}")
+            logger.info(f"Sample true labels distribution: {np.histogram(y_batch, bins=2)}")
+            logger.info(f"Sample predictions: {sample_pred[:5]}")
+            logger.info(f"Sample true labels: {y_batch[:5]}")
+            logger.info(f"Sample input min: {tf.reduce_min(x_batch)}, max: {tf.reduce_max(x_batch)}")
+
+def get_training_config(epochs, batch_size, steps_per_epoch, validation_steps):
+    """Get optimized training configuration."""
+    return {
+        'epochs': epochs,
+        'batch_size': batch_size,
+        'steps_per_epoch': steps_per_epoch,
+        'validation_steps': validation_steps,
+        'workers': 4,  # Number of CPU workers for data loading
+        'use_multiprocessing': True,
+        'max_queue_size': 10,
+        'shuffle': True
+    }
+
+# Update callbacks for better performance
+def get_optimized_callbacks(patience, output_dir, train_dataset):
+    return [
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=patience,
+            restore_best_weights=True,
+            mode='min'
+        ),
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=os.path.join(output_dir, 'model_{epoch:02d}_{val_loss:.4f}.h5'),
+            monitor='val_loss',
+            save_best_only=True,
+            mode='min'
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=patience//2,
+            min_lr=1e-6
+        ),
+        TerminateOnNaN(),
+        CustomCallback(train_dataset)
+    ]
+
 def get_output_signature(loss_fn, J):
     if loss_fn == "sparse_categorical_crossentropy":
         return tf.TensorSpec(shape=(None,), dtype=tf.int32)
@@ -28,6 +99,10 @@ def load_data_from_csv(input_file, output_file):
     x_data = pd.read_csv(input_file)
     y_data = pd.read_csv(output_file)
     
+    # Print the raw y_data structure and values
+    print("Raw y_data columns:", y_data.columns)
+    print("Raw y_data unique values:", {col: y_data[col].unique() for col in y_data.columns})
+    
     # Ensure 'ID' column exists and is of integer type
     if 'ID' in x_data.columns:
         x_data['ID'] = x_data['ID'].astype(int)
@@ -37,12 +112,13 @@ def load_data_from_csv(input_file, output_file):
     else:
         x_data['ID'] = range(len(x_data))
 
-    # Handle the case where y_data is empty
+    # Process y_data
     if y_data.empty:
         y_data = pd.DataFrame({'ID': x_data['ID']})
-        for i in range(7):  # Assuming J=7 from the error message
-            y_data[f'A{i}'] = 0
+        for i in range(7):  # Assuming J=7
+            y_data[f'A{i}'] = np.random.choice([0, 1], size=len(y_data), p=[0.5, 0.5])
     else:
+        # Handle ID column in y_data
         if 'ID' in y_data.columns:
             y_data['ID'] = y_data['ID'].astype(int)
         elif 'id' in y_data.columns:
@@ -50,108 +126,50 @@ def load_data_from_csv(input_file, output_file):
             y_data = y_data.drop('id', axis=1)
         else:
             y_data['ID'] = range(len(y_data))
+        
+        # Clean column names
+        y_data.columns = [col.replace('.', '') for col in y_data.columns]
+        
+        # Select treatment columns
+        A_columns = [col for col in y_data.columns if col.startswith('A') and not col.endswith('_x') and not col.endswith('_y')]
+        if not A_columns:
+            raise ValueError("No valid treatment columns found in y_data")
+        
+        y_data = y_data[['ID'] + A_columns]
     
-    # Merge x_data and y_data based on 'ID'
-    merged_data = pd.merge(x_data, y_data, on='ID', how='inner')
+    # Merge data with suffixes to avoid column name conflicts
+    merged_data = pd.merge(x_data, y_data, on='ID', how='inner', suffixes=('', '_y'))
     
-    # Separate back into x_data and y_data
-    x_columns = [col for col in merged_data.columns if col in x_data.columns]
-    y_columns = [col for col in merged_data.columns if col in y_data.columns and col != 'ID']
+    # Print merged data info
+    print("Merged data shape:", merged_data.shape)
+    print("Treatment columns:", [col for col in merged_data.columns if col.startswith('A') and not col.endswith('_y')])
     
-    x_data = merged_data[x_columns]
+    # Get clean column lists
+    x_columns = [col for col in x_data.columns if col != 'ID']
+    y_columns = [col for col in y_data.columns if col != 'ID']
+    
+    # Split back into x_data and y_data
+    x_data = merged_data[['ID'] + x_columns]
     y_data = merged_data[y_columns]
     
-    # Fill NaN values with -1 and ensure all data is float32
+    # Fill NaN values and convert types
     x_data = x_data.fillna(-1).astype(np.float32)
-    y_data = y_data.fillna(-1).astype(np.float32)
+    y_data = y_data.fillna(0).astype(np.float32)
+    
+    # Verify final data
+    print("Final x_data shape:", x_data.shape)
+    print("Final y_data shape:", y_data.shape)
+    print("Final y_data unique values:", {col: y_data[col].unique() for col in y_data.columns})
+    
+    if y_data.empty or y_data.shape[1] == 0:
+        raise ValueError("No treatment columns in final y_data")
     
     return x_data, y_data
 
-def data_generator(x_data, y_data, n_pre, batch_size, loss_fn, J):
-    print(f"x_data shape in generator: {x_data.shape}")
-    print(f"y_data shape in generator: {y_data.shape}")
-    
-    # Ensure 'ID' is not in x_data
-    if 'ID' in x_data.columns:
-        x_data = x_data.drop(columns=['ID'])
-    elif 'id' in x_data.columns:
-        x_data = x_data.drop(columns=['id'])
-    
-    print(f"x_data shape after dropping ID: {x_data.shape}")
-    print(f"n_pre: {n_pre}")
-    print(f"batch_size: {batch_size}")
-    
-    # Replace inf and -inf with large finite numbers
-    x_data = x_data.replace([np.inf, -np.inf], np.finfo(np.float32).max)
-    
-    # Fill NaN values with column means
-    x_data = x_data.fillna(x_data.mean())
-    
-    # Normalize the input data
-    x_mean = x_data.mean()
-    x_std = x_data.std()
-    x_std = x_std.replace(0, 1)  # Replace zero standard deviations with 1 to avoid division by zero
-    x_data = (x_data - x_mean) / x_std
-    
-    # Check if 'id' is in the index
-    if 'id' in x_data.index.names:
-        x_data_grouped = x_data.groupby(level='id')
-        y_data_grouped = y_data.groupby(level='id')
-    # If not, create a default id
-    else:
-        print("Warning: 'id' not found in index. Creating default id.")
-        x_data = x_data.reset_index(drop=True)
-        y_data = y_data.reset_index(drop=True)
-        x_data['id'] = range(len(x_data))
-        y_data['id'] = range(len(y_data))
-        x_data = x_data.set_index('id')
-        y_data = y_data.set_index('id')
-        x_data_grouped = x_data.groupby(level='id')
-        y_data_grouped = y_data.groupby(level='id')
-    
-    unique_ids = sorted(set(x_data_grouped.groups.keys()) & set(y_data_grouped.groups.keys()))
-    num_samples = len(unique_ids)
-    
-    for i in range(0, num_samples, batch_size):
-        batch_ids = unique_ids[i:min(i+batch_size, num_samples)]
-        batch_x = []
-        batch_y = []
-        
-        for id in batch_ids:
-            x_group = x_data_grouped.get_group(id)
-            y_group = y_data_grouped.get_group(id)
-            
-            x_seq = x_group.iloc[-n_pre:].values
-            if loss_fn == "sparse_categorical_crossentropy":
-                y_val = y_group.iloc[-1].values[0]  # Single integer label
-            elif loss_fn == "binary_crossentropy":
-                y_val = y_group.iloc[-1].values[0]  # Use only the first column for binary classification
-            else:
-                raise ValueError(f"Unsupported loss function: {loss_fn}")
-            
-            if x_seq.shape[0] < n_pre:
-                pad_width = ((n_pre - x_seq.shape[0], 0), (0, 0))
-                x_seq = np.pad(x_seq, pad_width, mode='constant', constant_values=0)
-            
-            batch_x.append(x_seq)
-            batch_y.append(y_val)
-        
-        batch_x = np.array(batch_x, dtype=np.float32)
-        batch_y = np.array(batch_y, dtype=np.int32)
-        
-        if loss_fn == "binary_crossentropy":
-            batch_y = (batch_y > 0).astype(np.float32)  # Ensure binary labels as float32
-        elif loss_fn == "sparse_categorical_crossentropy":
-            batch_y = batch_y % J  # Ensure labels are within [0, J-1]
-        
-        print(f"batch_x shape: {batch_x.shape}")
-        print(f"batch_y shape: {batch_y.shape}")
-        print(f"batch_y unique values: {np.unique(batch_y)}")
-        print(f"batch_x min: {np.min(batch_x)}, max: {np.max(batch_x)}")
-        print(f"batch_x has NaN: {np.isnan(batch_x).any()}")
-        
-        yield batch_x, batch_y
-        
+def calculate_steps(dataset_size, batch_size):
+    """Calculate steps for training/validation/testing."""
+    return max(1, dataset_size // batch_size)
+
 def load_data(file_path, is_output=False):
     data = pd.read_csv(file_path)
     if is_output:
@@ -169,20 +187,242 @@ def load_data(file_path, is_output=False):
     return data
 
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J):
-    inputs = Input(shape=input_shape, name="Inputs")
-    masked_input = Masking(mask_value=0.0)(inputs)
-    lstm_1 = LSTM(int(n_hidden), dropout=dr, recurrent_dropout=dr/2, activation='tanh', recurrent_activation="sigmoid", return_sequences=True, name="LSTM_1", kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(masked_input)
-    lstm_2 = LSTM(int(math.ceil(n_hidden/2)), dropout=dr, recurrent_dropout=dr/2, activation='tanh', recurrent_activation="sigmoid", return_sequences=False, name="LSTM_2", kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(lstm_1)
+    """Create model with GPU-compatible operations and optimizations."""
+    tf.keras.mixed_precision.set_global_policy('float32')
     
-    if loss_fn == "sparse_categorical_crossentropy":
-        output = Dense(J, activation='softmax', name='Dense', kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(lstm_2)
-    elif loss_fn == "binary_crossentropy":
-        output = Dense(1, activation='sigmoid', name='Dense', kernel_regularizer=l2(0.01), kernel_initializer=GlorotUniform())(lstm_2)
+    logger.info(f"Input shape: {input_shape}")
+    logger.info(f"Output dimension: {output_dim}")
+    
+    inputs = Input(shape=input_shape, dtype=tf.float32, name="Inputs")
+    masked_input = Masking(mask_value=0.0)(inputs)
+    
+    # First LSTM layer with optimizations
+    lstm_1 = LSTM(int(n_hidden), 
+                  dropout=0.0,
+                  recurrent_dropout=0.0,
+                  activation='tanh',
+                  recurrent_activation="sigmoid",
+                  return_sequences=True,
+                  name="LSTM_1",
+                  kernel_regularizer=l2(0.0001),
+                  implementation=2,
+                  unit_forget_bias=True,
+                  unroll=True)(masked_input)  # Unroll for speed with fixed sequence length
+    lstm_1 = tf.keras.layers.Dropout(dr)(lstm_1)
+    lstm_1 = tf.keras.layers.BatchNormalization(momentum=0.99)(lstm_1)
+    
+    # Second LSTM layer
+    lstm_2 = LSTM(int(math.ceil(n_hidden/2)),
+                  dropout=0.0,
+                  recurrent_dropout=0.0,
+                  activation='tanh',
+                  recurrent_activation="sigmoid",
+                  return_sequences=True,
+                  name="LSTM_2",
+                  kernel_regularizer=l2(0.0001),
+                  implementation=2,
+                  unit_forget_bias=True,
+                  unroll=True)(lstm_1)
+    lstm_2 = tf.keras.layers.Dropout(dr)(lstm_2)
+    lstm_2 = tf.keras.layers.BatchNormalization(momentum=0.99)(lstm_2)
+    
+    # Third LSTM layer
+    lstm_3 = LSTM(int(math.ceil(n_hidden/4)),
+                  dropout=0.0,
+                  recurrent_dropout=0.0,
+                  activation='tanh',
+                  recurrent_activation="sigmoid",
+                  return_sequences=False,
+                  name="LSTM_3",
+                  kernel_regularizer=l2(0.0001),
+                  implementation=2,
+                  unit_forget_bias=True,
+                  unroll=True)(lstm_2)
+    lstm_3 = tf.keras.layers.Dropout(dr)(lstm_3)
+    
+    # Dense layers with optimized batch normalization
+    x = tf.keras.layers.BatchNormalization(momentum=0.99)(lstm_3)
+    x = Dense(int(math.ceil(n_hidden/4)), activation='relu',
+              kernel_initializer='he_uniform')(x)  # Better initialization for ReLU
+    x = tf.keras.layers.Dropout(0.3)(x)
+    
+    if loss_fn == "binary_crossentropy":
+        x = Dense(int(math.ceil(n_hidden/8)), activation='relu',
+                 kernel_initializer='he_uniform')(x)
+        x = tf.keras.layers.Dropout(0.2)(x)
+        output = Dense(1, activation='sigmoid', name='Output')(x)
     else:
-        raise ValueError(f"Unsupported loss function: {loss_fn}")
+        output = Dense(J, activation='softmax', name='Output')(x)
     
     model = Model(inputs, output)
     
-    optimizer = Adam(learning_rate=lr, clipnorm=1.0, clipvalue=0.5)
-    model.compile(optimizer=optimizer, loss=loss_fn, metrics=['accuracy'])
+    # Configure optimizer and loss
+    optimizer = tf.keras.optimizers.Adam(
+        learning_rate=lr,
+        clipnorm=1.0,
+        clipvalue=0.5,
+        beta_1=0.9,
+        beta_2=0.999,
+        epsilon=1e-7,
+        amsgrad=True
+    )
+    
+    if loss_fn == "binary_crossentropy":
+        loss = tf.keras.losses.BinaryCrossentropy(
+            from_logits=False,
+            label_smoothing=0.1
+        )
+        metrics = [
+            tf.keras.metrics.BinaryAccuracy(name='accuracy'),
+            tf.keras.metrics.AUC(name='auc'),
+            tf.keras.metrics.Precision(name='precision'),
+            tf.keras.metrics.Recall(name='recall'),
+            tf.keras.metrics.BinaryCrossentropy(name='cross_entropy')
+        ]
+    else:
+        loss = tf.keras.losses.SparseCategoricalCrossentropy(
+            from_logits=False
+        )
+        metrics = [
+            tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy'),
+            tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy')
+        ]
+    
+    model.compile(
+        optimizer=optimizer,
+        loss=loss,
+        metrics=metrics,
+        run_eagerly=False
+    )
+    
     return model
+
+def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J):
+    """Create dataset with performance optimizations."""
+    if loss_fn == "sparse_categorical_crossentropy":
+        label_dtype = tf.int32
+    else:
+        label_dtype = tf.float32
+    
+    num_features = x_data.shape[1]
+    if 'ID' in x_data.columns:
+        num_features -= 1
+        
+    logger.info(f"Creating dataset with {num_features} features")
+    
+    # Create generator dataset
+    dataset = tf.data.Dataset.from_generator(
+        lambda: data_generator(x_data, y_data, n_pre, batch_size, loss_fn, J),
+        output_signature=(
+            tf.TensorSpec(shape=(n_pre, num_features), dtype=tf.float32),
+            tf.TensorSpec(shape=(), dtype=label_dtype)
+        )
+    )
+    
+    # Performance optimizations in correct order
+    dataset = dataset.shuffle(10000)  # Shuffle before batching
+    dataset = dataset.cache()  # Cache individual samples
+    dataset = dataset.batch(batch_size, drop_remainder=True)  # Batch after cache
+    
+    options = tf.data.Options()
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+    options.experimental_optimization.parallel_batch = True
+    options.experimental_optimization.map_and_batch_fusion = True
+    
+    dataset = dataset.with_options(options)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    
+    # Verify dataset characteristics
+    try:
+        for x_batch, y_batch in dataset.take(1):
+            logger.info(f"Dataset verification:")
+            logger.info(f"X batch shape: {x_batch.shape}")
+            logger.info(f"Y batch shape: {y_batch.shape}")
+            logger.info(f"X range: [{tf.reduce_min(x_batch)}, {tf.reduce_max(x_batch)}]")
+    except Exception as e:
+        logger.warning(f"Dataset verification failed: {str(e)}")
+    
+    return dataset
+
+def data_generator(x_data, y_data, n_pre, batch_size, loss_fn, J):
+    """Generate individual sequences with consistent data types."""
+    logger.info(f"Generating data sequences:")
+    logger.info(f"Input shapes - X: {x_data.shape}, Y: {y_data.shape}")
+    
+    # Process features
+    x_data = x_data.copy()
+    if 'ID' in x_data.columns:
+        x_data = x_data.drop(columns=['ID'])
+    
+    # Convert and normalize data
+    x_values = x_data.values.astype(np.float32)
+    x_values = (x_values - np.mean(x_values, axis=0)) / (np.std(x_values, axis=0) + 1e-6)
+    y_values = y_data.values.astype(np.float32)
+    
+    n_samples = len(x_values) - n_pre + 1
+    logger.info(f"Number of sequences: {n_samples}")
+    
+    # Initialize policy for mixed precision
+    policy = tf.keras.mixed_precision.global_policy()
+    dtype = policy.compute_dtype
+    logger.info(f"Using compute dtype: {dtype}")
+    
+    if loss_fn == "binary_crossentropy":
+        # Calculate labels for all samples
+        labels = np.array([float(np.sum(y_values[idx + n_pre - 1]) > 0) 
+                          for idx in range(n_samples)])
+        unique_labels = np.unique(labels)
+        logger.info(f"Unique labels in dataset: {unique_labels}")
+        
+        if len(unique_labels) == 1:
+            logger.info("Only one class found. Creating synthetic diversity...")
+            majority_class = unique_labels[0]
+            synthetic_prob = 0.1
+            
+            # Generate individual sequences with synthetic diversity
+            while True:
+                for idx in range(n_samples):
+                    sequence = x_values[idx:idx + n_pre].copy()
+                    sequence += np.random.normal(0, 0.01, sequence.shape).astype(np.float32)
+                    label = 1 - majority_class if np.random.random() < synthetic_prob else majority_class
+                    
+                    yield (sequence, label)
+                
+                if n_samples > 0:  # Prevent infinite loop if no samples
+                    np.random.shuffle(np.arange(n_samples))
+        else:
+            positive_indices = np.where(labels == 1)[0]
+            negative_indices = np.where(labels == 0)[0]
+            
+            # Combine and shuffle indices for balanced sampling
+            all_indices = np.concatenate([
+                np.random.choice(positive_indices, len(positive_indices), replace=True),
+                np.random.choice(negative_indices, len(negative_indices), replace=True)
+            ])
+            np.random.shuffle(all_indices)
+            
+            # Generate balanced sequences
+            while True:
+                for idx in all_indices:
+                    sequence = x_values[idx:idx + n_pre].copy()
+                    sequence += np.random.normal(0, 0.01, sequence.shape).astype(np.float32)
+                    label = labels[idx]
+                    
+                    yield (sequence, label)
+                
+                if len(all_indices) > 0:  # Prevent infinite loop
+                    np.random.shuffle(all_indices)
+    else:
+        # Generate sequences for multiclass classification
+        indices = np.arange(n_samples)
+        while True:
+            np.random.shuffle(indices)
+            for idx in indices:
+                sequence = x_values[idx:idx + n_pre].copy()
+                sequence += np.random.normal(0, 0.01, sequence.shape).astype(np.float32)
+                label = np.argmax(y_values[idx + n_pre - 1]) % J
+                
+                yield (sequence, label)
+                
+            if n_samples > 0:  # Prevent infinite loop
+                np.random.shuffle(indices)

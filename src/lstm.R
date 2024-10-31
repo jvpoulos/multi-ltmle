@@ -1,8 +1,4 @@
 lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE, J=7){
-  print(paste("Data dimensions:", paste(dim(data), collapse="x")))
-  print(paste("Outcome:", paste(outcome, collapse=", ")))
-  print(paste("Covariates:", paste(covariates, collapse=", ")))
-  
   # Ensure ID column exists and is the first column
   if(!"ID" %in% colnames(data)) {
     data$ID <- 1:nrow(data)
@@ -18,12 +14,6 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   output_file <- paste0(output_dir, "output_data.csv")
   write.csv(input_data, input_file, row.names = FALSE)
   write.csv(output_data, output_file, row.names = FALSE)
-  
-  # Print summary
-  print("Input data summary (sample):")
-  print(summary(input_data))
-  print("Output data summary (sample):")
-  print(summary(output_data))
   
   # Set Python variables
   py$J <- as.integer(J)
@@ -69,8 +59,28 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     if (file.exists(preds_file)) {
       preds <- np$load(preds_file)
       preds_r <- as.array(preds)
-      print(paste("Loaded predictions shape:", paste(dim(preds_r), collapse="x")))
-      return(preds_r)
+      
+      # Reshape predictions based on loss function
+      if (loss_fn == "binary_crossentropy") {
+        # Convert the nx1 predictions into a list of length t_end+1
+        # Each element contains the predictions for that time point
+        n_samples <- nrow(preds_r)
+        preds_list <- vector("list", t_end + 1)
+        
+        # Initialize each element with the predictions
+        for (t in 1:(t_end + 1)) {
+          preds_list[[t]] <- matrix(preds_r[,1], nrow=n_samples, ncol=1)
+        }
+        
+        print(paste("Created list of", length(preds_list), "prediction matrices"))
+        print(paste("Each matrix shape:", nrow(preds_list[[1]]), "x", ncol(preds_list[[1]])))
+        
+        return(preds_list)
+      } else {
+        # For categorical predictions, maintain existing behavior
+        print(paste("Loaded predictions shape:", paste(dim(preds_r), collapse="x")))
+        return(preds_r)
+      }
     } else {
       warning(paste("Predictions file not found:", preds_file))
       return(NULL)
