@@ -5,13 +5,36 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.mixed_precision import LossScaleOptimizer  # Updated import
 
-from utils import data_generator, load_data_from_csv, get_output_signature, create_dataset
+from utils import load_data_from_csv, get_output_signature, create_dataset, configure_gpu, get_strategy
 
 import sys
 import traceback
 import logging
+import warnings
 
-logging.basicConfig(level=logging.INFO)
+# Suppress TensorFlow logging
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+
+# Suppress warnings
+warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# Disable TensorFlow debugging info
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+# Additional TensorFlow configurations to reduce warnings
+tf.get_logger().setLevel(logging.ERROR)
+tf.autograph.set_verbosity(0)
+
 logger = logging.getLogger(__name__)
 
 # Enable mixed precision with modern API
@@ -23,49 +46,72 @@ def test_model():
 
     logger.info("Starting model testing...")
     
+    # Configure GPU first
+    if not configure_gpu(policy):
+        logger.warning("GPU configuration failed, proceeding with default settings")
+    
     try:
         # Load model and data
         model_path = os.path.join(output_dir, 
                                 'trained_cat_model.h5' if loss_fn == "sparse_categorical_crossentropy" 
                                 else 'trained_bin_model.h5')
+        
+        logger.info(f"Loading data from {output_dir}")
         x_data, y_data = load_data_from_csv(f"{output_dir}input_data.csv", f"{output_dir}output_data.csv")
         
         # Load split information
-        split_info = np.load(os.path.join(output_dir, 'split_info.npy'), allow_pickle=True).item()
+        split_info_path = os.path.join(output_dir, 'split_info.npy')
+        logger.info(f"Loading split info from {split_info_path}")
+        split_info = np.load(split_info_path, allow_pickle=True).item()
+        
         train_size = split_info['train_size']
+        val_size = split_info['val_size']
         batch_size = split_info['batch_size']
         n_pre = split_info['n_pre']
         num_features = split_info['num_features']
         
         # Create test dataset from remaining data
-        test_data_x = x_data[train_size:].copy()
-        test_data_y = y_data[train_size:].copy()
+        test_data_x = x_data[train_size+val_size:].copy()
+        test_data_y = y_data[train_size+val_size:].copy()
+        
+        if len(test_data_x) == 0 or len(test_data_y) == 0:
+            raise ValueError("Test dataset is empty after splitting")
         
         logger.info("\nDataset information:")
         logger.info(f"Total samples: {len(x_data)}")
+        logger.info(f"Training samples: {train_size}")
+        logger.info(f"Validation samples: {val_size}")
         logger.info(f"Test samples: {len(test_data_x)}")
         logger.info(f"Feature dimension: {num_features}")
         logger.info(f"Sequence length: {n_pre}")
         
-        # Create test dataset
-        test_dataset = create_dataset(
-            test_data_x,
-            test_data_y,
-            n_pre,
-            batch_size,
-            loss_fn,
-            J
-        )
+        # Remove ID column if present
+        if 'ID' in test_data_x.columns:
+            test_data_x = test_data_x.drop(columns=['ID'])
         
-        # Calculate test steps accounting for sequence length
-        test_steps = max(1, (len(test_data_x) - n_pre + 1) // batch_size)
+        # Create test dataset
+        strategy = get_strategy()
+        with strategy.scope():
+            test_dataset, test_samples = create_dataset(
+                test_data_x,
+                test_data_y,
+                n_pre,
+                batch_size,
+                loss_fn,
+                J,
+                is_training=False
+            )
+            
+        # Calculate test steps
+        test_steps = max(1, (test_samples - n_pre + 1) // batch_size)
         logger.info(f"Test steps: {test_steps}")
         
         # Load and verify model
         logger.info("\nLoading model...")
-        model = load_model(model_path, custom_objects={
-            'LossScaleOptimizer': LossScaleOptimizer
-        })
+        with strategy.scope():
+            model = load_model(model_path, custom_objects={
+                'LossScaleOptimizer': LossScaleOptimizer
+            })
         logger.info("Model loaded successfully")
         
         # Verify test dataset characteristics
@@ -87,7 +133,7 @@ def test_model():
         logger.info("\nEvaluating model...")
         test_metrics = model.evaluate(
             test_dataset,
-            steps=None,  # Let TF handle steps with batched dataset
+            steps=test_steps,
             verbose=1
         )
         
@@ -98,18 +144,33 @@ def test_model():
         logger.info("\nGenerating predictions...")
         preds_test = model.predict(
             test_dataset,
-            steps=None,  # Let TF handle steps with batched dataset
+            steps=test_steps,
             verbose=1
         )
         
         # Ensure we only keep predictions for actual samples
         n_valid_samples = len(test_data_x) - n_pre + 1
+        if n_valid_samples <= 0:
+            raise ValueError(f"Invalid number of samples: {n_valid_samples}")
+            
         preds_test = preds_test[:n_valid_samples]
         
         logger.info(f"\nPredictions summary:")
         logger.info(f"Shape: {preds_test.shape}")
         logger.info(f"Data type: {preds_test.dtype}")
         logger.info(f"Range: [{np.min(preds_test)}, {np.max(preds_test)}]")
+        
+        # Print prediction statistics
+        logger.info("\nPrediction statistics:")
+        logger.info(f"Mean prediction: {np.mean(preds_test):.4f}")
+        logger.info(f"Std prediction: {np.std(preds_test):.4f}")
+        
+        if loss_fn == "binary_crossentropy":
+            pred_classes = (preds_test > 0.5).astype(int)
+            logger.info(f"Class distribution: {np.bincount(pred_classes.flatten())}")
+        else:
+            pred_classes = np.argmax(preds_test, axis=1)
+            logger.info(f"Class distribution: {np.bincount(pred_classes)}")
         
         # Save predictions
         pred_file = os.path.join(output_dir, 

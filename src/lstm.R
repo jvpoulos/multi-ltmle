@@ -1,13 +1,34 @@
-lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE, J=7){
+lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE, J=7) {
   # Ensure ID column exists and is the first column
   if(!"ID" %in% colnames(data)) {
     data$ID <- 1:nrow(data)
   }
   data <- data[, c("ID", setdiff(colnames(data), "ID"))]
   
+  # Fix column names to match expected format
+  fixed_colnames <- gsub("\\.", "", colnames(data))
+  colnames(data) <- fixed_colnames
+  
+  # Update outcome and covariates to match fixed column names
+  if(is.character(outcome)) {
+    outcome_cols <- gsub("\\.", "", outcome)
+  } else if(is.data.frame(outcome)) {
+    outcome_cols <- gsub("\\.", "", colnames(outcome))
+  } else {
+    stop("outcome must be either column names or a data frame")
+  }
+  
+  covariates <- gsub("\\.", "", covariates)
+  
+  # Verify columns exist
+  missing_cols <- setdiff(c(outcome_cols, covariates), colnames(data))
+  if(length(missing_cols) > 0) {
+    stop(paste("Missing columns:", paste(missing_cols, collapse=", ")))
+  }
+  
   # Separate input and output data
   input_data <- data[, c("ID", covariates)]
-  output_data <- data[, c("ID", outcome)]
+  output_data <- data[, c("ID", outcome_cols)]
   
   # Write data to CSV
   input_file <- paste0(output_dir, "input_data.csv")
@@ -29,17 +50,26 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$patience <- as.integer(2)
   py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)
-  py$outcome <- outcome
-  py$covariates <- covariates
+  py$outcome_cols <- outcome_cols
+  py$covariate_cols <- covariates
+  
+  # Import numpy
+  np <- reticulate::import("numpy")
+  
+  # Print debug info
+  print(paste("Data dimensions:", paste(dim(data), collapse="x")))
+  print(paste("Input columns:", paste(covariates, collapse=", ")))
+  print(paste("Output columns:", paste(outcome_cols, collapse=", ")))
   
   # Run Python script
-  if (inference) {
+  result <- if(inference) {
     tryCatch({
       source_python("src/test_lstm.py")
     }, error = function(e) {
       print("Error in test_lstm.py:")
       print(e$message)
       print(paste("Error details:", reticulate::py_last_error()))
+      NULL
     })
   } else {
     tryCatch({
@@ -48,37 +78,35 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       print("Error in train_lstm.py:")
       print(e$message)
       print(paste("Error details:", reticulate::py_last_error()))
+      NULL
     })
   }
   
+  # Load predictions
   tryCatch({
-    preds_file <- ifelse(loss_fn == "sparse_categorical_crossentropy", 
+    preds_file <- ifelse(loss_fn == "sparse_categorical_crossentropy",
                          paste0(output_dir, 'lstm_cat_preds.npy'),
                          paste0(output_dir, 'lstm_bin_preds.npy'))
     
-    if (file.exists(preds_file)) {
+    if(file.exists(preds_file)) {
       preds <- np$load(preds_file)
       preds_r <- as.array(preds)
       
-      # Reshape predictions based on loss function
-      if (loss_fn == "binary_crossentropy") {
-        # Convert the nx1 predictions into a list of length t_end+1
-        # Each element contains the predictions for that time point
-        n_samples <- nrow(preds_r)
+      if(is.null(dim(preds_r)) || length(dim(preds_r)) != 2) {
+        warning("Incorrect dimensions for prediction matrix")
+        return(NULL)
+      }
+      
+      if(loss_fn == "binary_crossentropy") {
+        # Process binary predictions
         preds_list <- vector("list", t_end + 1)
-        
-        # Initialize each element with the predictions
-        for (t in 1:(t_end + 1)) {
-          preds_list[[t]] <- matrix(preds_r[,1], nrow=n_samples, ncol=1)
+        for(t in 1:(t_end + 1)) {
+          preds_list[[t]] <- matrix(preds_r[,1], ncol=1)
+          colnames(preds_list[[t]]) <- "prob"
         }
-        
-        print(paste("Created list of", length(preds_list), "prediction matrices"))
-        print(paste("Each matrix shape:", nrow(preds_list[[1]]), "x", ncol(preds_list[[1]])))
-        
         return(preds_list)
       } else {
-        # For categorical predictions, maintain existing behavior
-        print(paste("Loaded predictions shape:", paste(dim(preds_r), collapse="x")))
+        # Return categorical predictions as is
         return(preds_r)
       }
     } else {
@@ -87,7 +115,6 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     }
   }, error = function(e) {
     warning(paste("Error loading predictions:", e$message))
-    print(paste("Error details:", reticulate::py_last_error()))
     return(NULL)
   })
 }

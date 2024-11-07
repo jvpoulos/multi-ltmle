@@ -29,7 +29,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   if(estimator=='tmle-lstm'){
     library(reticulate)
-    use_python("~/multi-ltmle/env/bin/python")
+    #use_python("~/multi-ltmle/env/bin/python")
+    use_python("/n/app/python/3.10.11.conda/bin/python")
     print(py_config()) # Check Python configuration
     
     np <- reticulate::import("numpy")
@@ -41,6 +42,11 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     library(keras)
     print(is_keras_available())
     print(tf_version())
+    
+    wandb <- reticulate::import("wandb", delay_load = TRUE)
+    print("Checking wandb object:")
+    print(py_get_attr(wandb, "__name__"))
+    print(py_get_attr(wandb, "__version__"))
     
     source('./src/lstm.R')
   }
@@ -533,178 +539,78 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Define the number of treatment classes
     num_classes <- J
-    
-    lstm_A_preds_bin <- list()
+
+    # Initialize prediction storage
+    lstm_A_preds_bin <- vector("list", J)
     
     for (k in 1:J) {
       print(paste0("Class ", k, " in ", J))
       
-      # Create a binary matrix for the outcomes where each 'A' column is compared to class k-1 (0-based)
-      A_columns <- grep("^A[0-9]+$", colnames(tmle_dat), value = TRUE)
-      if (length(A_columns) > 0) {
-        A_binary_matrix <- sapply(A_columns, function(col_name) {
-          as.numeric(tmle_dat[[col_name]] == (k-1))  # 1 if treatment is class k-1, 0 otherwise
-        })
-      } else {
-        warning("No 'A' columns found in the data. Creating a dummy binary matrix.")
-        A_binary_matrix <- matrix(0, nrow = nrow(tmle_dat), ncol = 1)
-      }
+      # Create binary matrix for class k
+      A_binary_matrix <- matrix(0, nrow = nrow(tmle_dat), ncol = ncol(tmle_dat[grep("^A\\.", colnames(tmle_dat))]))
+      A_binary_matrix[tmle_dat[grep("^A\\.", colnames(tmle_dat))] == k] <- 1
       
-      if (!any(grepl("^A[0-9]+$", colnames(tmle_dat)))) {
-        warning("No 'A' columns found. Creating dummy 'A' columns.")
-        for (i in 0:(J-1)) {
-          tmle_dat[paste0("A", i)] <- sample(0:1, nrow(tmle_dat), replace = TRUE)
-        }
-      }
+      # Prepare data for LSTM
+      binary_data <- tmle_dat[c(grep("L", colnames(tmle_dat), value=TRUE),
+                                grep("V", colnames(tmle_dat), value=TRUE),
+                                "white", "black", "latino", "other",
+                                "mdd", "bipolar", "schiz")]
       
-      # Make sure 'A' columns are included in tmle_covars_A
-      tmle_covars_A <- c(tmle_covars_A, paste0("A", 0:(J-1)))
+      # Add binary target column
+      binary_data$target <- A_binary_matrix[,1]  # Take first column for binary classification
       
-      lstm_input_data <- cbind(A_binary_matrix, tmle_dat[tmle_covars_A])
-      
-      # Train the LSTM model with the prepared data
-      if (length(lstm_A_preds_bin) > 0) {
-        for (i in 1:length(lstm_A_preds_bin)) {
-          if (!is.null(lstm_A_preds_bin[[i]])) {
-            lstm_A_preds_bin[[k]] <- lstm(
-              data = lstm_input_data,
-              outcome = colnames(A_binary_matrix),
-              covariates = tmle_covars_A,
-              t_end = t.end,
-              window_size = window_size,
-              out_activation = "sigmoid",
-              loss_fn = "binary_crossentropy",
-              output_dir
-            )
-          } else {
-            warning(paste("lstm_A_preds_bin[[", i, "]] is NULL", sep = ""))
-          }
-        }
-      } else {
-        warning("lstm_A_preds_bin is empty")
-      }
-    }
-    
-    # Optionally, force garbage collection after the loop
-    gc()
-    
-    # Assuming lstm_A_preds_bin is the list of predictions returned from the lstm function
-    
-    # First, let's ensure all elements in lstm_A_preds_bin are matrices
-    lstm_A_preds_bin <- lapply(lstm_A_preds_bin, function(x) {
-      if (!is.matrix(x)) {
-        matrix(x, ncol = 1)
-      } else {
-        x
-      }
-    })
-    
-    for (i in 1:length(lstm_A_preds_bin)) {
-      if (ncol(lstm_A_preds_bin[[i]]) > 0) {
-        # Get the first column and replicate it (window.size) times
-        first_col <- lstm_A_preds_bin[[i]][,1]
-        first_col_replicated <- matrix(rep(first_col, each = window_size), 
-                                       nrow = length(first_col), 
-                                       ncol = window_size)
+      # Train LSTM and get predictions
+      tryCatch({
+        lstm_preds <- lstm(data = binary_data,
+                           outcome = "target",
+                           covariates = setdiff(colnames(binary_data), "target"),
+                           t_end = t.end,
+                           window_size = window_size,
+                           out_activation = "sigmoid",
+                           loss_fn = "binary_crossentropy",
+                           output_dir = output_dir,
+                           J = J)
         
-        # Combine the replicated columns with the original matrix
-        extended_matrix <- cbind(first_col_replicated, lstm_A_preds_bin[[i]])
+        # Store predictions
+        lstm_A_preds_bin[[k]] <- lstm_preds
         
-        # Add the extended matrix to lstm_A_preds_bin
-        lstm_A_preds_bin[[i]] <- extended_matrix
-      } else {
-        warning(paste("Empty matrix encountered for prediction", i))
-        # Handle the case of an empty matrix, e.g., by creating a matrix of NAs
-        lstm_A_preds_bin[[i]] <- matrix(NA, nrow = nrow(lstm_A_preds_bin[[1]]), ncol = window_size + 1)
-      }
-    }
-    
-    # After processing, ensure all matrices have the same number of rows
-    max_rows <- max(sapply(lstm_A_preds_bin, nrow))
-    lstm_A_preds_bin <- lapply(lstm_A_preds_bin, function(x) {
-      if (nrow(x) < max_rows) {
-        rbind(x, matrix(NA, nrow = max_rows - nrow(x), ncol = ncol(x)))
-      } else {
-        x
-      }
-    })
-    
-    print("Processed prediction shapes:")
-    print(sapply(lstm_A_preds_bin, dim))
-    
-    initial_model_for_A_bin <- list("preds" = lstm_A_preds_bin, "data" = tmle_dat)
-    
-    # Process each matrix in lstm_A_preds_bin
-    print(paste("Length of lstm_A_preds_bin:", length(lstm_A_preds_bin)))
-    print(paste("Class of first element in lstm_A_preds_bin:", class(lstm_A_preds_bin[[1]])))
-    print(paste("Dimensions of first element in lstm_A_preds_bin:", paste(dim(lstm_A_preds_bin[[1]]), collapse=" x ")))
-    
-    g_preds_bin <- lapply(lstm_A_preds_bin, function(x) {
-      if (is.vector(x)) {
-        matrix(x, ncol = 1)
-      } else if (is.matrix(x)) {
-        x
-      } else if (is.array(x) && length(dim(x)) == 3) {
-        matrix(x[,,1], ncol = dim(x)[2])
-      } else {
-        stop(paste("Unexpected structure in lstm_A_preds_bin. Class:", class(x), "Dimensions:", paste(dim(x), collapse=" x ")))
-      }
-    })
-    
-    print(paste("Length of g_preds_bin:", length(g_preds_bin)))
-    print(paste("Dimensions of first element in g_preds_bin:", paste(dim(g_preds_bin[[1]]), collapse=" x ")))
-    
-    g_preds_bin_ID <- tmle_dat$ID
-    
-    # After processing predictions
-    g_preds_bin <- lapply(g_preds_bin, function(x) {
-      if (!is.numeric(x)) {
-        warning("Non-numeric values found in g_preds_bin. Converting to numeric.")
-        return(as.numeric(as.character(x)))
-      }
-      return(x)
-    })
-    
-    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
-    
-    g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
-    
-    # Then proceed with the multiplication
-    for (i in 2:length(g_preds_bin)) {
-      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]] * g_preds_bin_cuml[[i - 1]]
-    }
-    
-    # Initialize an empty list for the reshaped predictions
-    reshaped_preds_bin <- vector("list", length = t.end)
-    
-    # Loop over each time point
-    for (i in 1:t.end) {
-      # Extract predictions for each treatment class at time point i
-      temp_matrices <- lapply(lstm_A_preds_bin, function(x) {
-        # Ensure x is a matrix with t.end columns
-        if(is.vector(x)) {
-          matrix(x, nrow = 1, ncol = t.end)
-        } else if(ncol(x) != t.end) {
-          matrix(x, nrow = nrow(x), ncol = t.end)
-        } else {
-          x
-        }
+      }, error = function(e) {
+        warning(paste("Error in binary predictions for class", k, ":", e$message))
+        NULL
       })
-      
-      # Extract the ith column from each matrix and combine them to create a single matrix
-      combined_matrix <- do.call(cbind, lapply(temp_matrices, function(m) m[, i, drop=FALSE]))
-      
-      # Assign the combined matrix to the reshaped_preds_bin list
-      reshaped_preds_bin[[i]] <- combined_matrix
     }
     
-    # Apply boundProbs to each cumulative prediction
+    # Process predictions
+    valid_preds <- Filter(Negate(is.null), lstm_A_preds_bin)
+    if (length(valid_preds) == 0) {
+      stop("No valid binary predictions available")
+    }
+    
+    # Combine predictions
+    g_preds_bin <- do.call(cbind, valid_preds)
+    
+    # Normalize predictions
+    row_sums <- rowSums(g_preds_bin)
+    g_preds_bin <- sweep(g_preds_bin, 1, row_sums, "/")
+    
+    # Add column names
+    colnames(g_preds_bin) <- paste0("A", 1:ncol(g_preds_bin))
+    
+    # Calculate cumulative predictions
+    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
+    g_preds_bin_cuml[[1]] <- g_preds_bin
+    
+    for (i in 2:length(g_preds_bin)) {
+      g_preds_bin_cuml[[i]] <- g_preds_bin[i,] * g_preds_bin_cuml[[i-1]]
+    }
+    
+    # Bound predictions
     g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) {
-      if (is.matrix(x)) {
-        boundProbs(x, bounds = gbound)
+      bounded <- boundProbs(as.matrix(x), bounds = gbound)
+      if (is.null(dim(bounded))) {
+        matrix(bounded, ncol = 1)
       } else {
-        warning("Non-matrix input to boundProbs")
-        boundProbs(matrix(x, ncol = 1), bounds = gbound)
+        bounded
       }
     })
     

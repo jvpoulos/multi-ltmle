@@ -46,7 +46,7 @@ Prerequsites
 * **R** (tested on 4.0.1 using a 6.2.0 GCC compile)
 + Required **R** packages located in ***package_list.R*** 
 
-* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using a GCC 9.2.0 compiler and cuda 11.2 for GPU computation
+* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using a GCC 9.2.0 compiler and CUDA 12.4 for GPU computation
 + instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
 ```
 # create virtual environment within directory
@@ -63,10 +63,11 @@ pip install tensorrt
 python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))" # verify the CPU setup
 # python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))" # verify the GPU setup
 ```
-+ The following Python packages are required: numpy (tested on 1.19.5) and pandas (tested on 1.1.5)
++ The following Python packages are required: numpy (tested on 1.19.5), pandas (1.1.5), and wandb (0.15.12)
 ```
 pip install numpy
 pip install pandas
+pip install wandb
 ```
 + Additional **R** packages are required by setting the *keras* flag in ***package_list.R*** to TRUE. Make sure to install these packages in the virtual environment where python3 and Tensorflow are installed.
 
