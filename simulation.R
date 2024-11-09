@@ -539,80 +539,167 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Define the number of treatment classes
     num_classes <- J
-
-    # Initialize prediction storage
+    
+    # Initialize list for binary predictions
     lstm_A_preds_bin <- vector("list", J)
     
-    for (k in 1:J) {
+    for(k in 1:J) {
       print(paste0("Class ", k, " in ", J))
       
-      # Create binary matrix for class k
-      A_binary_matrix <- matrix(0, nrow = nrow(tmle_dat), ncol = ncol(tmle_dat[grep("^A\\.", colnames(tmle_dat))]))
-      A_binary_matrix[tmle_dat[grep("^A\\.", colnames(tmle_dat))] == k] <- 1
+      # Get current data
+      binary_data <- tmle_dat  # Start with full dataset
       
-      # Prepare data for LSTM
-      binary_data <- tmle_dat[c(grep("L", colnames(tmle_dat), value=TRUE),
-                                grep("V", colnames(tmle_dat), value=TRUE),
-                                "white", "black", "latino", "other",
-                                "mdd", "bipolar", "schiz")]
+      # Print data structure for debugging
+      print("Data structure:")
+      print(paste("Dimensions:", paste(dim(binary_data), collapse=" x ")))
+      print("Column names:")
+      print(colnames(binary_data))
       
-      # Add binary target column
-      binary_data$target <- A_binary_matrix[,1]  # Take first column for binary classification
+      # Find all possible feature columns
+      L_cols <- grep("^L[0-9]+", colnames(binary_data), value=TRUE)
+      V_cols <- grep("^V[0-9]+", colnames(binary_data), value=TRUE)
       
-      # Train LSTM and get predictions
-      tryCatch({
-        lstm_preds <- lstm(data = binary_data,
-                           outcome = "target",
-                           covariates = setdiff(colnames(binary_data), "target"),
-                           t_end = t.end,
-                           window_size = window_size,
-                           out_activation = "sigmoid",
-                           loss_fn = "binary_crossentropy",
-                           output_dir = output_dir,
-                           J = J)
-        
-        # Store predictions
-        lstm_A_preds_bin[[k]] <- lstm_preds
-        
+      # Initialize demographic columns if they don't exist
+      demographic_cols <- c("white", "black", "latino", "other", "mdd", "bipolar", "schiz")
+      for(col in demographic_cols) {
+        if(!(col %in% colnames(binary_data))) {
+          binary_data[[col]] <- 0
+        }
+      }
+      
+      # Get treatment columns
+      A_cols <- grep("^A[0-9]+", colnames(binary_data), value=TRUE)
+      if(length(A_cols) == 0) {
+        A_cols <- grep("^A\\.[0-9]+", colnames(binary_data), value=TRUE)
+      }
+      
+      # Print column info
+      print("Column info:")
+      print(paste("L columns:", paste(L_cols, collapse=", ")))
+      print(paste("V columns:", paste(V_cols, collapse=", ")))
+      print(paste("A columns:", paste(A_cols, collapse=", ")))
+      
+      # Create feature set
+      feature_cols <- c(L_cols, V_cols, demographic_cols)
+      feature_cols <- feature_cols[feature_cols %in% colnames(binary_data)]
+      
+      # Print feature info
+      print("Features to be used:")
+      print(feature_cols)
+      
+      # Create binary target
+      binary_data$target <- sapply(1:nrow(binary_data), function(i) {
+        row_values <- as.numeric(binary_data[i, A_cols])
+        if(all(is.na(row_values))) return(0)
+        return(as.numeric(any(row_values == (k-1))))
+      })
+      
+      # Print target distribution
+      print("Target distribution:")
+      print(table(binary_data$target))
+      
+      # Train LSTM
+      lstm_preds <- tryCatch({
+        lstm(
+          data = binary_data,
+          outcome = "target",
+          covariates = feature_cols,
+          t_end = t.end,
+          window_size = window_size,
+          out_activation = "sigmoid",
+          loss_fn = "binary_crossentropy",
+          output_dir = output_dir
+        )
       }, error = function(e) {
-        warning(paste("Error in binary predictions for class", k, ":", e$message))
+        print(paste("Error in LSTM training for class", k, ":", e$message))
         NULL
       })
+      
+      # Store predictions
+      lstm_A_preds_bin[[k]] <- lstm_preds
     }
     
     # Process predictions
     valid_preds <- Filter(Negate(is.null), lstm_A_preds_bin)
-    if (length(valid_preds) == 0) {
+    if(length(valid_preds) == 0) {
       stop("No valid binary predictions available")
     }
     
-    # Combine predictions
-    g_preds_bin <- do.call(cbind, valid_preds)
-    
-    # Normalize predictions
-    row_sums <- rowSums(g_preds_bin)
-    g_preds_bin <- sweep(g_preds_bin, 1, row_sums, "/")
-    
-    # Add column names
-    colnames(g_preds_bin) <- paste0("A", 1:ncol(g_preds_bin))
-    
-    # Calculate cumulative predictions
-    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
-    g_preds_bin_cuml[[1]] <- g_preds_bin
-    
-    for (i in 2:length(g_preds_bin)) {
-      g_preds_bin_cuml[[i]] <- g_preds_bin[i,] * g_preds_bin_cuml[[i-1]]
+    # Print prediction info for debugging
+    print("Prediction information:")
+    for(i in seq_along(valid_preds)) {
+      print(paste("Class", i, "prediction shape:", paste(dim(valid_preds[[i]]), collapse=" x ")))
     }
     
-    # Bound predictions
-    g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) {
-      bounded <- boundProbs(as.matrix(x), bounds = gbound)
-      if (is.null(dim(bounded))) {
-        matrix(bounded, ncol = 1)
-      } else {
-        bounded
+    # Ensure all predictions are numeric matrices
+    g_preds_bin <- lapply(valid_preds, function(pred) {
+      if(is.null(pred)) return(NULL)
+      if(!is.matrix(pred)) {
+        if(is.numeric(pred)) {
+          return(matrix(pred, ncol=1))
+        } else {
+          return(matrix(as.numeric(pred), ncol=1))
+        }
       }
+      return(pred)
     })
+    
+    # Remove any NULL entries
+    g_preds_bin <- Filter(Negate(is.null), g_preds_bin)
+    
+    # Combine predictions into a matrix
+    if(length(g_preds_bin) > 0) {
+      # Ensure all matrices have the same number of rows
+      n_rows <- unique(sapply(g_preds_bin, nrow))
+      if(length(n_rows) > 1) {
+        stop("Inconsistent number of rows in predictions")
+      }
+      
+      # Convert to matrix
+      g_preds_bin <- do.call(cbind, g_preds_bin)
+      
+      # Print shape info
+      print(paste("Combined prediction matrix shape:", paste(dim(g_preds_bin), collapse=" x ")))
+      
+      # Ensure numeric and handle NAs
+      g_preds_bin <- matrix(as.numeric(g_preds_bin), nrow=nrow(g_preds_bin))
+      g_preds_bin[is.na(g_preds_bin)] <- 0
+      
+      # Normalize rows
+      row_sums <- rowSums(g_preds_bin, na.rm=TRUE)
+      row_sums[row_sums == 0] <- 1  # Avoid division by zero
+      g_preds_bin <- sweep(g_preds_bin, 1, row_sums, "/")
+      
+      # Add column names
+      colnames(g_preds_bin) <- paste0("A", 1:ncol(g_preds_bin))
+      
+      # Calculate cumulative predictions
+      g_preds_bin_cuml <- vector("list", t.end + 1)
+      g_preds_bin_cuml[[1]] <- g_preds_bin
+      
+      for(i in 2:(t.end + 1)) {
+        if(i <= ncol(g_preds_bin)) {
+          prev_pred <- g_preds_bin_cuml[[i-1]]
+          curr_pred <- g_preds_bin[,i,drop=FALSE]
+          g_preds_bin_cuml[[i]] <- prev_pred * curr_pred
+        } else {
+          g_preds_bin_cuml[[i]] <- g_preds_bin_cuml[[i-1]]
+        }
+      }
+      
+      # Bound predictions
+      g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) {
+        bounded <- boundProbs(as.matrix(x), bounds = gbound)
+        if(is.null(dim(bounded))) {
+          matrix(bounded, ncol = 1)
+        } else {
+          bounded
+        }
+      })
+      
+    } else {
+      stop("No valid predictions after processing")
+    }
     
     # Print some debugging information
     print(paste("Length of g_preds_bin_cuml_bounded:", length(g_preds_bin_cuml_bounded)))

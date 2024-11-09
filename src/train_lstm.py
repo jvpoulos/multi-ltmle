@@ -242,7 +242,6 @@ def main():
         class_counts = np.bincount(y_data.values.astype(int).flatten())
         total = np.sum(class_counts)
         class_weights = {i: total / (len(class_counts) * count) for i, count in enumerate(class_counts)}
-        logger.info(f"Using class weights: {class_weights}")
     else:
         class_weights = None
 
@@ -289,12 +288,6 @@ def main():
             steps_per_epoch=steps_per_epoch,
             strategy=strategy
         )
-
-        # Add metrics based on task type
-        if loss_fn == "binary_crossentropy":
-            model.add_metric(tf.keras.metrics.AUC(name='auc'), aggregation='mean')
-            model.add_metric(tf.keras.metrics.Precision(name='precision'), aggregation='mean')
-            model.add_metric(tf.keras.metrics.Recall(name='recall'), aggregation='mean')
 
     # Get callbacks
     callbacks = get_optimized_callbacks(patience, output_dir, train_dataset)

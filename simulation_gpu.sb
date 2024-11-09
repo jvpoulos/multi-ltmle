@@ -8,7 +8,7 @@
 
 # srun --pty -p gpu --gres=gpu:2 -t 0-12:00 --mem 50G -c 10 bash
 
-cd multi-ltmle
+# cd multi-ltmle
 
 module load gcc/9.2.0 R/4.3.1
 

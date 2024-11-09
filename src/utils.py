@@ -108,14 +108,13 @@ def setup_wandb(config, validation_steps=None, train_dataset=None):
 
 class CustomCallback(tf.keras.callbacks.Callback):
     def __init__(self, train_dataset):
-        super(CustomCallback, self).__init__()  # Add proper super() call
+        super(CustomCallback, self).__init__()
         self.train_dataset = train_dataset
         self.start_time = time.time()
-        self.model = None  # Initialize model attribute
+        self.model = None
  
     def set_model(self, model):
-        """This is required to associate the model with the callback."""
-        super(CustomCallback, self).set_model(model)  # Add proper super() call
+        super(CustomCallback, self).set_model(model)
         self.model = model
                
     def on_epoch_begin(self, epoch, logs=None):
@@ -140,19 +139,26 @@ class CustomCallback(tf.keras.callbacks.Callback):
         })
         
         try:
-            # Sample predictions
-            for x_batch, y_batch in self.train_dataset.take(1):
-                sample_pred = self.model.predict(x_batch)
+            # Sample predictions - handle both binary and categorical cases
+            for x_batch in self.train_dataset.take(1):
+                if isinstance(x_batch, tuple):
+                    x_batch = x_batch[0]  # Extract features if tuple
+                
+                # Get predictions
+                sample_pred = self.model.predict(x_batch, verbose=0)
+                if len(sample_pred.shape) > 2:
+                    sample_pred = sample_pred.reshape(-1, sample_pred.shape[-1])
                 
                 # Log prediction statistics
                 wandb.log({
                     'sample_predictions_mean': np.mean(sample_pred),
                     'sample_predictions_std': np.std(sample_pred),
-                    'sample_predictions_hist': wandb.Histogram(sample_pred)
+                    'sample_predictions_hist': wandb.Histogram(sample_pred.flatten())
                 })
-                break  # Only take one batch
+                break
         except Exception as e:
             logger.warning(f"Error in CustomCallback prediction logging: {str(e)}")
+            logger.warning(f"Prediction shape: {sample_pred.shape if 'sample_pred' in locals() else 'Not available'}")
     
     def on_train_batch_end(self, batch, logs=None):
         if not logs:
@@ -482,8 +488,13 @@ def get_strategy():
     
     return get_strategy.strategy
 
+# In utils.py, update the create_dataset function:
+
 def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False):
     """Create dataset with proper sequence handling."""
+    logger.info(f"Creating dataset with parameters:")
+    logger.info(f"n_pre: {n_pre}, batch_size: {batch_size}, loss_fn: {loss_fn}, J: {J}")
+    
     # Remove ID column if present
     if 'ID' in x_data.columns:
         x_data = x_data.drop('ID', axis=1)
@@ -491,8 +502,8 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
     num_features = x_data.shape[1]
     n_samples = max(0, len(x_data) - n_pre + 1)
     
-    logger.info(f"Creating sequences from {len(x_data)} samples with {n_pre} timesteps")
     logger.info(f"Input shape: {x_data.shape}, Output shape: {y_data.shape}")
+    logger.info(f"Output unique values: {[y_data[col].unique() for col in y_data.columns]}")
     
     def prepare_sequences():
         # Convert to numpy and use float32 for memory efficiency
@@ -515,26 +526,28 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                 
                 if is_training:
                     # Add small random noise for regularization
-                    x_seq += np.random.normal(0, 0.001, x_seq.shape)
+                    x_seq += np.random.normal(0, 0.01, x_seq.shape)
                 
                 # Get target values for this sequence
                 y_target = y_values[i + n_pre - 1]
                 
                 # Handle target based on loss function
                 if loss_fn == "sparse_categorical_crossentropy":
-                    # Find the position of the maximum value in the target vector
-                    y_seq = np.argmax(y_target)
-                    # Ensure it's within bounds
-                    y_seq = y_seq % J if y_seq >= J else y_seq
+                    # For each timestep, find the class with the maximum value
+                    class_counts = np.zeros(J)
+                    for val in y_target:
+                        if val >= 0:  # Skip -1 values
+                            class_idx = int(val) % J
+                            class_counts[class_idx] += 1
+                    y_seq = np.argmax(class_counts) if np.sum(class_counts) > 0 else 0
                 else:
                     # For binary classification, check if any value is above threshold
-                    y_seq = float(np.any(y_target > 0.5))
+                    y_seq = float(np.any(y_target > 0))
                 
-                # Store sequences
                 sequences_x.append(x_seq.astype(np.float32))
                 sequences_y.append(np.array(y_seq, 
-                                         dtype=np.int32 if loss_fn == "sparse_categorical_crossentropy" 
-                                         else np.float32))
+                                       dtype=np.int32 if loss_fn == "sparse_categorical_crossentropy" 
+                                       else np.float32))
                 
             except Exception as e:
                 logger.warning(f"Error processing sequence {i}: {str(e)}")
@@ -542,15 +555,15 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         
         if not sequences_x:
             raise ValueError("No valid sequences created")
-        
+            
         # Convert to numpy arrays
         sequences_x = np.array(sequences_x, dtype=np.float32)
         sequences_y = np.array(sequences_y, dtype=np.int32 if loss_fn == "sparse_categorical_crossentropy" else np.float32)
         
-        # Print info about sequences
-        logger.info(f"Created {len(sequences_x)} sequences")
+        # Print sequence information
+        logger.info(f"Created sequences:")
         logger.info(f"X shape: {sequences_x.shape}, Y shape: {sequences_y.shape}")
-        logger.info(f"Y unique values: {np.unique(sequences_y)}")
+        logger.info(f"Y unique values: {np.unique(sequences_y, return_counts=True)}")
         
         return sequences_x, sequences_y
     
@@ -572,17 +585,21 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         dataset = dataset.with_options(options)
         
         if is_training:
+            # Add balanced sampling for training
+            class_weights = None
+            if loss_fn == "sparse_categorical_crossentropy":
+                # Calculate class weights
+                unique_classes, class_counts = np.unique(y_sequences, return_counts=True)
+                total = len(y_sequences)
+                class_weights = dict(zip(unique_classes, total / (len(unique_classes) * class_counts)))
+                
+                # Add sampling weights to dataset
+                sample_weights = np.array([class_weights[y] for y in y_sequences])
+                dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences, sample_weights))
+                
+            # Cache and shuffle
             dataset = dataset.cache()
             dataset = dataset.shuffle(min(5000, n_samples), reshuffle_each_iteration=True)
-            
-            # Add simple data augmentation for time series
-            def augment(x, y):
-                # Add small random noise
-                noise = tf.random.normal(shape=tf.shape(x), mean=0.0, stddev=0.001)
-                x = x + noise
-                return x, y
-            
-            dataset = dataset.map(augment, num_parallel_calls=tf.data.AUTOTUNE)
         
         # Batch and prefetch
         dataset = dataset.batch(batch_size, drop_remainder=True)
@@ -592,7 +609,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         
     except Exception as e:
         logger.error(f"Error creating dataset: {str(e)}")
-        logger.error("Input data info:")
+        logger.error(f"Input data info:")
         logger.error(f"x_data shape: {x_data.shape}")
         logger.error(f"y_data shape: {y_data.shape}")
         logger.error(f"y_data unique values: {[y_data[col].unique() for col in y_data.columns]}")
@@ -608,53 +625,58 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, o
         tf.config.run_functions_eagerly(False)
         
         # Input layer
-        inputs = Input(shape=input_shape, dtype='float32')
+        inputs = Input(shape=input_shape, dtype='float32', name='input_layer')
         
-        # Simple RNN config without advanced features
+        # RNN blocks with fixed naming
         rnn_config = {
-            'activation': 'tanh',  # Back to tanh for simplicity
+            'activation': 'tanh',
             'kernel_initializer': 'glorot_uniform',
             'kernel_regularizer': l2(0.0001),
             'dtype': 'float32',
             'recurrent_initializer': 'orthogonal'
         }
         
-        # First RNN block
         x = tf.keras.layers.SimpleRNN(
             n_hidden * 2,
             return_sequences=True,
+            name='rnn_1',
             **rnn_config
         )(inputs)
-        x = tf.keras.layers.Dropout(dr)(x)
+        x = tf.keras.layers.Dropout(dr, name='dropout_1')(x)
         
-        # Second RNN block
         x = tf.keras.layers.SimpleRNN(
             n_hidden,
             return_sequences=True,
+            name='rnn_2',
             **rnn_config
         )(x)
-        x = tf.keras.layers.Dropout(dr)(x)
+        x = tf.keras.layers.Dropout(dr, name='dropout_2')(x)
         
-        # Third RNN block
         x = tf.keras.layers.SimpleRNN(
             max(32, n_hidden // 2),
             return_sequences=False,
+            name='rnn_3',
             **rnn_config
         )(x)
-        x = tf.keras.layers.Dropout(dr)(x)
+        x = tf.keras.layers.Dropout(dr, name='dropout_3')(x)
         
         # Dense layer
         x = tf.keras.layers.Dense(
             n_hidden,
             activation='relu',
-            kernel_regularizer=l2(0.0001)
+            kernel_regularizer=l2(0.0001),
+            name='dense_1'
         )(x)
-        x = tf.keras.layers.Dropout(dr)(x)
+        x = tf.keras.layers.Dropout(dr, name='dropout_4')(x)
+        
+        # Define metrics based on task type
+        metrics = ['accuracy']
         
         if loss_fn == "sparse_categorical_crossentropy":
             outputs = tf.keras.layers.Dense(
                 J,
-                activation='softmax'
+                activation='softmax',
+                name='output_layer'
             )(x)
             
             def custom_loss(y_true, y_pred):
@@ -673,24 +695,37 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, o
                 return tf.reduce_mean(base_loss * weights)
             
             loss = custom_loss
+            metrics.append(tf.keras.metrics.SparseCategoricalAccuracy(name='sparse_categorical_accuracy'))
+            
         else:
             outputs = tf.keras.layers.Dense(
                 1,
-                activation='sigmoid'
+                activation='sigmoid',
+                name='output_layer'
             )(x)
             loss = 'binary_crossentropy'
+            
+            # Add binary classification metrics
+            metrics.extend([
+                tf.keras.metrics.AUC(name='auc_roc', curve='ROC'),
+                tf.keras.metrics.AUC(name='auc_pr', curve='PR'),
+                tf.keras.metrics.Precision(name='precision'),
+                tf.keras.metrics.Recall(name='recall'),
+                tf.keras.metrics.TruePositives(name='tp'),
+                tf.keras.metrics.FalsePositives(name='fp'),
+                tf.keras.metrics.TrueNegatives(name='tn'),
+                tf.keras.metrics.FalseNegatives(name='fn')
+            ])
         
-        model = Model(inputs, outputs)
+        model = Model(inputs, outputs, name='lstm_model')
         
-        # Basic optimizer configuration
+        # Optimizer with fixed name
         optimizer = tf.keras.optimizers.Adam(
-            learning_rate=lr
+            learning_rate=lr,
+            name='adam_optimizer'
         )
         
-        metrics = ['accuracy']
-        if loss_fn == "sparse_categorical_crossentropy":
-            metrics.append(tf.keras.metrics.SparseCategoricalAccuracy(name='sparse_categorical_accuracy'))
-
+        # Compile model
         model.compile(
             optimizer=optimizer,
             loss=loss,
@@ -698,5 +733,8 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, o
             run_eagerly=False,
             jit_compile=False
         )
+        
+        # Print model summary
+        model.summary()
         
         return model
