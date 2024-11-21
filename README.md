@@ -27,26 +27,13 @@ Please cite the following papers if you use this repo:
 }
 ```
 
-```
-@article{doi:10.1192/bjo.2024.727,
-  title={Revisiting diabetes risk of olanzapine versus aripiprazole in serious mental illness care},
-  author={Agniel, Denis and Normand, Sharon-Lise T and Newcomer, John W and Zelevinsky, Katya and Poulos, Jason and Tsuei, Jeannette and Horvitz-Lennon, Marcela},
-  journal={BJPsych Open},
-  volume={10},
-  number={5},
-  pages={e144},
-  year={2024},
-  publisher={Cambridge University Press}
-}
-```
-
 Prerequsites
 ------
 
 * **R** (tested on 4.0.1 using a 6.2.0 GCC compile)
 + Required **R** packages located in ***package_list.R*** 
 
-* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using a GCC 9.2.0 compiler and CUDA 12.4 for GPU computation
+* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using a GCC 9.2.0 compiler and CUDA 11.7 for GPU computation
 + instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
 ```
 # create virtual environment within directory
@@ -127,6 +114,34 @@ Contents
 
 * ***long_sim_plots.R*** combine output from ***simulation.R*** and plot.
 
+Required File Modifications
+------
+
+Below is a list of files and specific line numbers that require user modifications to match their environment or particular settings. Please ensure to make these changes before running the code.
+
+### 1. simulation.R
+- **Line 32**: Update the Python path used by `use_python()`. Modify it to point to the Python interpreter you wish to use. For example:
+  ```r
+  use_python("/n/app/python/3.10.11.conda/bin/python")
+  ```
+
+### 2. utils.py
+- **Line 353**: Configure the GPU settings by modifying `configure_gpu()` or updating relevant CUDA paths if different CUDA versions are used. The default setting is:
+  ```python
+  cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
+  ```
+
+- **Lines 356-365**: Set TensorFlow-specific environment variables related to CUDA. Ensure these align with your installation.
+
+### 3. train_lstm.py
+- **Line 4**: Update the CUDA path used for training RNN models. Modify this path to match your environment. The line looks like:
+  ```python
+  cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
+  ```
+- **Lines 13-14**: Set TensorFlow-specific environment variables related to CUDA. Ensure these align with your installation.
+
+  Modify or add further configurations to suppress unnecessary warnings if required.
+
 Instructions
 ------
 
@@ -145,10 +160,30 @@ Instructions
 	`Rscript long_sim_plots.R 'outputs/20240215'`
 
 
-Simulation example
+Intermediate results
 ------
 
-Example output images are saved in `outputs/`. The following are from a single simulated longitudinal dataset for n=10k people. We estimate the counterfactual diabetes risk for those who continued to follow each of 3 regimes (static, dynamic, stochastic) in each of 36 time periods, based on the observed outcomes and covariates. 
+The following intermediate results are from a single simulated longitudinal dataset (r=1) for n=12500 patients. We estimate the counterfactual diabetes risk for those who continued to follow each of 3 regimes (static, dynamic, stochastic) in each of 36 time periods, based on the observed outcomes and covariates. They are saved in `ex_outputs/`.
+
+* Simulated dataset in long format `tmle_dat_long_R_1_n_12500_J_6.rds`
+
+* Initial model for A estimator [initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/kw5epwh30z4vh5twilxw5/initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=lxyku41sg1kugtn6n24us3s18&dl=0)
+
+* Longitudinal simulation results [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
+
+* RNN-based model predictions (multiple binary and categorical treatment)
+	+ `lstm_bin_preds.npy`
+	+ `lstm_bin_preds_info.npz`
+	+ `lstm_cat_preds.npy`
+	+ `lstm_cat_preds_info.npz`
+
+* RNN-based model weights (multiple binary and categorical treatment)
+	+ `trained_bin_model.h5`
+	+ `trained_cat_model.h5`
+
+* Descriptive plots 
+
+![demo](./ex_outputs/DAG_plot.png)
 
 ![demo](./ex_outputs/treatment_adherence_10000.png)
 
@@ -156,4 +191,4 @@ Example output images are saved in `outputs/`. The following are from a single s
 
 ![demo](./ex_outputs/survival_plot_truth_10000.png)
 
-![demo](./ex_outputs/survival_plot_tmle_estimates_10000.png)
+![demo](./ex_outputs/survival_plot_tmle_estimates_12500_tmle)

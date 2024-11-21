@@ -5,7 +5,7 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras.mixed_precision import LossScaleOptimizer  # Updated import
 
-from utils import load_data_from_csv, get_output_signature, create_dataset, configure_gpu, get_strategy
+from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy
 
 import sys
 import traceback

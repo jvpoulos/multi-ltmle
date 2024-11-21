@@ -1,5 +1,18 @@
 import os
-import math
+
+# Set correct CUDA path
+cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
+os.environ.update({
+    'CUDA_HOME': cuda_path,
+    'LD_LIBRARY_PATH': f"{cuda_path}/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
+    'PATH': f"{cuda_path}/bin:{os.environ.get('PATH', '')}",
+    'XLA_FLAGS': f'--xla_gpu_cuda_data_dir={cuda_path}',
+    'TF_XLA_FLAGS': '--tf_xla_enable_xla_devices=false --tf_xla_auto_jit=0'
+})
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
 import numpy as np
 import pandas as pd
 import time
@@ -13,7 +26,7 @@ from tensorflow.keras.initializers import GlorotNormal, GlorotUniform
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 
-from utils import create_model, load_data_from_csv, get_output_signature, create_dataset, get_optimized_callbacks, configure_gpu, get_strategy, setup_wandb, CustomCallback, log_metrics, FilterPatterns
+from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_gpu, get_strategy, setup_wandb, CustomCallback, log_metrics, FilterPatterns, CustomNanCallback
 
 import sys
 import traceback
@@ -239,9 +252,13 @@ def main():
 
     # Get class weights for binary classification
     if loss_fn == "binary_crossentropy":
-        class_counts = np.bincount(y_data.values.astype(int).flatten())
-        total = np.sum(class_counts)
-        class_weights = {i: total / (len(class_counts) * count) for i, count in enumerate(class_counts)}
+        n_pos = np.sum(y_data.values == 1)
+        n_total = len(y_data)
+        # Calculate balanced weights
+        class_weights = {
+            0: 1.0,
+            1: n_total / (2.0 * n_pos)  # Weight positive class more
+        }
     else:
         class_weights = None
 
@@ -286,6 +303,7 @@ def main():
             J=J,
             epochs=epochs,
             steps_per_epoch=steps_per_epoch,
+            y_data=y_data,
             strategy=strategy
         )
 
@@ -293,6 +311,7 @@ def main():
     callbacks = get_optimized_callbacks(patience, output_dir, train_dataset)
     callbacks.append(wandb_callback)
     callbacks.append(CustomCallback(train_dataset))
+    callbacks.append(CustomNanCallback())
 
     try:
         # Train model with class weights for binary classification
@@ -362,6 +381,11 @@ def main():
         info_path = os.path.join(output_dir, 
                                'lstm_cat_preds_info.npz' if loss_fn == "sparse_categorical_crossentropy" 
                                else 'lstm_bin_preds_info.npz')
+
+        logger.info(f"Predictions shape: {predictions.shape}")
+        logger.info(f"Predictions type: {predictions.dtype}")
+        logger.info(f"Sample predictions: {predictions[:5]}")
+        
         np.savez(
             info_path,
             shape=predictions.shape,

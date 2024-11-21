@@ -29,7 +29,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   if(estimator=='tmle-lstm'){
     library(reticulate)
-    #use_python("~/multi-ltmle/env/bin/python")
     use_python("/n/app/python/3.10.11.conda/bin/python")
     print(py_config()) # Check Python configuration
     
@@ -62,6 +61,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   source('./src/tmle_IC.R')
   source('./src/misc_fns.R')
+  
+  print(sessionInfo())
   
   if(J!=6){
     stop("J must be 6")
@@ -299,6 +300,14 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   tmle_dat <- DF.to.long(Odat)
   
+  if (r == 1) {
+    saveRDS(tmle_dat, file = paste0(output_dir, 
+                                    "tmle_dat_long",
+                                    "_R_", R,
+                                    "_n_", n,
+                                    "_J_", J, ".rds"))
+  }
+  
   if(estimator=="tmle"){
     tmle_dat <- 
       tmle_dat %>%
@@ -438,16 +447,35 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     # Identify outcome and covariate columns
     outcome_cols <- grep("^A\\.", colnames(tmle_dat), value = TRUE)
     covariate_cols <- setdiff(colnames(tmle_dat), c("ID", "t", outcome_cols, "C", "Y"))
+
+    print("Debug info before lstm call:")
+    print("tmle_dat columns:")
+    print(colnames(tmle_dat))
+    print("outcome_cols:")
+    print(outcome_cols)
+    print("covariate_cols:")
+    print(covariate_cols)
+    print("Sample of treatment data:")
+    A_cols <- grep("^A[0-9]+$|^A\\.[0-9]+$|^A$", colnames(tmle_dat), value=TRUE)
+    if(length(A_cols) > 0) {
+      print(head(tmle_dat[A_cols]))
+    } else {
+      print("No treatment columns found!")
+    }
     
-    lstm_A_preds <- lstm(data=tmle_dat, 
-                         outcome=outcome_cols, 
-                         covariates=covariate_cols, 
-                         t_end=t.end, 
-                         window_size=window_size, 
-                         out_activation="softmax", 
-                         loss_fn = "sparse_categorical_crossentropy", 
-                         output_dir=output_dir, 
-                         J=J)
+    # For multinomial case
+    lstm_A_preds <- lstm(
+      data = tmle_dat, 
+      # Get actual treatment assignment, not time index
+      outcome = "A", 
+      covariates = covariate_cols,
+      t_end = t.end, 
+      window_size = window_size,
+      out_activation = "softmax",
+      loss_fn = "sparse_categorical_crossentropy",
+      output_dir = output_dir,
+      J = J  # Number of treatment classes (6)
+    )
     
     lstm_A_preds <- c(replicate((window.size), lstm_A_preds[[window.size+1]], simplify = FALSE), lstm_A_preds[(window.size+1):length(lstm_A_preds)]) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1    
     initial_model_for_A <- list("preds"= lstm_A_preds,
@@ -541,146 +569,73 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     num_classes <- J
     
     # Initialize list for binary predictions
-    lstm_A_preds_bin <- vector("list", J)
+    lstm_A_preds_bin <- list()
     
-    for(k in 1:J) {
-      print(paste0("Class ", k, " in ", J))
-      
-      # Get current data
-      binary_data <- tmle_dat  # Start with full dataset
-      
-      # Print data structure for debugging
-      print("Data structure:")
-      print(paste("Dimensions:", paste(dim(binary_data), collapse=" x ")))
-      print("Column names:")
-      print(colnames(binary_data))
-      
-      # Find all possible feature columns
-      L_cols <- grep("^L[0-9]+", colnames(binary_data), value=TRUE)
-      V_cols <- grep("^V[0-9]+", colnames(binary_data), value=TRUE)
-      
-      # Initialize demographic columns if they don't exist
-      demographic_cols <- c("white", "black", "latino", "other", "mdd", "bipolar", "schiz")
-      for(col in demographic_cols) {
-        if(!(col %in% colnames(binary_data))) {
-          binary_data[[col]] <- 0
-        }
-      }
-      
-      # Get treatment columns
-      A_cols <- grep("^A[0-9]+", colnames(binary_data), value=TRUE)
-      if(length(A_cols) == 0) {
-        A_cols <- grep("^A\\.[0-9]+", colnames(binary_data), value=TRUE)
-      }
-      
-      # Print column info
-      print("Column info:")
-      print(paste("L columns:", paste(L_cols, collapse=", ")))
-      print(paste("V columns:", paste(V_cols, collapse=", ")))
-      print(paste("A columns:", paste(A_cols, collapse=", ")))
-      
-      # Create feature set
-      feature_cols <- c(L_cols, V_cols, demographic_cols)
-      feature_cols <- feature_cols[feature_cols %in% colnames(binary_data)]
-      
-      # Print feature info
-      print("Features to be used:")
-      print(feature_cols)
-      
-      # Create binary target
-      binary_data$target <- sapply(1:nrow(binary_data), function(i) {
-        row_values <- as.numeric(binary_data[i, A_cols])
-        if(all(is.na(row_values))) return(0)
-        return(as.numeric(any(row_values == (k-1))))
-      })
-      
-      # Print target distribution
-      print("Target distribution:")
-      print(table(binary_data$target))
-      
-      # Train LSTM
-      lstm_preds <- tryCatch({
-        lstm(
-          data = binary_data,
-          outcome = "target",
-          covariates = feature_cols,
-          t_end = t.end,
-          window_size = window_size,
-          out_activation = "sigmoid",
-          loss_fn = "binary_crossentropy",
-          output_dir = output_dir
-        )
-      }, error = function(e) {
-        print(paste("Error in LSTM training for class", k, ":", e$message))
-        NULL
-      })
-      
-      # Store predictions
-      lstm_A_preds_bin[[k]] <- lstm_preds
+    # Get all possible feature columns
+    L_cols <- grep("^L[0-9]+|^L\\.[0-9]+", colnames(tmle_dat), value=TRUE)
+    V_cols <- grep("^V[0-9]+|^V\\.[0-9]+", colnames(tmle_dat), value=TRUE)
+    demographic_cols <- c("white", "black", "latino", "other", "mdd", "bipolar", "schiz")
+    A_cols <- grep("^A[0-9]+|^A\\.[0-9]+", colnames(tmle_dat), value=TRUE)
+    
+    print("Column info:")
+    print(paste("L columns:", paste(L_cols, collapse=", ")))
+    print(paste("V columns:", paste(V_cols, collapse=", ")))
+    print(paste("A columns:", paste(A_cols, collapse=", ")))
+    
+    # Create feature set
+    feature_cols <- c(L_cols, V_cols, demographic_cols)
+    feature_cols <- feature_cols[feature_cols %in% colnames(tmle_dat)]
+    
+    print("Features to be used:")
+    print(feature_cols)
+    
+    # Single LSTM call with binary crossentropy
+    lstm_preds <- tryCatch({
+      lstm(
+        data = tmle_dat,
+        outcome = A_cols,  # Pass all treatment columns
+        covariates = feature_cols,
+        t_end = t.end,
+        window_size = window_size,
+        out_activation = "sigmoid",
+        loss_fn = "binary_crossentropy",
+        output_dir = output_dir,
+        J = J
+      )
+    }, error = function(e) {
+      print(paste("Error in LSTM training:", e$message))
+      NULL
+    })
+    
+    if(is.null(lstm_preds)) {
+      stop("LSTM training failed")
     }
     
     # Process predictions
-    valid_preds <- Filter(Negate(is.null), lstm_A_preds_bin)
-    if(length(valid_preds) == 0) {
-      stop("No valid binary predictions available")
-    }
-    
-    # Print prediction info for debugging
-    print("Prediction information:")
-    for(i in seq_along(valid_preds)) {
-      print(paste("Class", i, "prediction shape:", paste(dim(valid_preds[[i]]), collapse=" x ")))
-    }
-    
-    # Ensure all predictions are numeric matrices
-    g_preds_bin <- lapply(valid_preds, function(pred) {
-      if(is.null(pred)) return(NULL)
-      if(!is.matrix(pred)) {
-        if(is.numeric(pred)) {
-          return(matrix(pred, ncol=1))
+    if(is.list(lstm_preds) && length(lstm_preds) > 0) {
+      # Convert predictions to proper format
+      g_preds_bin <- lapply(lstm_preds, function(x) {
+        if(is.null(dim(x))) {
+          matrix(x, ncol=1)
         } else {
-          return(matrix(as.numeric(pred), ncol=1))
+          x
         }
-      }
-      return(pred)
-    })
-    
-    # Remove any NULL entries
-    g_preds_bin <- Filter(Negate(is.null), g_preds_bin)
-    
-    # Combine predictions into a matrix
-    if(length(g_preds_bin) > 0) {
-      # Ensure all matrices have the same number of rows
-      n_rows <- unique(sapply(g_preds_bin, nrow))
-      if(length(n_rows) > 1) {
-        stop("Inconsistent number of rows in predictions")
-      }
+      })
       
-      # Convert to matrix
-      g_preds_bin <- do.call(cbind, g_preds_bin)
-      
-      # Print shape info
-      print(paste("Combined prediction matrix shape:", paste(dim(g_preds_bin), collapse=" x ")))
-      
-      # Ensure numeric and handle NAs
-      g_preds_bin <- matrix(as.numeric(g_preds_bin), nrow=nrow(g_preds_bin))
-      g_preds_bin[is.na(g_preds_bin)] <- 0
-      
-      # Normalize rows
-      row_sums <- rowSums(g_preds_bin, na.rm=TRUE)
-      row_sums[row_sums == 0] <- 1  # Avoid division by zero
-      g_preds_bin <- sweep(g_preds_bin, 1, row_sums, "/")
-      
-      # Add column names
-      colnames(g_preds_bin) <- paste0("A", 1:ncol(g_preds_bin))
-      
-      # Calculate cumulative predictions
+      # Create cumulative predictions
       g_preds_bin_cuml <- vector("list", t.end + 1)
-      g_preds_bin_cuml[[1]] <- g_preds_bin
+      g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
       
       for(i in 2:(t.end + 1)) {
-        if(i <= ncol(g_preds_bin)) {
+        if(i <= length(g_preds_bin)) {
           prev_pred <- g_preds_bin_cuml[[i-1]]
-          curr_pred <- g_preds_bin[,i,drop=FALSE]
+          curr_pred <- g_preds_bin[[i]]
+          
+          # Ensure matrix format
+          if(is.null(dim(prev_pred))) prev_pred <- matrix(prev_pred, ncol=1)
+          if(is.null(dim(curr_pred))) curr_pred <- matrix(curr_pred, ncol=1)
+          
+          # Multiply probabilities
           g_preds_bin_cuml[[i]] <- prev_pred * curr_pred
         } else {
           g_preds_bin_cuml[[i]] <- g_preds_bin_cuml[[i-1]]
@@ -697,8 +652,17 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         }
       })
       
+      # Print diagnostics
+      print("Final prediction structure:")
+      print(paste("Number of time points:", length(g_preds_bin_cuml_bounded)))
+      print("Shapes at each time point:")
+      for(i in seq_along(g_preds_bin_cuml_bounded)) {
+        print(paste("Time", i-1, "shape:", 
+                    paste(dim(g_preds_bin_cuml_bounded[[i]]), collapse=" x ")))
+      }
+      
     } else {
-      stop("No valid predictions after processing")
+      stop("Invalid prediction format returned from LSTM")
     }
     
     # Print some debugging information
@@ -951,7 +915,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
   
   if(r==1){
-    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_",n, estimator,".png")))
+    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_",n, "_" , estimator,".png")))
     plotSurvEst(surv = list("Static"= tmle_estimates[1,], "Dynamic"= tmle_estimates[2,], "Stochastic"= tmle_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "TMLE (ours, multinomial) estimated counterfactuals",
@@ -961,7 +925,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
     
-    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_",n, estimator,".png")))
+    png(paste0(output_dir,paste0("survival_plot_tmle_estimates_bin_",n, "_", estimator,".png")))
     plotSurvEst(surv = list("Static"= tmle_bin_estimates[1,], "Dynamic"= tmle_bin_estimates[2,], "Stochastic"= tmle_bin_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "TMLE (ours, binomial) estimated counterfactuals",
@@ -976,7 +940,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) 
   
   if(r==1){
-    png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n, estimator,".png")))
+    png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n,  "_", estimator,".png")))
     plotSurvEst(surv = list("Static"= iptw_estimates[1,], "Dynamic"= iptw_estimates[2,], "Stochastic"= iptw_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "IPTW (ours, multinomial) estimated counterfactuals",
@@ -986,7 +950,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
     
-    png(paste0(output_dir,paste0("survival_plot_iptw_bin_estimates_",n, estimator,".png")))
+    png(paste0(output_dir,paste0("survival_plot_iptw_bin_estimates_",n,  "_", estimator,".png")))
     plotSurvEst(surv = list("Static"= iptw_bin_estimates[1,], "Dynamic"= iptw_bin_estimates[2,], "Stochastic"= iptw_bin_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "IPTW (ours, binomial) estimated counterfactuals",
@@ -1000,7 +964,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   gcomp_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_gcomp[[x]]))) # static, dynamic, stochastic
   
   if(r==1){
-    png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n, estimator,".png")))
+    png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n,  "_", estimator,".png")))
     plotSurvEst(surv = list("Static"= gcomp_estimates[1,], "Dynamic"= gcomp_estimates[2,], "Stochastic"= gcomp_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "G-comp. (ours) estimated counterfactuals",
