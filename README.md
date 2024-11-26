@@ -31,7 +31,8 @@ Prerequsites
 ------
 
 * **R** (tested on 4.0.1 using a 6.2.0 GCC compile)
-+ Required **R** packages located in ***package_list.R*** 
++ Required **R** packages located in ***package_list.R***
++ The result of sessionInfo() is in ***session_info.txt***
 
 * For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using a GCC 9.2.0 compiler and CUDA 11.7 for GPU computation
 + instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))

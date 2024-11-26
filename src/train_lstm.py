@@ -110,7 +110,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
-    global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size
+    global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size, is_censoring
 
     # Record start time
     start_time = time.time()
@@ -149,23 +149,24 @@ def main():
     logger.info(f"x_data shape: {x_data.shape}")
     logger.info(f"y_data shape: {y_data.shape}")
 
-    # Ensure y_data contains the 'A' columns
-    y_columns = [col for col in y_data.columns if col.startswith('A')]
-    if not y_columns:
-        logger.warning("No 'A' columns found in y_data. Creating dummy 'A' columns.")
-        for i in range(J):
-            y_data[f'A{i}'] = np.random.choice([0, 1], size=len(y_data))
-        y_columns = [f'A{i}' for i in range(J)]
-
-    # Ensure 'ID' column exists and is properly formatted
-    if 'ID' not in x_data.columns:
-        x_data['ID'] = range(len(x_data))
-    if 'ID' not in y_data.columns:
-        y_data['ID'] = range(len(y_data))
-
-    # Keep only ID and A columns in y_data
-    y_data = y_data[['ID'] + y_columns]
-    y_data[y_columns] = y_data[y_columns].astype(int)
+    # Modify the y_data preparation section:
+    if loss_fn == "binary_crossentropy":
+        # For binary case, ensure we have one-hot encoded targets
+        if 'A' in y_data.columns:
+            # Get unique treatments and verify range
+            unique_treatments = np.unique(y_data['A'].values)
+            logger.info(f"Unique treatments: {unique_treatments}")
+            
+            # Create one-hot encoded columns
+            for i in range(J):
+                y_data[f'A{i}'] = (y_data['A'].values == i).astype(int)
+            
+            # Keep only ID and one-hot columns
+            y_data = y_data[['ID'] + [f'A{i}' for i in range(J)]]
+    else:
+        # For categorical case, keep existing A column
+        if 'A' not in y_data.columns and 'target' not in y_data.columns:
+            raise ValueError("No target or A column found in y_data")
 
     logger.info("Data shapes after processing:")
     logger.info(f"x shape: {x_data.shape}")
@@ -211,16 +212,17 @@ def main():
             batch_size,
             loss_fn,
             J,
-            is_training=True
+            is_training=True,
+            is_censoring=is_censoring
         )
-        
         val_dataset, val_samples = create_dataset(
             val_x, val_y,
             n_pre,
             batch_size,
             loss_fn,
             J,
-            is_training=False
+            is_training=False,
+            is_censoring=is_censoring
         )
 
     # Calculate steps
@@ -244,23 +246,12 @@ def main():
 
     # Configure model
     input_shape = (n_pre, num_features)
-    output_dim = J if loss_fn == "sparse_categorical_crossentropy" else 1
+    output_dim = J  # Use J for both cases now
+    logger.info(f"Using {'censoring' if is_censoring else 'treatment'} prediction with output_dim={output_dim}")
 
     logger.info(f"\nModel configuration:")
     logger.info(f"Input shape: {input_shape}")
     logger.info(f"Output dimension: {output_dim}")
-
-    # Get class weights for binary classification
-    if loss_fn == "binary_crossentropy":
-        n_pos = np.sum(y_data.values == 1)
-        n_total = len(y_data)
-        # Calculate balanced weights
-        class_weights = {
-            0: 1.0,
-            1: n_total / (2.0 * n_pos)  # Weight positive class more
-        }
-    else:
-        class_weights = None
 
     # Update WandB config
     wandb_config = {
@@ -280,7 +271,6 @@ def main():
         'steps_per_epoch': steps_per_epoch,
         'validation_steps': validation_steps,
         'window_size': window_size,
-        'class_weights': class_weights
     }
 
     # Initialize WandB
@@ -321,7 +311,6 @@ def main():
             epochs=epochs,
             steps_per_epoch=steps_per_epoch,
             validation_steps=validation_steps,
-            class_weight=class_weights if loss_fn == "binary_crossentropy" else None,
             callbacks=callbacks,
             verbose=1,
             max_queue_size=10,
@@ -358,7 +347,8 @@ def main():
             batch_size,
             loss_fn,
             J,
-            is_training=False
+            is_training=False,
+            is_censoring=output_dim==1
         )
         
         total_steps = max(1, (final_samples - n_pre + 1) // batch_size)

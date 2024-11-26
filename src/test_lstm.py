@@ -42,7 +42,7 @@ policy = tf.keras.mixed_precision.Policy('mixed_float16')
 tf.keras.mixed_precision.set_policy(policy)
 
 def test_model():
-    global window_size, output_dir, nb_batches, loss_fn, J
+    global window_size, output_dir, nb_batches, loss_fn, J, is_censoring
 
     logger.info("Starting model testing...")
     
@@ -89,6 +89,14 @@ def test_model():
         if 'ID' in test_data_x.columns:
             test_data_x = test_data_x.drop(columns=['ID'])
         
+        # Modify data preparation for binary case
+        if loss_fn == "binary_crossentropy":
+            if 'A' in y_data.columns:
+                # Create one-hot encoded columns
+                for i in range(J):
+                    y_data[f'A{i}'] = (y_data['A'].values == i).astype(int)
+                y_data = y_data[['ID'] + [f'A{i}' for i in range(J)]]
+
         # Create test dataset
         strategy = get_strategy()
         with strategy.scope():
@@ -99,7 +107,8 @@ def test_model():
                 batch_size,
                 loss_fn,
                 J,
-                is_training=False
+                is_training=False,
+                is_censoring=is_censoring
             )
             
         # Calculate test steps
@@ -154,6 +163,31 @@ def test_model():
             raise ValueError(f"Invalid number of samples: {n_valid_samples}")
             
         preds_test = preds_test[:n_valid_samples]
+        
+        # Add prediction analysis based on loss function
+        if loss_fn == "binary_crossentropy":
+            logger.info("\nBinary prediction analysis:")
+            logger.info(f"Prediction shape: {preds_test.shape}")
+            logger.info(f"Mean predictions per class:")
+            for i in range(J):
+                mean_pred = np.mean(preds_test[:, i])
+                logger.info(f"Class {i}: {mean_pred:.4f}")
+            
+            # Calculate class predictions
+            class_preds = np.argmax(preds_test, axis=1)
+            logger.info("\nPredicted class distribution:")
+            for i in range(J):
+                count = np.sum(class_preds == i)
+                logger.info(f"Class {i}: {count} ({count/len(class_preds)*100:.2f}%)")
+        else:
+            logger.info("\nCategorical prediction analysis:")
+            logger.info(f"Prediction shape: {preds_test.shape}")
+            pred_classes = np.argmax(preds_test, axis=1)
+            class_dist = np.bincount(pred_classes, minlength=J)
+            logger.info("Class distribution:")
+            for i in range(J):
+                count = class_dist[i]
+                logger.info(f"Class {i}: {count} ({count/len(pred_classes)*100:.2f}%)")
         
         logger.info(f"\nPredictions summary:")
         logger.info(f"Shape: {preds_test.shape}")

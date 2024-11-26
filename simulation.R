@@ -62,7 +62,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   source('./src/tmle_IC.R')
   source('./src/misc_fns.R')
   
-  print(sessionInfo())
+  writeLines(capture.output(sessionInfo()), 'session_info.txt')
   
   if(J!=6){
     stop("J must be 6")
@@ -718,10 +718,22 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative bounded censoring predictions, 1=Censored                            
   }else if(estimator=="tmle-lstm"){ 
     
-    lstm_C_preds <- lstm(data=tmle_dat[c(grep("C",colnames(tmle_dat),value = TRUE),tmle_covars_C)], outcome=grep("C",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_C, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir) # list of 27, n preds
+    lstm_C_preds <- lstm(
+      data=tmle_dat[c(grep("C",colnames(tmle_dat),value = TRUE), tmle_covars_C)], 
+      outcome=grep("C",colnames(tmle_dat),value = TRUE), 
+      covariates=tmle_covars_C, 
+      t_end=t.end, 
+      window_size=window.size, 
+      out_activation="sigmoid", 
+      loss_fn = "binary_crossentropy", 
+      output_dir = output_dir,
+      J = 1,  # Censoring is binary
+      is_censoring = TRUE  # Add this flag
+    )
     
-    # Transform lstm_C_preds into a data matrix of n x 37
-    transformed_C_preds <- c(replicate(window.size, lstm_C_preds[[1]], simplify = FALSE), lstm_C_preds)
+    # Transform lstm_C_preds into a data matrix of n x t.end
+    transformed_C_preds <- c(replicate(window.size, lstm_C_preds[[1]], simplify = FALSE), 
+                             lstm_C_preds)
     
     # Initialize initial_model_for_C with the transformed predictions
     initial_model_for_C <- list("preds" = transformed_C_preds, "data" = tmle_dat)

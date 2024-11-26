@@ -304,37 +304,34 @@ def load_data_from_csv(input_file, output_file):
             else:
                 x_data['ID'] = range(len(x_data))
         
-        # Find all A (treatment) columns in y_data
-        y_cols = [col for col in y_data.columns if col.startswith('A')]
-        if not y_cols:
-            if 'target' in y_data.columns:
-                # Convert target to one-hot encoding for treatment predictions
-                treatment_values = y_data['target'].values
-                y_data = pd.get_dummies(treatment_values, prefix='A')
-                logger.info("Converted target to one-hot treatment encoding")
-        
-        # Ensure column names use correct format
-        y_data.columns = [f'A{i}' if col.startswith('A') else col 
-                         for i, col in enumerate(y_data.columns)]
-        
-        logger.info("Treatment columns after processing: %s", 
-                   [col for col in y_data.columns if col.startswith('A')])
-        
-        # Validate treatment values
-        for col in y_data.columns:
-            if col.startswith('A'):
-                unique_vals = y_data[col].unique()
-                logger.info(f"Values in {col}: {unique_vals}")
-                if len(unique_vals) < 2:
-                    logger.warning(f"Column {col} has no variation")
+        # Handle target column
+        if 'target' in y_data.columns:
+            # Keep the target column and ID
+            y_data = y_data[['ID', 'target']]
+            
+            # Verify target values are in expected range
+            target_min = y_data['target'].min()
+            target_max = y_data['target'].max()
+            logger.info(f"Target range: min={target_min}, max={target_max}")
+            
+            # Log target distribution
+            target_dist = y_data['target'].value_counts()
+            logger.info(f"Target distribution:\n{target_dist}")
+            
+        else:
+            # Fallback to existing A columns if target not present
+            treatment_cols = [col for col in y_data.columns if col.startswith('A')]
+            if not treatment_cols:
+                raise ValueError("Neither target nor treatment columns found")
+                
+            # Convert one-hot encoded treatments to target
+            y_data['target'] = np.argmax(y_data[treatment_cols].values, axis=1)
+            y_data = y_data[['ID', 'target']]
         
         # Fill NaN values and convert types
         x_data = x_data.fillna(-1).astype(np.float32)
-        y_data = y_data.fillna(0).astype(np.float32)
-        
-        # Validate we have valid treatment assignments
-        if not any(y_data.any()):
-            raise ValueError("No valid treatment assignments found in y_data")
+        y_data = y_data.fillna(-1).astype(np.float32)
+        y_data['target'] = y_data['target'].astype(np.int32)
         
         return x_data, y_data
         
@@ -348,88 +345,71 @@ def load_data_from_csv(input_file, output_file):
 
 def configure_gpu(policy=None):
     """Configure GPU to adapt to different types and numbers of GPUs."""
+    # Set correct CUDA path
+    cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
+    
+    # Basic GPU configuration
+    os.environ.update({
+        'CUDA_HOME': cuda_path,
+        'LD_LIBRARY_PATH': f"{cuda_path}/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
+        'PATH': f"{cuda_path}/bin:{os.environ.get('PATH', '')}",
+        'CUDA_DEVICE_ORDER': "PCI_BUS_ID",
+        'CUDA_VISIBLE_DEVICES': '0,1',
+        'TF_FORCE_GPU_ALLOW_GROWTH': 'true',  # Changed to true for dynamic memory allocation
+        'TF_CPP_MIN_LOG_LEVEL': '3',
+        'TF_CUDNN_DETERMINISTIC': '1',
+        'TF_ENABLE_ONEDNN_OPTS': '0'
+    })
+
+    # Check for libdevice
+    libdevice_path = f"{cuda_path}/nvvm/libdevice/libdevice.10.bc"
+    if os.path.exists(libdevice_path):
+        if not os.path.exists("./libdevice.10.bc"):
+            try:
+                os.symlink(libdevice_path, "./libdevice.10.bc")
+            except Exception as e:
+                logger.warning(f"Could not create libdevice symlink: {e}")
+    else:
+        logger.warning(f"libdevice not found at {libdevice_path}")
+
+    # Reset session and clear memory
+    tf.keras.backend.clear_session()
+    gc.collect()
+
     try:
-        # Set correct CUDA path
-        cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
-        
-        # Basic GPU configuration
-        os.environ.update({
-            'CUDA_HOME': cuda_path,
-            'LD_LIBRARY_PATH': f"{cuda_path}/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
-            'PATH': f"{cuda_path}/bin:{os.environ.get('PATH', '')}",
-            'CUDA_DEVICE_ORDER': "PCI_BUS_ID",
-            'CUDA_VISIBLE_DEVICES': '0,1',
-            'TF_FORCE_GPU_ALLOW_GROWTH': 'true',  # Changed to true for dynamic memory allocation
-            'TF_CPP_MIN_LOG_LEVEL': '3',
-            'TF_CUDNN_DETERMINISTIC': '1',
-            'TF_ENABLE_ONEDNN_OPTS': '0'
-        })
-
-        # Check for libdevice
-        libdevice_path = f"{cuda_path}/nvvm/libdevice/libdevice.10.bc"
-        if os.path.exists(libdevice_path):
-            if not os.path.exists("./libdevice.10.bc"):
-                try:
-                    os.symlink(libdevice_path, "./libdevice.10.bc")
-                except Exception as e:
-                    logger.warning(f"Could not create libdevice symlink: {e}")
-        else:
-            logger.warning(f"libdevice not found at {libdevice_path}")
-
-        # Reset session and clear memory
-        tf.keras.backend.clear_session()
-        gc.collect()
-
-        # Configure GPUs
+        # Set memory growth and configure GPUs
         gpus = tf.config.list_physical_devices('GPU')
         if gpus:
-            try:
-                for gpu in gpus:
-                    # Enable memory growth for dynamic allocation
+            for gpu in gpus:
+                try:
+                    # Enable memory growth
                     tf.config.experimental.set_memory_growth(gpu, True)
                     
-                    try:
-                        # Get GPU memory info
-                        gpu_details = tf.config.experimental.get_device_details(gpu)
-                        total_memory = gpu_details.get('memory_limit', 14 * 1024 * 1024 * 1024)  # Default 14GB
-                        # Set memory limit to 90% of available memory
-                        memory_limit = int(0.9 * total_memory / (1024 * 1024))  # Convert to MB
-                    except:
-                        # Fallback to default if cannot get memory info
-                        memory_limit = int(14 * 1024)  # 14GB per GPU
+                    # Configure memory limits (80% of available memory)
+                    gpu_details = tf.config.experimental.get_device_details(gpu)
+                    total_memory = gpu_details.get('memory_limit', 10 * 1024 * 1024 * 1024)
+                    memory_limit = int(0.8 * total_memory)
                     
-                    # Configure memory limits
                     tf.config.set_logical_device_configuration(
                         gpu,
                         [tf.config.LogicalDeviceConfiguration(memory_limit=memory_limit)]
                     )
+                except RuntimeError as e:
+                    logger.warning(f"Error configuring GPU {gpu}: {e}")
+                    continue
 
-                # Set visible devices
-                tf.config.set_visible_devices(gpus, 'GPU')
-                
-                # Set precision policy
-                tf.keras.mixed_precision.set_global_policy('float32')
-                
-                # Configure for better performance
-                tf.config.optimizer.set_jit(False)
-                tf.config.threading.set_intra_op_parallelism_threads(2)
-                tf.config.threading.set_inter_op_parallelism_threads(2)
-                
-                logger.info(f"GPU configuration successful. Found {len(gpus)} GPU(s)")
-                for gpu in gpus:
-                    logger.info(f"Using GPU: {gpu.name}")
-                
-                # Return appropriate strategy based on GPU count
-                if len(gpus) > 1:
-                    logger.info("Using MirroredStrategy for multi-GPU training")
-                    return tf.distribute.MirroredStrategy()
-                else:
-                    logger.info("Using OneDeviceStrategy for single GPU")
-                    return tf.distribute.OneDeviceStrategy(device="/gpu:0")
-                
-            except RuntimeError as e:
-                logger.warning(f"GPU configuration failed: {str(e)}")
-                return tf.distribute.OneDeviceStrategy(device="/cpu:0")
+            # Log GPU information
+            logger.info(f"Found {len(gpus)} GPU(s)")
+            for gpu in gpus:
+                logger.info(f"Using GPU: {gpu.name}")
+            
+            # Return appropriate strategy for multiple GPUs
+            if len(gpus) > 1:
+                logger.info("Using MirroredStrategy for multi-GPU training")
+                return tf.distribute.MirroredStrategy()
+            else:
+                logger.info("Using OneDeviceStrategy for single GPU")
+                return tf.distribute.OneDeviceStrategy(device="/gpu:0")
         else:
             logger.warning("No GPU found, using CPU")
             return tf.distribute.OneDeviceStrategy(device="/cpu:0")
@@ -439,415 +419,326 @@ def configure_gpu(policy=None):
         return tf.distribute.OneDeviceStrategy(device="/cpu:0")
 
 def get_strategy():
-    """Get appropriate distribution strategy based on available GPUs."""
-    if not hasattr(get_strategy, "strategy"):
-        try:
-            # Disable XLA
-            tf.config.optimizer.set_jit(False)
-            
-            # Force graph execution
-            tf.config.run_functions_eagerly(False)
-            
-            # Use default strategy with synchronous updates
-            get_strategy.strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
-            
-            # Configure distribution
-            options = tf.distribute.InputOptions(
-                experimental_fetch_to_device=False,
-                experimental_replication_mode=tf.distribute.InputReplicationMode.PER_REPLICA
-            )
-            get_strategy.strategy.extended.experimental_enable_get_next_as_optional = False
-            
-            logger.info("Using OneDeviceStrategy with synchronous updates")
-        except:
-            get_strategy.strategy = tf.distribute.get_strategy()
-            logger.info("Using default strategy")
-    
-    return get_strategy.strategy
+    """Get appropriate distribution strategy with improved GPU handling."""
+    try:
+        # Configure GPUs first
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            try:
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                
+                # Create MirroredStrategy for multiple GPUs
+                if len(gpus) > 1:
+                    strategy = tf.distribute.MirroredStrategy(
+                        devices=[f"/gpu:{i}" for i in range(len(gpus))]
+                    )
+                    logger.info(f"Using MirroredStrategy with {len(gpus)} GPUs")
+                    return strategy
+                else:
+                    strategy = tf.distribute.OneDeviceStrategy("/gpu:0")
+                    logger.info("Using OneDeviceStrategy with single GPU")
+                    return strategy
+            except RuntimeError as e:
+                logger.warning(f"Error configuring GPUs: {e}")
+        
+        # Fallback to CPU
+        logger.warning("No GPUs available, using CPU")
+        return tf.distribute.OneDeviceStrategy("/cpu:0")
+        
+    except Exception as e:
+        logger.warning(f"Strategy creation failed: {e}")
+        return tf.distribute.get_strategy()
 
-def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False):
+def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False):
     """Create dataset with proper sequence handling."""
     logger.info(f"Creating dataset with parameters:")
     logger.info(f"n_pre: {n_pre}, batch_size: {batch_size}, loss_fn: {loss_fn}, J: {J}")
     logger.info(f"Input shape: {x_data.shape}, Output shape: {y_data.shape}")
-    logger.info(f"Number of classes: {J}")
     
-    # Get ID column if present before removing
-    id_values = None
-    if 'ID' in x_data.columns:
-        id_values = x_data['ID'].values
-        x_data = x_data.drop('ID', axis=1)
-    
-    num_features = x_data.shape[1]
-    n_samples = max(0, len(x_data) - n_pre + 1)
-    
-    logger.info(f"Input shape: {x_data.shape}, Output shape: {y_data.shape}")
-    logger.info(f"Number of classes: {J}")
-    logger.info(f"Output unique values: {[y_data[col].unique() for col in y_data.columns]}")
-    
-    def prepare_sequences():
-        x_values = x_data.values.astype(np.float32)
+    try:
+        # Remove ID if present
+        if 'ID' in x_data.columns:
+            x_data = x_data.drop('ID', axis=1)
         
-        # Calculate standardization statistics first
+        # Prepare features
+        x_values = x_data.values.astype(np.float32)
         mean = np.nanmedian(x_values, axis=0)
         std = np.nanstd(x_values, axis=0)
         std[std < 1e-6] = 1.0
         
-        sequences_x = []
-        sequences_y = []
-
-        # Handle target values correctly for treatment assignment
+        # Prepare targets based on loss function
         if loss_fn == "sparse_categorical_crossentropy":
+            # For categorical case - keep existing logic that works
             if 'target' in y_data.columns:
-                y_values = y_data['target'].values
+                y_values = y_data['target'].values.astype(np.int32)
             else:
-                # For one-hot encoded targets, properly convert to class indices
-                treatment_cols = [col for col in y_data.columns if col.startswith('A')]
-                treatment_matrix = y_data[treatment_cols].values
-                
-                # Ensure we're getting a proper 2D array
-                if len(treatment_matrix.shape) < 2:
-                    treatment_matrix = treatment_matrix.reshape(-1, 1)
-                
-                # Convert one-hot to indices
-                try:
-                    y_values = np.argmax(treatment_matrix, axis=1)
-                except Exception as e:
-                    logger.error(f"Error converting one-hot to indices: {e}")
-                    logger.error(f"Treatment matrix shape: {treatment_matrix.shape}")
-                    logger.error(f"First few rows: {treatment_matrix[:5]}")
-                    raise
-                
-                # Validate y_values
-                if not isinstance(y_values, np.ndarray):
-                    y_values = np.array(y_values)
-                
-                # Ensure values are within expected range
-                if np.any(y_values >= J):
-                    logger.warning("Some class indices are larger than J-1")
-                    y_values = np.clip(y_values, 0, J-1)
-
-            # Ensure y_values is flat for bincount
-            y_flat = y_values.ravel()
-            class_dist = np.bincount(y_flat.astype(np.int32), minlength=J)
-            logger.info(f"Treatment class distribution before sequence creation: {class_dist}")
-
-        if loss_fn == "binary_crossentropy":
-            # Convert targets to one-hot with correct shape
+                # Get treatment labels from 'A' column if it exists
+                if 'A' in y_data.columns:
+                    y_values = y_data['A'].values.astype(np.int32)
+                else:
+                    treatment_cols = [col for col in y_data.columns if col.startswith('A')]
+                    if treatment_cols:
+                        y_values = np.argmax(y_data[treatment_cols].values, axis=1).astype(np.int32)
+                    else:
+                        raise ValueError("No target or treatment columns found")
+            y_values = np.clip(y_values, 0, J-1)
+        else:
+            # For binary case - ensure proper one-hot encoding
             if 'A' in y_data.columns:
-                # Create one-hot encoding with J classes
-                y_values = np.zeros((len(y_data), J), dtype=np.float32)
-                a_values = y_data['A'].values.astype(int)
-                for i in range(len(y_data)):
-                    if a_values[i] < J:  # Only set if within valid range
-                        y_values[i, a_values[i]] = 1.0
+                # Convert single 'A' column to one-hot
+                y_single = y_data['A'].values.astype(np.int32)
+                logger.info(f"Unique treatment values before one-hot: {np.unique(y_single)}")
+                y_values = np.zeros((len(y_single), J), dtype=np.float32)
+                for i in range(len(y_single)):
+                    class_idx = min(y_single[i], J-1)  # Clip to valid range
+                    y_values[i, class_idx] = 1.0
             else:
-                treatment_cols = [col for col in y_data.columns if col.startswith('A')]
-                y_values = y_data[treatment_cols].values.astype(np.float32)
-                if y_values.shape[1] < J:
-                    y_values = np.pad(y_values, ((0,0), (0, J - y_values.shape[1])))
+                # If target column exists, use it
+                if 'target' in y_data.columns:
+                    y_single = y_data['target'].values.astype(np.int32)
+                    y_values = np.zeros((len(y_single), J), dtype=np.float32)
+                    for i in range(len(y_single)):
+                        class_idx = min(y_single[i], J-1)  # Clip to valid range
+                        y_values[i, class_idx] = 1.0
+                else:
+                    # Use existing treatment columns if available
+                    treatment_cols = [f'A{i}' for i in range(J)]
+                    if all(col in y_data.columns for col in treatment_cols):
+                        y_values = y_data[treatment_cols].values.astype(np.float32)
+                    else:
+                        raise ValueError("No suitable treatment columns found")
+        
+        logger.info(f"Target shape before sequence creation: {y_values.shape}")
+        logger.info(f"Target unique values: {np.unique(y_values)}")
+        
+        # Create sequences
+        num_samples = len(x_values) - n_pre + 1
+        x_sequences = []
+        y_sequences = []
+        
+        for i in range(num_samples):
+            # Features
+            x_seq = x_values[i:i + n_pre].copy()
+            x_seq = np.clip((x_seq - mean) / std, -10, 10)
             
-            logger.info(f"Binary classification y_values shape: {y_values.shape}")
-            logger.info(f"Binary classification y_values unique: {np.unique(y_values)}")
-            logger.info(f"Original y_values shape: {y_values.shape}")
-            logger.info(f"Original y_values unique: {np.unique(y_values)}")
+            if is_training:
+                noise = np.random.normal(0, 0.01, x_seq.shape)
+                noise = np.clip(noise, -0.03, 0.03)
+                x_seq += noise
+            
+            # Target for this sequence
+            y_seq = y_values[i + n_pre - 1].copy()
+            
+            x_sequences.append(x_seq)
+            y_sequences.append(y_seq)
+            
+            if i % 10000 == 0:
+                logger.info(f"Processed {i} sequences")
         
-        for i in range(n_samples):
-            try:
-                # Create feature sequence
-                x_seq = x_values[i:i + n_pre].copy()
-                x_seq = np.clip((x_seq - mean) / std, -10, 10)
-                
-                if is_training:
-                    noise = np.random.normal(0, 0.01, x_seq.shape)
-                    noise = np.clip(noise, -0.03, 0.03)
-                    x_seq += noise
-                
-                # Get target treatment
-                if loss_fn == "sparse_categorical_crossentropy":
-                    y_target = y_values[i + n_pre - 1]
-                    y_seq = np.array(y_target, dtype=np.int32)
-                    
-                    # Skip invalid sequences
-                    if y_seq < 0 or y_seq >= J:
-                        logger.warning(f"Invalid target value {y_seq} at position {i}, skipping")
-                        continue
-                if loss_fn == "binary_crossentropy": # For binary classification, keep y_seq as is
-                    y_seq = y_values[i + n_pre - 1].copy()  # Copy to avoid modifying original
-                    y_seq = y_seq.astype(np.float32)
-                    
-                sequences_x.append(x_seq.astype(np.float32))
-                sequences_y.append(y_seq)
-                
-                # Log progress periodically
-                if i % 10000 == 0:
-                    logger.info(f"Processed {i} sequences")
-                
-            except Exception as e:
-                logger.warning(f"Error processing sequence {i}: {str(e)}")
-                continue
-        
-        if not sequences_x:
-            raise ValueError("No valid sequences created")
-        
-        sequences_x = np.array(sequences_x, dtype=np.float32)
-        sequences_y = np.array(sequences_y, dtype=np.float32)
+        # Convert to arrays
+        x_sequences = np.array(x_sequences, dtype=np.float32)
+        y_sequences = np.array(y_sequences, dtype=np.float32)
         
         # Final validation
-        if loss_fn == "sparse_categorical_crossentropy":
-            class_dist = np.bincount(sequences_y.astype(np.int32), minlength=J)
-            logger.info(f"Final sequences class distribution: {class_dist}")
-            
-            # Verify we haven't lost treatment variation
-            if len(np.unique(sequences_y)) == 1:
-                raise ValueError(f"All sequences mapped to same class! Distribution: {class_dist}")
-            
-            # Verify valid class range
-            if not np.all(np.isin(sequences_y, np.arange(J))):
-                invalid_classes = set(sequences_y.flatten()) - set(range(J))
-                raise ValueError(f"Found invalid class indices: {invalid_classes}")
+        logger.info(f"Final sequences_x shape: {x_sequences.shape}")
+        logger.info(f"Final sequences_y shape: {y_sequences.shape}")
+        logger.info(f"Final sequences_y unique values: {np.unique(y_sequences)}")
         
-        logger.info(f"Final sequences_x shape: {sequences_x.shape}")
-        logger.info(f"Final sequences_y shape: {sequences_y.shape}")
-        logger.info(f"Final sequences_y unique values: {np.unique(sequences_y)}")
+        # Create dataset without sample weights
+        dataset = tf.data.Dataset.from_tensor_slices((
+            x_sequences,
+            y_sequences
+        ))
         
-        return sequences_x, sequences_y
-    try:
-        x_sequences, y_sequences = prepare_sequences()
+        # Configure dataset
+        dataset = dataset.batch(batch_size, drop_remainder=is_training)
         
-        if loss_fn == "binary_crossentropy":
-            # No need to reshape y_sequences as it's already correct shape
-            logger.info(f"Final shapes - x: {x_sequences.shape}, y: {y_sequences.shape}")
-
-        # Create dataset directly - no need to reshape y_sequences since it's already correct
-        dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences))
-        
-        # Configure dataset options
+        # Set dataset options
         options = tf.data.Options()
-        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
         options.deterministic = False
-        options.experimental_optimization.map_parallelization = True
-        options.experimental_optimization.parallel_batch = True
         dataset = dataset.with_options(options)
         
-        # Suppress auto-sharding warnings
-        tf.get_logger().setLevel('ERROR')
-
-        # Apply shuffling and batching
         if is_training:
-            if loss_fn == "sparse_categorical_crossentropy":
-                # Calculate class weights
-                class_counts = np.bincount(y_sequences.astype(np.int32).flatten(), minlength=J)
-                total_samples = len(y_sequences)
-                class_weights = {j: total_samples / (J * max(count, 1)) for j, count in enumerate(class_counts)}
-                
-                # Create sample weights
-                sample_weights = np.array([class_weights[y] for y in y_sequences])
-                dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences, sample_weights))
-            
-            dataset = dataset.cache()
-            dataset = dataset.shuffle(buffer_size=min(10000, n_samples), reshuffle_each_iteration=True)
-        else:
-            # Calculate class weights for batch
-            total_samples = len(y_sequences)
-            pos_samples = np.sum(y_sequences == 1)
-            pos_weight = (total_samples - pos_samples) / (pos_samples + 1e-7)
-            weights = np.where(y_sequences == 1, pos_weight, 1.0)
-            
-            # Add sample weights
-            dataset = tf.data.Dataset.from_tensor_slices(
-                (x_sequences, y_sequences, weights)
-            )
-            
             dataset = dataset.cache()
             dataset = dataset.shuffle(
-                buffer_size=min(50000, n_samples),
-                reshuffle_each_iteration=True,
-                seed=42  # Add fixed seed for reproducibility
+                buffer_size=min(batch_size * 100, len(x_sequences)),
+                reshuffle_each_iteration=True
             )
         
-        # Batch and prefetch
-        dataset = dataset.batch(
-            batch_size,
-            drop_remainder=is_training,
-            num_parallel_calls=tf.data.AUTOTUNE
-        ).prefetch(tf.data.AUTOTUNE)
+        dataset = dataset.prefetch(tf.data.AUTOTUNE)
         
-        return dataset, n_samples
+        return dataset, num_samples
         
     except Exception as e:
         logger.error(f"Error creating dataset: {str(e)}")
-        logger.error(f"x_data shape: {x_data.shape}")
-        logger.error(f"y_data shape: {y_data.shape}")
-        logger.error(traceback.format_exc())
+        logger.error(f"Stack trace: {traceback.format_exc()}")
         raise
         
-def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None):
-    """Create model with improved architecture and metrics."""
+def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
+                out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None):
+    """Create model with proper handling of binary and categorical cases.
+    
+    Args:
+        input_shape: Shape of input tensors
+        output_dim: Number of output dimensions
+        lr: Learning rate
+        dr: Dropout rate
+        n_hidden: Number of hidden units
+        hidden_activation: Activation function for hidden layers
+        out_activation: Activation function for output layer
+        loss_fn: Loss function (binary_crossentropy or sparse_categorical_crossentropy)
+        J: Number of treatment categories
+        epochs: Number of training epochs
+        steps_per_epoch: Steps per epoch
+        y_data: Optional target data for reference
+        strategy: Optional distribution strategy
+    """
     if strategy is None:
         strategy = get_strategy()
     
     with strategy.scope():
-        inputs = Input(shape=input_shape, dtype='float32', name='input_layer')
-        masked = tf.keras.layers.Masking(mask_value=-1.0)(inputs)
+        # Input layer with fixed name
+        inputs = Input(shape=input_shape, dtype=tf.float32, name="input_1")
         
-        rnn_config = {
+        # Initial masking and normalization
+        x = tf.keras.layers.Masking(mask_value=-1.0, name="masking_layer")(inputs)
+        x = tf.keras.layers.LayerNormalization(name="norm_0")(x)
+        
+        # Common configurations for all LSTM layers
+        lstm_config = {
             'activation': 'tanh',
-            'kernel_initializer': GlorotUniform(seed=42),
+            'recurrent_activation': 'sigmoid',
+            'kernel_initializer': 'glorot_uniform',
+            'recurrent_initializer': 'orthogonal',
             'kernel_regularizer': l2(0.001),
             'recurrent_regularizer': l2(0.001),
             'bias_regularizer': l2(0.001),
             'kernel_constraint': tf.keras.constraints.MaxNorm(3),
             'recurrent_constraint': tf.keras.constraints.MaxNorm(3),
-            'dtype': 'float32',
-            'recurrent_initializer': 'orthogonal',
-            'unroll': False,
-            'return_sequences': True
+            'dropout': 0.0,
+            'recurrent_dropout': 0.0,
+            'dtype': tf.float32
         }
         
-        x = tf.keras.layers.SimpleRNN(n_hidden * 2, name='rnn_1', **rnn_config)(masked)
-        x = tf.keras.layers.LayerNormalization(name='norm_1')(x)
-        x = tf.keras.layers.Dropout(dr, name='dropout_1')(x)
-        
-        x = tf.keras.layers.SimpleRNN(n_hidden, name='rnn_2', **rnn_config)(x)
-        x = tf.keras.layers.LayerNormalization(name='norm_2')(x)
-        x = tf.keras.layers.Dropout(dr, name='dropout_2')(x)
-        
-        x = tf.keras.layers.SimpleRNN(
-            max(32, n_hidden // 2),
-            return_sequences=False,
-            name='rnn_3',
-            **{k: v for k, v in rnn_config.items() if k != 'return_sequences'}
+        # LSTM layers with gradient clipping
+        x = tf.keras.layers.LSTM(
+            units=n_hidden * 2,
+            return_sequences=True,
+            name="lstm_1",
+            **lstm_config
         )(x)
-        x = tf.keras.layers.LayerNormalization(name='norm_3')(x)
-        x = tf.keras.layers.Dropout(dr, name='dropout_3')(x)
+        x = tf.keras.layers.LayerNormalization(name="norm_1")(x)
+        x = tf.keras.layers.Dropout(dr, name="drop_1")(x)
         
+        x = tf.keras.layers.LSTM(
+            units=n_hidden,
+            return_sequences=True,
+            name="lstm_2",
+            **lstm_config
+        )(x)
+        x = tf.keras.layers.LayerNormalization(name="norm_2")(x)
+        x = tf.keras.layers.Dropout(dr, name="drop_2")(x)
+        
+        x = tf.keras.layers.LSTM(
+            units=max(32, n_hidden // 2),
+            return_sequences=False,
+            name="lstm_3",
+            **lstm_config
+        )(x)
+        x = tf.keras.layers.LayerNormalization(name="norm_3")(x)
+        x = tf.keras.layers.Dropout(dr, name="drop_3")(x)
+        
+        # Dense layer with L2 regularization
         x = tf.keras.layers.Dense(
-            n_hidden,
+            units=n_hidden,
             activation='relu',
             kernel_regularizer=l2(0.001),
             kernel_constraint=tf.keras.constraints.MaxNorm(3),
-            name='dense_1'
+            name="dense_1"
         )(x)
-        x = tf.keras.layers.LayerNormalization(name='norm_4')(x)
-        x = tf.keras.layers.Dropout(dr, name='dropout_4')(x)
+        x = tf.keras.layers.LayerNormalization(name="norm_4")(x)
+        x = tf.keras.layers.Dropout(dr, name="drop_4")(x)
         
-        if loss_fn == "sparse_categorical_crossentropy":
-            outputs = tf.keras.layers.Dense(
-                J,
-                activation='softmax',  # Use softmax for multi-class
-                kernel_initializer='glorot_uniform',
-                kernel_regularizer=l2(0.001),  # Add L2 regularization
-                kernel_constraint=tf.keras.constraints.MaxNorm(3),
-                name='output_layer'
-            )(x)
-            
-            def custom_sparse_categorical_crossentropy(y_true, y_pred):
-                """Custom loss function for sparse categorical crossentropy with proper shape handling."""
-                # Ensure proper shapes and types
-                y_true = tf.cast(y_true, tf.int32)  # Shape: (batch_size,)
-                y_true = tf.reshape(y_true, [-1])  # Ensure flat shape
-                
-                # Add epsilon for numerical stability
-                epsilon = tf.constant(1e-7, dtype=tf.float32)
-                y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)  # Shape: (batch_size, num_classes)
-                
-                # Get the batch size
-                batch_size = tf.cast(tf.shape(y_pred)[0], tf.int32)
-                
-                # Ensure y_true matches the batch size
-                y_true = y_true[:batch_size]
-                
-                # Create a mask for valid indices
-                valid_mask = tf.logical_and(
-                    tf.greater_equal(y_true, 0),
-                    tf.less(y_true, tf.shape(y_pred)[1])
-                )
-                
-                # Apply mask and calculate loss
-                y_true = tf.boolean_mask(y_true, valid_mask)
-                y_pred = tf.boolean_mask(y_pred, valid_mask)
-                
-                # Calculate cross entropy using TF's built-in function
-                return tf.reduce_mean(
-                    tf.keras.losses.sparse_categorical_crossentropy(
-                        y_true,
-                        y_pred,
-                        from_logits=False
-                    )
-                )
-            
-            loss = custom_sparse_categorical_crossentropy
-            metrics = [
-                tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy'),
-                tf.keras.metrics.SparseCategoricalCrossentropy(
-                    name='cross_entropy',
-                    from_logits=False
-                ),
-                # Add class-wise accuracy metrics
-                *[tf.keras.metrics.SparseTopKCategoricalAccuracy(k=1, name=f'class_{i}_accuracy') 
-                  for i in range(J)]
-            ]
+        # Output layer configuration based on loss function
         if loss_fn == "binary_crossentropy":
+            # For binary treatment case
+            final_activation = 'sigmoid'
+            output_units = J  # J is the number of treatment categories
+            
             outputs = tf.keras.layers.Dense(
-                J,  # Change to J outputs for multi-label binary classification
-                activation='sigmoid',
+                units=output_units,
+                activation=final_activation,
                 kernel_initializer='glorot_uniform',
                 kernel_regularizer=l2(0.001),
-                kernel_constraint=tf.keras.constraints.MaxNorm(3),
-                name='output_layer'
+                name="output_dense"
             )(x)
-
-            @tf.function
-            def weighted_binary_crossentropy(y_true, y_pred):
-                # Ensure consistent shapes
-                y_true = tf.cast(y_true, tf.float32)  # Shape: (batch_size, J)
-                y_pred = tf.cast(y_pred, tf.float32)  # Shape: (batch_size, J)
-                
-                # Add label smoothing
-                smooth_factor = 0.1
-                y_true = y_true * (1.0 - smooth_factor) + smooth_factor / 2.0
-                
-                # Clip predictions
-                epsilon = tf.constant(1e-7, dtype=tf.float32)
-                y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
-                
-                # Binary cross entropy per class
-                bce = tf.reduce_mean(
-                    -(y_true * tf.math.log(y_pred) + 
-                      (1.0 - y_true) * tf.math.log(1.0 - y_pred)),
-                    axis=0
-                )
-                
-                return tf.reduce_mean(bce)
-
-            loss = weighted_binary_crossentropy
+            
+            # Binary crossentropy with label smoothing
+            loss = tf.keras.losses.BinaryCrossentropy(
+                from_logits=False,
+                label_smoothing=0.01
+            )
+            
+            # Metrics for binary case
             metrics = [
                 tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
-                tf.keras.metrics.AUC(name='auc', curve='ROC'),
-                tf.keras.metrics.AUC(name='pr_auc', curve='PR'),
+                tf.keras.metrics.AUC(name='auc', multi_label=True),
                 tf.keras.metrics.Precision(name='precision'),
-                tf.keras.metrics.Recall(name='recall'),
-                tf.keras.metrics.BinaryCrossentropy(name='bce')
+                tf.keras.metrics.Recall(name='recall')
+            ]
+            
+        else:
+            # For categorical treatment case
+            final_activation = 'softmax'
+            output_units = output_dim  # Use output_dim for categorical case
+            
+            outputs = tf.keras.layers.Dense(
+                units=output_units,
+                activation=final_activation,
+                kernel_initializer='glorot_uniform',
+                kernel_regularizer=l2(0.001),
+                name="output_dense"
+            )(x)
+            
+            # Sparse categorical crossentropy for categorical case
+            loss = tf.keras.losses.SparseCategoricalCrossentropy(
+                from_logits=False
+            )
+            
+            # Metrics for categorical case
+            metrics = [
+                tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy'),
+                tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy')
             ]
         
-        model = Model(inputs, outputs, name='lstm_model')
+        # Create model
+        model = Model(inputs=inputs, outputs=outputs, name='lstm_model')
         
+        # Learning rate schedule with warm-up
+        initial_learning_rate = lr
+        decay_steps = steps_per_epoch * 2
+        
+        lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
+            initial_learning_rate=initial_learning_rate,
+            first_decay_steps=decay_steps,
+            t_mul=2.0,
+            m_mul=0.95,
+            alpha=0.1
+        )
+        
+        # Optimizer with gradient clipping
         optimizer = tf.keras.optimizers.Adam(
-            learning_rate=tf.keras.optimizers.schedules.CosineDecayRestarts(
-                initial_learning_rate=lr,
-                first_decay_steps=steps_per_epoch * 2,  # Slower decay
-                t_mul=2.0,
-                m_mul=0.97,  # Gentler decay
-                alpha=0.1    # Higher minimum LR
-            ),
+            learning_rate=lr_schedule,
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-7,
-            clipnorm=1.0,   # Increased from 0.5
+            clipnorm=1.0,
             amsgrad=True
         )
         
+        # Compile model with appropriate loss and metrics
         model.compile(
             optimizer=optimizer,
             loss=loss,
@@ -856,5 +747,18 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, o
             jit_compile=False
         )
         
-        model.summary()
         return model
+
+# Helper function to check if targets are binary
+def is_binary_target(y_data):
+    """Check if the target data is binary (0/1) or categorical."""
+    if 'target' in y_data.columns:
+        unique_values = np.unique(y_data['target'])
+        return set(unique_values).issubset({0, 1})
+    else:
+        # Check treatment columns
+        treatment_cols = [col for col in y_data.columns if col.startswith('A')]
+        if not treatment_cols:
+            return False
+        treatment_values = y_data[treatment_cols].values
+        return np.array_equal(treatment_values, treatment_values.astype(bool).astype(float))

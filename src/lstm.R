@@ -1,4 +1,4 @@
-lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE, J=7) {
+lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, inference=FALSE, J=7, is_censoring=FALSE) {
   print("Initial data structure:")
   print(paste("Dimensions:", paste(dim(data), collapse=" x ")))
   
@@ -59,10 +59,10 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
                            })
       )
       
-      # Fill any remaining NAs with most common treatment
+      # Fill any remaining NAs with -1
       if(any(is.na(data_long$A))) {
-        most_common <- as.numeric(names(sort(table(data_long$A[!is.na(data_long$A)]), decreasing=TRUE)[1]))
-        data_long$A[is.na(data_long$A)] <- most_common
+        # Fill NAs with -1
+        data_long$A[is.na(data_long$A)] <- -1
       }
       
       # Create a proper mapping for all possible treatment values (0-6)
@@ -152,9 +152,10 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   }
   
   # Set Python variables
+  py$is_censoring <- is_censoring
   py$J <- as.integer(J)
   py$output_dir <- output_dir
-  py$epochs <- as.integer(10)
+  py$epochs <- as.integer(1)
   py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
@@ -162,7 +163,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$lr <- 0.001
   py$dr <- 0.5
   py$nb_batches <- as.integer(128)
-  py$patience <- as.integer(2)
+  py$patience <- as.integer(1)
   py$t_end <- as.integer(t.end + 1)
   py$window_size <- as.integer(window_size)
   py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")
