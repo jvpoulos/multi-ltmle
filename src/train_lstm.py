@@ -294,7 +294,8 @@ def main():
             epochs=epochs,
             steps_per_epoch=steps_per_epoch,
             y_data=y_data,
-            strategy=strategy
+            strategy=strategy,
+            is_censoring=is_censoring
         )
 
     # Get callbacks
@@ -321,10 +322,19 @@ def main():
         # Log metrics with proper handling of binary case
         log_metrics(history, start_time)        
 
+        # Determine model filename based on case
+        if is_censoring:
+            model_filename = 'lstm_bin_C_model.h5'
+        else:
+            if loss_fn == "sparse_categorical_crossentropy":
+                model_filename = 'lstm_cat_A_model.h5'
+            else:
+                model_filename = 'lstm_bin_A_model.h5'
+
+        # Set model path
+        model_path = os.path.join(output_dir, model_filename)
+
         # Save model
-        model_path = os.path.join(output_dir, 
-                                'trained_cat_model.h5' if loss_fn == "sparse_categorical_crossentropy" 
-                                else 'trained_bin_model.h5')
         model.save(model_path)
         logger.info(f"Model saved to: {model_path}")
 

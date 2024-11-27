@@ -118,30 +118,24 @@ Contents
 Required File Modifications
 ------
 
-Below is a list of files and specific line numbers that require user modifications to match their environment or particular settings. Please ensure to make these changes before running the code.
+Below is a list of files that require user modifications to match their environment or particular settings. Please ensure to make these changes before running the code.
 
-### 1. simulation.R
-- **Line 32**: Update the Python path used by `use_python()`. Modify it to point to the Python interpreter you wish to use. For example:
+### simulation.R
+- Update the Python path used by `use_python()`. Modify it to point to the Python interpreter you wish to use. For example:
   ```r
   use_python("/n/app/python/3.10.11.conda/bin/python")
   ```
 
-### 2. utils.py
-- **Line 353**: Configure the GPU settings by modifying `configure_gpu()` or updating relevant CUDA paths if different CUDA versions are used. The default setting is:
+### utils.py and train_lstm.py
+- Configure the GPU settings by modifying `configure_gpu()` or updating relevant CUDA paths if different CUDA versions are used. The default setting is:
   ```python
   cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
   ```
 
-- **Lines 356-365**: Set TensorFlow-specific environment variables related to CUDA. Ensure these align with your installation.
-
-### 3. train_lstm.py
-- **Line 4**: Update the CUDA path used for training RNN models. Modify this path to match your environment. The line looks like:
+- Set the number of GPUs used in `os.environ.update`. By default, we use two GPUs:
   ```python
-  cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
+  'CUDA_VISIBLE_DEVICES': '0,1',
   ```
-- **Lines 13-14**: Set TensorFlow-specific environment variables related to CUDA. Ensure these align with your installation.
-
-  Modify or add further configurations to suppress unnecessary warnings if required.
 
 Instructions
 ------
@@ -161,26 +155,29 @@ Instructions
 	`Rscript long_sim_plots.R 'outputs/20240215'`
 
 
-Intermediate results
+Model weights and intermediate results
 ------
 
 The following intermediate results are from a single simulated longitudinal dataset (r=1) for n=12500 patients. We estimate the counterfactual diabetes risk for those who continued to follow each of 3 regimes (static, dynamic, stochastic) in each of 36 time periods, based on the observed outcomes and covariates. They are saved in `ex_outputs/`.
 
 * Simulated dataset in long format `tmle_dat_long_R_1_n_12500_J_6.rds`
 
-* Initial model for A estimator [initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/kw5epwh30z4vh5twilxw5/initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=lxyku41sg1kugtn6n24us3s18&dl=0)
+<!-- * Super learner treatment model [initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/kw5epwh30z4vh5twilxw5/initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=lxyku41sg1kugtn6n24us3s18&dl=0) -->
 
-* Longitudinal simulation results [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
+* TMLE simulation results [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
 
-* RNN-based model predictions (multiple binary and categorical treatment)
+* RNN-based model simulation results [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
+
+<!-- * RNN-based model predictions (multiple binary and categorical treatment)
 	+ `lstm_bin_preds.npy`
 	+ `lstm_bin_preds_info.npz`
 	+ `lstm_cat_preds.npy`
 	+ `lstm_cat_preds_info.npz`
 
 * RNN-based model weights (multiple binary and categorical treatment)
-	+ `trained_bin_model.h5`
-	+ `trained_cat_model.h5`
+	+ `lstm_bin_A_model.h5`
+	+ `lstm_cat_A_model.h5`
+	+ `lstm_bin_C_model.h5` -->
 
 * Descriptive plots 
 

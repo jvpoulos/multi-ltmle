@@ -51,10 +51,19 @@ def test_model():
         logger.warning("GPU configuration failed, proceeding with default settings")
     
     try:
-        # Load model and data
-        model_path = os.path.join(output_dir, 
-                                'trained_cat_model.h5' if loss_fn == "sparse_categorical_crossentropy" 
-                                else 'trained_bin_model.h5')
+        # Determine model filename based on case
+        if is_censoring:
+            model_filename = 'lstm_bin_C_model.h5'
+        else:
+            if loss_fn == "sparse_categorical_crossentropy":
+                model_filename = 'lstm_cat_A_model.h5'
+            else:
+                model_filename = 'lstm_bin_A_model.h5'
+
+        # Set model path
+        model_path = os.path.join(output_dir, model_filename)
+
+        logger.info(f"Loading model from: {model_path}")
         
         logger.info(f"Loading data from {output_dir}")
         x_data, y_data = load_data_from_csv(f"{output_dir}input_data.csv", f"{output_dir}output_data.csv")

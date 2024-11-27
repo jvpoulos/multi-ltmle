@@ -2,16 +2,23 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   print("Initial data structure:")
   print(paste("Dimensions:", paste(dim(data), collapse=" x ")))
   
-  # Find treatment columns with both patterns
-  A_cols_dot <- grep("^A\\.[0-9]+$", colnames(data), value=TRUE)
-  A_cols_plain <- grep("^A[0-9]+$", colnames(data), value=TRUE)
-  A_cols <- if(length(A_cols_dot) > 0) A_cols_dot else A_cols_plain
+  # Find appropriate columns based on case (treatment or censoring)
+  if(is_censoring) {
+    target_cols <- grep("^C\\.[0-9]+$|^C$", colnames(data), value=TRUE)
+    print(paste("Found", length(target_cols), "censoring columns"))
+    print("Censoring columns:")
+    print(target_cols)
+  } else {
+    # Original treatment column logic
+    A_cols_dot <- grep("^A\\.[0-9]+$", colnames(data), value=TRUE)
+    A_cols_plain <- grep("^A[0-9]+$", colnames(data), value=TRUE)
+    target_cols <- if(length(A_cols_dot) > 0) A_cols_dot else A_cols_plain
+    print(paste("Found", length(target_cols), "treatment columns"))
+    print("Treatment columns:")
+    print(target_cols)
+  }
   
-  print(paste("Found", length(A_cols), "treatment columns"))
-  print("Treatment columns:")
-  print(A_cols)
-  
-  if(length(A_cols) > 0) {
+  if(length(target_cols) > 0) {
     # Pre-process feature columns to ensure they exist
     base_covariates <- unique(gsub("\\.[0-9]+$", "", covariates))
     print("Base covariates:")
@@ -28,16 +35,22 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     print("Found feature columns:")
     print(feature_cols)
     
-    # Create base data frame with ID, time, and treatments
+    # Create base data frame with ID, time, and target variable
     data_long <- data.frame(
-      ID = rep(1:nrow(data), length(A_cols)),
-      time = rep(0:(length(A_cols)-1), each=nrow(data)),
-      A = unlist(data[A_cols])
+      ID = rep(1:nrow(data), length(target_cols)),
+      time = rep(0:(length(target_cols)-1), each=nrow(data))
     )
+    
+    # Add target column based on case
+    if(is_censoring) {
+      data_long$target <- unlist(data[target_cols])
+    } else {
+      data_long$A <- unlist(data[target_cols])
+    }
     
     # Add features ensuring correct time matching 
     for(base_col in base_covariates) {
-      for(t in 0:(length(A_cols)-1)) {
+      for(t in 0:(length(target_cols)-1)) {
         col_name <- paste0(base_col, ".", t)
         if(col_name %in% colnames(data)) {
           target_rows <- data_long$time == t
@@ -46,11 +59,45 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       }
     }
     
-    print("Treatment distribution before processing:")
-    print(table(data_long$A, useNA="ifany"))
-    
-    if(loss_fn == "sparse_categorical_crossentropy") {
+    if(is_censoring) {
+      print("Censoring distribution before processing:")
+      print(table(data_long$target, useNA="ifany"))
+      
+      # Handle binary censoring case
+      data_long <- data_long[order(data_long$ID, data_long$time), ]
+      
       # Fill NAs with forward fill within each ID
+      data_long <- do.call(rbind, 
+                           lapply(split(data_long, data_long$ID), function(df) {
+                             df$target <- zoo::na.locf(df$target, na.rm=FALSE)
+                             return(df)
+                           })
+      )
+      
+      # Fill remaining NAs with 0 (not censored)
+      data_long$target[is.na(data_long$target)] <- 0
+      
+      # Create input and output data
+      input_data <- data.frame(ID = data_long$ID)
+      for(col in base_covariates) {
+        if(col %in% colnames(data_long)) {
+          input_data[[col]] <- data_long[[col]]
+        } else {
+          warning(paste("Covariate", col, "not found in data"))
+          input_data[[col]] <- -1
+        }
+      }
+      
+      output_data <- data.frame(
+        ID = data_long$ID,
+        target = data_long$target
+      )
+      
+    } else if(loss_fn == "sparse_categorical_crossentropy") {
+      # Original categorical treatment logic
+      print("Treatment distribution before processing:")
+      print(table(data_long$A, useNA="ifany"))
+      
       data_long <- data_long[order(data_long$ID, data_long$time), ]
       data_long <- do.call(rbind, 
                            lapply(split(data_long, data_long$ID), function(df) {
@@ -59,67 +106,52 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
                            })
       )
       
-      # Fill any remaining NAs with -1
       if(any(is.na(data_long$A))) {
-        # Fill NAs with -1
         data_long$A[is.na(data_long$A)] <- -1
       }
       
-      # Create a proper mapping for all possible treatment values (0-6)
-      treatment_map <- numeric(7) # Create a vector of length 7 for treatments 0-6
-      treatment_map[1] <- 6      # Map treatment 0 to class 6
-      treatment_map[2:7] <- 1:6  # Map treatments 1-6 to classes 1-6
+      treatment_map <- numeric(7)
+      treatment_map[1] <- 6
+      treatment_map[2:7] <- 1:6
       names(treatment_map) <- 0:6
       
-      # Ensure treatment values are valid before mapping
       if(!all(data_long$A %in% 0:6)) {
         stop("Invalid treatment values found. Expected values 0-6")
       }
       
-      # Map treatments to class indices (1-based)
       data_long$target <- treatment_map[as.numeric(as.character(data_long$A)) + 1]
       
-      # Create final output with 0-based targets for TensorFlow
       output_data <- data.frame(
         ID = data_long$ID,
-        target = data_long$target - 1  # Convert to 0-based for TensorFlow
+        target = data_long$target - 1
       )
       
-      # Create input data with base covariates
-      # First ensure all base covariates exist
       input_data <- data.frame(ID = data_long$ID)
       for(col in base_covariates) {
         if(col %in% colnames(data_long)) {
           input_data[[col]] <- data_long[[col]]
         } else {
           warning(paste("Covariate", col, "not found in data"))
-          input_data[[col]] <- -1  # Default value for missing covariates
+          input_data[[col]] <- -1
         }
       }
       
-      print("Target distribution (0-based):")
-      print(table(output_data$target, useNA="ifany"))
-      
-      print("Final target range check:")
-      print(paste("Min:", min(output_data$target, na.rm=TRUE)))
-      print(paste("Max:", max(output_data$target, na.rm=TRUE)))
     } else {
-      # Add handling for binary crossentropy case
-      # Create input data with base covariates
+      # Original binary treatment logic
       input_data <- data.frame(ID = data_long$ID)
       for(col in base_covariates) {
         if(col %in% colnames(data_long)) {
           input_data[[col]] <- data_long[[col]]
         } else {
           warning(paste("Covariate", col, "not found in data"))
-          input_data[[col]] <- -1  # Default value for missing covariates
+          input_data[[col]] <- -1
         }
       }
       
-      # Create output data for binary case
       output_data <- data_long[c("ID", "A")]
     }
     
+    # Convert target columns to numeric
     if(exists("output_data")) {
       for(col in names(output_data)) {
         if(col != "ID") {
@@ -139,21 +171,19 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     write.csv(input_data, input_file, row.names = FALSE)
     write.csv(output_data, output_file, row.names = FALSE)
     
-    # Rest of the code
     print("Final data dimensions:")
     print("Input data:")
     print(str(input_data))
     print("Output data:")
     print(str(output_data))
     
-    # Set Python variables and continue...
   } else {
-    stop("No treatment columns found in data")
+    stop("No target columns found in data")
   }
   
   # Set Python variables
   py$is_censoring <- is_censoring
-  py$J <- as.integer(J)
+  py$J <- as.integer(if(is_censoring) 1 else J)
   py$output_dir <- output_dir
   py$epochs <- as.integer(1)
   py$n_hidden <- as.integer(256)
@@ -164,7 +194,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$dr <- 0.5
   py$nb_batches <- as.integer(128)
   py$patience <- as.integer(1)
-  py$t_end <- as.integer(t.end + 1)
+  py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)
   py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")
   py$outcome_cols <- if(is.character(outcome)) {
@@ -207,34 +237,26 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     if(file.exists(preds_file)) {
       # Load predictions
       preds <- np$load(preds_file)
-      
-      # Convert to R array
       preds_r <- as.array(preds)
       
-      if(loss_fn == "binary_crossentropy") {
-        print("Processing multi-class predictions")
-        print(paste("Number of classes:", J))
-        print(paste("Predictions shape:", paste(dim(preds_r), collapse=" x ")))
-        
+      # For binary censoring case, return a list of matrices
+      if(is_censoring) {
         # Initialize list for time steps
         preds_list <- vector("list", t_end + 1)
-        
-        # Get dimensions
         n_samples <- dim(preds_r)[1]
         
-        # For each time step, create a copy of the predictions matrix
+        # Convert predictions to 2D matrix if needed
+        if(is.null(dim(preds_r))) {
+          preds_r <- matrix(preds_r, ncol=1)
+        }
+        
+        # For each time step, create a copy of the predictions
         for(t in 1:(t_end + 1)) {
-          # Create a copy of the predictions
-          time_matrix <- preds_r
-          
-          # Ensure correct dimensions and names
-          dim(time_matrix) <- c(n_samples, J)
-          colnames(time_matrix) <- paste0("A", 0:(J-1))
-          
-          # Store in list
+          # Ensure proper dimensions
+          time_matrix <- matrix(preds_r, ncol=1)
+          colnames(time_matrix) <- "C"
           preds_list[[t]] <- time_matrix
           
-          # Print dimensions for verification
           print(paste0("Time ", t-1, " prediction shape: ", 
                        paste(dim(time_matrix), collapse=" x ")))
         }
@@ -249,9 +271,35 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
         })
         
         return(preds_list)
+      } else if(loss_fn == "binary_crossentropy") {
+        # Original binary treatment logic
+        print("Processing multi-class predictions")
+        print(paste("Number of classes:", J))
+        print(paste("Predictions shape:", paste(dim(preds_r), collapse=" x ")))
+        
+        preds_list <- vector("list", t_end + 1)
+        n_samples <- dim(preds_r)[1]
+        
+        for(t in 1:(t_end + 1)) {
+          time_matrix <- preds_r
+          dim(time_matrix) <- c(n_samples, J)
+          colnames(time_matrix) <- paste0("A", 0:(J-1))
+          preds_list[[t]] <- time_matrix
+          
+          print(paste0("Time ", t-1, " prediction shape: ", 
+                       paste(dim(time_matrix), collapse=" x ")))
+        }
+        
+        names(preds_list) <- paste0("t", 0:t_end)
+        preds_list <- lapply(preds_list, function(mat) {
+          mat[is.nan(mat) | is.infinite(mat)] <- NA
+          return(mat)
+        })
+        
+        return(preds_list)
         
       } else {
-        # For categorical case
+        # Original categorical case
         pred_matrix <- preds_r
         dim(pred_matrix) <- c(dim(preds_r)[1], J)
         colnames(pred_matrix) <- paste0("class", 1:J)

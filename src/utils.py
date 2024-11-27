@@ -398,6 +398,12 @@ def configure_gpu(policy=None):
                     logger.warning(f"Error configuring GPU {gpu}: {e}")
                     continue
 
+            # Enable mixed precision for better performance
+            tf.keras.mixed_precision.set_global_policy('mixed_float16')
+            
+            # Enable XLA compilation for better performance
+            tf.config.optimizer.set_jit(True)
+            
             # Log GPU information
             logger.info(f"Found {len(gpus)} GPU(s)")
             for gpu in gpus:
@@ -577,7 +583,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         raise
         
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
-                out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None):
+                out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False):
     """Create model with proper handling of binary and categorical cases.
     
     Args:
