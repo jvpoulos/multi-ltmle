@@ -215,15 +215,27 @@ def test_model():
             pred_classes = np.argmax(preds_test, axis=1)
             logger.info(f"Class distribution: {np.bincount(pred_classes)}")
         
+        # Determine prediction filename based on case
+        if is_censoring:
+            pred_filename = 'test_bin_C_preds.npy'
+            info_filename = 'test_bin_C_preds_info.npz'
+        else:
+            if loss_fn == "sparse_categorical_crossentropy":
+                pred_filename = 'test_cat_A_preds.npy'
+                info_filename = 'test_cat_A_preds_info.npz'
+            else:
+                pred_filename = 'test_bin_A_preds.npy'
+                info_filename = 'test_bin_A_preds_info.npz'
+
+        # Set prediction and info paths
+        pred_path = os.path.join(output_dir, pred_filename)
+        info_path = os.path.join(output_dir, info_filename)
+
         # Save predictions
-        pred_file = os.path.join(output_dir, 
-                                'test_cat_preds.npy' if loss_fn == "sparse_categorical_crossentropy"
-                                else 'test_bin_preds.npy')
-        np.save(pred_file, preds_test)
-        logger.info(f"Test predictions saved to: {pred_file}")
-        
+        np.save(pred_path, preds_test)
+        logger.info(f"Test predictions saved to: {pred_path}")
+
         # Save detailed information
-        info_path = os.path.join(output_dir, 'test_preds_info.npz')
         np.savez(
             info_path,
             shape=preds_test.shape,

@@ -35,22 +35,26 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     print("Found feature columns:")
     print(feature_cols)
     
-    # Create base data frame with ID, time, and target variable
+    # Create base data frame with proper ID and time handling
+    n_ids <- nrow(data)
+    n_times <- length(target_cols)
+    
+    # Create proper ID sequence and time sequence
     data_long <- data.frame(
-      ID = rep(1:nrow(data), length(target_cols)),
-      time = rep(0:(length(target_cols)-1), each=nrow(data))
+      ID = rep(1:n_ids, each=n_times),
+      time = rep(0:(n_times-1), times=n_ids)
     )
     
     # Add target column based on case
     if(is_censoring) {
-      data_long$target <- unlist(data[target_cols])
+      data_long$target <- as.vector(t(as.matrix(data[target_cols])))
     } else {
-      data_long$A <- unlist(data[target_cols])
+      data_long$A <- as.vector(t(as.matrix(data[target_cols])))
     }
     
-    # Add features ensuring correct time matching 
+    # Add features with proper recycling
     for(base_col in base_covariates) {
-      for(t in 0:(length(target_cols)-1)) {
+      for(t in 0:(n_times-1)) {
         col_name <- paste0(base_col, ".", t)
         if(col_name %in% colnames(data)) {
           target_rows <- data_long$time == t
@@ -66,16 +70,33 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       # Handle binary censoring case
       data_long <- data_long[order(data_long$ID, data_long$time), ]
       
+      # Ensure complete ID-time grid
+      expected_rows <- n_ids * n_times
+      if(nrow(data_long) != expected_rows) {
+        id_time_grid <- expand.grid(
+          ID = 1:n_ids,
+          time = 0:(n_times-1)
+        )
+        data_long <- merge(id_time_grid, data_long, by=c("ID", "time"), all.x=TRUE)
+      }
+      
       # Fill NAs with forward fill within each ID
       data_long <- do.call(rbind, 
                            lapply(split(data_long, data_long$ID), function(df) {
+                             df <- df[order(df$time), ]
                              df$target <- zoo::na.locf(df$target, na.rm=FALSE)
                              return(df)
                            })
       )
       
-      # Fill remaining NAs with 0 (not censored)
+      # Fill remaining NAs with 0
       data_long$target[is.na(data_long$target)] <- 0
+      
+      # Ensure all columns exist
+      all_cols <- unique(c(names(data_long), base_covariates))
+      for(col in setdiff(all_cols, names(data_long))) {
+        data_long[[col]] <- -1
+      }
       
       # Create input and output data
       input_data <- data.frame(ID = data_long$ID)
@@ -94,13 +115,14 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       )
       
     } else if(loss_fn == "sparse_categorical_crossentropy") {
-      # Original categorical treatment logic
       print("Treatment distribution before processing:")
       print(table(data_long$A, useNA="ifany"))
       
+      # Handle categorical treatment case
       data_long <- data_long[order(data_long$ID, data_long$time), ]
       data_long <- do.call(rbind, 
                            lapply(split(data_long, data_long$ID), function(df) {
+                             df <- df[order(df$time), ]
                              df$A <- zoo::na.locf(df$A, na.rm=FALSE)
                              return(df)
                            })
@@ -137,7 +159,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       }
       
     } else {
-      # Original binary treatment logic
+      # Binary treatment case
       input_data <- data.frame(ID = data_long$ID)
       for(col in base_covariates) {
         if(col %in% colnames(data_long)) {
@@ -149,6 +171,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       }
       
       output_data <- data_long[c("ID", "A")]
+      names(output_data)[names(output_data) == "A"] <- "target"
     }
     
     # Convert target columns to numeric
@@ -230,81 +253,101 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   }
   
   tryCatch({
-    preds_file <- ifelse(loss_fn == "sparse_categorical_crossentropy",
-                         paste0(output_dir, 'lstm_cat_preds.npy'),
-                         paste0(output_dir, 'lstm_bin_preds.npy'))
+    preds_file <- if(is_censoring) {
+      paste0(output_dir, 'lstm_bin_C_preds.npy')
+    } else {
+      ifelse(loss_fn == "sparse_categorical_crossentropy",
+             paste0(output_dir, 'lstm_cat_A_preds.npy'),
+             paste0(output_dir, 'lstm_bin_A_preds.npy'))
+    }
     
     if(file.exists(preds_file)) {
       # Load predictions
       preds <- np$load(preds_file)
       preds_r <- as.array(preds)
       
-      # For binary censoring case, return a list of matrices
+      # Get prediction dimensions and samples per time step
+      pred_dims <- dim(preds_r)
+      n_total_samples <- pred_dims[1]
+      
+      # Ensure proper division for time steps
+      samples_per_time <- n_total_samples %/% (t_end + 1)
+      
+      # Pre-calculate time indices
+      time_indices <- lapply(1:(t_end + 1), function(t) {
+        start_idx <- ((t-1) * samples_per_time) + 1
+        end_idx <- t * samples_per_time
+        start_idx:end_idx
+      })
+      
+      # Initialize prediction list for each time step
+      preds_list <- vector("list", t_end + 1)
+      
       if(is_censoring) {
-        # Initialize list for time steps
-        preds_list <- vector("list", t_end + 1)
-        n_samples <- dim(preds_r)[1]
-        
-        # Convert predictions to 2D matrix if needed
-        if(is.null(dim(preds_r))) {
+        # Handle binary censoring case
+        if(length(pred_dims) == 1) {
           preds_r <- matrix(preds_r, ncol=1)
         }
         
-        # For each time step, create a copy of the predictions
-        for(t in 1:(t_end + 1)) {
-          # Ensure proper dimensions
-          time_matrix <- matrix(preds_r, ncol=1)
-          colnames(time_matrix) <- "C"
-          preds_list[[t]] <- time_matrix
-          
-          print(paste0("Time ", t-1, " prediction shape: ", 
-                       paste(dim(time_matrix), collapse=" x ")))
-        }
-        
-        # Add names to list elements
-        names(preds_list) <- paste0("t", 0:t_end)
-        
-        # Filter out potential NaN/Inf values
-        preds_list <- lapply(preds_list, function(mat) {
-          mat[is.nan(mat) | is.infinite(mat)] <- NA
-          return(mat)
+        # Process predictions for each time step
+        preds_list <- lapply(time_indices, function(idx) {
+          # Extract and reshape slice, then add column name
+          mat <- matrix(preds_r[idx], ncol=1)
+          colnames(mat) <- "C"
+          mat
         })
         
-        return(preds_list)
       } else if(loss_fn == "binary_crossentropy") {
-        # Original binary treatment logic
         print("Processing multi-class predictions")
         print(paste("Number of classes:", J))
-        print(paste("Predictions shape:", paste(dim(preds_r), collapse=" x ")))
         
-        preds_list <- vector("list", t_end + 1)
-        n_samples <- dim(preds_r)[1]
-        
-        for(t in 1:(t_end + 1)) {
-          time_matrix <- preds_r
-          dim(time_matrix) <- c(n_samples, J)
-          colnames(time_matrix) <- paste0("A", 0:(J-1))
-          preds_list[[t]] <- time_matrix
-          
-          print(paste0("Time ", t-1, " prediction shape: ", 
-                       paste(dim(time_matrix), collapse=" x ")))
+        # Ensure predictions are properly shaped
+        if(length(pred_dims) == 1) {
+          preds_r <- matrix(preds_r, ncol=J)
+        } else if(length(pred_dims) == 3) {
+          preds_r <- matrix(preds_r, ncol=J)
         }
         
-        names(preds_list) <- paste0("t", 0:t_end)
-        preds_list <- lapply(preds_list, function(mat) {
-          mat[is.nan(mat) | is.infinite(mat)] <- NA
-          return(mat)
+        # Process predictions for each time step
+        preds_list <- lapply(time_indices, function(idx) {
+          # Extract time slice and reshape
+          mat <- matrix(preds_r[idx, ], ncol=J)
+          colnames(mat) <- paste0("A", 0:(J-1))
+          mat
         })
         
-        return(preds_list)
+        # Print shapes for verification
+        for(t in 1:(t_end + 1)) {
+          print(paste0("Time ", t-1, " prediction shape: ", 
+                       paste(dim(preds_list[[t]]), collapse=" x ")))
+        }
         
       } else {
-        # Original categorical case
-        pred_matrix <- preds_r
-        dim(pred_matrix) <- c(dim(preds_r)[1], J)
-        colnames(pred_matrix) <- paste0("class", 1:J)
-        return(pred_matrix)
+        # Handle categorical treatment case
+        if(length(pred_dims) == 1) {
+          preds_r <- matrix(preds_r, ncol=J)
+        }
+        
+        # Process predictions for each time step
+        preds_list <- lapply(time_indices, function(idx) {
+          # Extract time slice and reshape
+          mat <- matrix(preds_r[idx, ], ncol=J)
+          colnames(mat) <- paste0("class", 1:J)
+          mat
+        })
       }
+      
+      # Add names to the time steps
+      names(preds_list) <- paste0("t", 0:t.end)
+      
+      # Clean up predictions
+      preds_list <- lapply(preds_list, function(mat) {
+        mat[is.nan(mat) | is.infinite(mat)] <- NA
+        mat
+      })
+      
+      return(preds_list)
+      
     } else {
       warning(paste("Predictions file not found:", preds_file))
       return(NULL)

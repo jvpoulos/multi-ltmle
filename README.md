@@ -34,7 +34,7 @@ Prerequsites
 + Required **R** packages located in ***package_list.R***
 + The result of sessionInfo() is in ***session_info.txt***
 
-* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (tested on 3.6.8), and **TensorFlow** (tested on 2.12.0) using a GCC 9.2.0 compiler and CUDA 11.7 for GPU computation
+* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (3.10.11), and **TensorFlow** (2.15) using a GCC 9.2.0 compiler and CUDA 12.1 for GPU computation
 + instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
 ```
 # create virtual environment within directory
@@ -42,14 +42,28 @@ cd multi-ltmle
 python3 -m venv env
 source env/bin/activate
 
-# install Tensorflow and TensorRT
+# install Tensorflow
 pip install --upgrade pip
-# pip install tensorflow-gpu # for GPU build
-pip install tensorflow-cpu # for CPU-only build
-pip install tensorrt
+pip install tensorflow
 
-python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))" # verify the CPU setup
-# python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))" # verify the GPU setup
+# verify Installation: Check the installed TensorFlow version and CUDA compatibility:
+
+python -c "import tensorflow as tf; print(tf.__version__); print(tf.config.list_physical_devices('GPU'))"
+
+# ensure CUDA Libraries Are Properly Set: Since CUDA 12.1 is loaded, ensure that LD_LIBRARY_PATH includes the required libraries. Check:
+
+echo $LD_LIBRARY_PATH
+
+# if needed, append the paths:
+
+export LD_LIBRARY_PATH=/path/to/cuda/lib64:$LD_LIBRARY_PATH
+
+# test GPU Functionality: Run a simple TensorFlow program to confirm GPU usage:
+
+python
+Copy code
+import tensorflow as tf
+print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
 ```
 + The following Python packages are required: numpy (tested on 1.19.5), pandas (1.1.5), and wandb (0.15.12)
 ```
@@ -129,7 +143,7 @@ Below is a list of files that require user modifications to match their environm
 ### utils.py and train_lstm.py
 - Configure the GPU settings by modifying `configure_gpu()` or updating relevant CUDA paths if different CUDA versions are used. The default setting is:
   ```python
-  cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
+  cuda_path = "/n/app/cuda/12.1-gcc-9.2.0/bin/nvcc"
   ```
 
 - Set the number of GPUs used in `os.environ.update`. By default, we use two GPUs:
@@ -168,16 +182,20 @@ The following intermediate results are from a single simulated longitudinal data
 
 * RNN-based model simulation results [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
 
-<!-- * RNN-based model predictions (multiple binary and categorical treatment)
-	+ `lstm_bin_preds.npy`
-	+ `lstm_bin_preds_info.npz`
-	+ `lstm_cat_preds.npy`
-	+ `lstm_cat_preds_info.npz`
+* RNN-based model validation predictions and info (multiple binary and categorical treatment)
+	+ lstm_bin_C_preds.npy, lstm_bin_C_preds_info.npz
+	+ lstm_cat_A_preds.npy, lstm_cat_A_preds_info.npz
+	+ lstm_bin_A_preds.npy. lstm_bin_A_preds_info.npz
+
+* RNN-based model test predictions and info:
+	+ test_bin_C_preds.npy, test_bin_C_preds_info.npz
+	+ test_cat_A_preds.npy, test_cat_A_preds_info.npz
+	+ test_bin_A_preds.npy, test_bin_A_preds_info.npz
 
 * RNN-based model weights (multiple binary and categorical treatment)
 	+ `lstm_bin_A_model.h5`
 	+ `lstm_cat_A_model.h5`
-	+ `lstm_bin_C_model.h5` -->
+	+ `lstm_bin_C_model.h5`
 
 * Descriptive plots 
 

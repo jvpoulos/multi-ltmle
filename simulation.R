@@ -348,31 +348,124 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
     tmle_dat$A <- factor(tmle_dat$A)
   }else if(estimator=="tmle-lstm"){
-    tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2)) # binarize categorical covariates
+    # First binarize categorical covariates and prepare data
+    tmle_dat <- cbind(
+      tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], 
+      dummify(tmle_dat$V1), 
+      dummify(tmle_dat$V2)
+    )
     
-    if(scale.continuous){
-      tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")]) # scale continuous variables
+    # Set proper column names
+    colnames(tmle_dat) <- c(
+      "ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", 
+      "white", "black", "latino", "other", 
+      "mdd", "bipolar", "schiz"
+    )
+    
+    # Handle continuous variables scaling if needed
+    if(scale.continuous) {
+      tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")])
     }
     
-    colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
-    
+    # Convert treatment to factor
     tmle_dat$A <- factor(tmle_dat$A)
     
-    # Reshape the time-varying variables to wide format
-    tmle_dat <- reshape(tmle_dat, idvar = "ID", timevar = "t", direction = "wide") # N x T
+    # Safe reshaping function
+    safe_reshape_data <- function(data, t_end) {
+      # Ensure the data has an ID column
+      if(!"ID" %in% names(data)) {
+        stop("Data must contain an ID column")
+      }
+      
+      # Get unique IDs 
+      unique_ids <- unique(data$ID)
+      n_ids <- length(unique_ids)
+      
+      # Create time sequence 
+      time_seq <- 0:t_end
+      
+      # Create expanded grid of IDs and times
+      wide_base <- expand.grid(
+        ID = unique_ids,
+        t = time_seq,
+        stringsAsFactors = FALSE
+      )
+      
+      # Sort by ID and time
+      wide_base <- wide_base[order(wide_base$ID, wide_base$t), ]
+      
+      # Merge with original data
+      wide_data <- merge(wide_base, data, by = c("ID", "t"), all.x = TRUE)
+      
+      # Get time-varying columns
+      time_varying_cols <- c("L1", "L2", "L3", "A", "C", "Y")
+      
+      # Reshape each time-varying variable
+      wide_reshaped <- wide_data[!duplicated(wide_data$ID), setdiff(names(wide_data), c("t", time_varying_cols))]
+      
+      for(col in time_varying_cols) {
+        if(col %in% names(wide_data)) {
+          temp_data <- wide_data[, c("ID", "t", col)]
+          temp_wide <- reshape(temp_data,
+                               timevar = "t",
+                               idvar = "ID", 
+                               direction = "wide",
+                               sep = ".")
+          
+          # Add reshaped columns
+          wide_cols <- grep(paste0("^", col, "\\."), names(temp_wide), value = TRUE)
+          if(length(wide_cols) > 0) {
+            wide_reshaped[wide_cols] <- temp_wide[, wide_cols]
+          }
+        }
+      }
+      
+      # Handle missing values
+      na_cols <- c(
+        grep("^Y\\.", names(wide_reshaped), value = TRUE),
+        grep("^C\\.", names(wide_reshaped), value = TRUE),
+        grep("^L[1-3]\\.", names(wide_reshaped), value = TRUE),
+        grep("^V3\\.", names(wide_reshaped), value = TRUE)
+      )
+      
+      wide_reshaped[na_cols][is.na(wide_reshaped[na_cols])] <- -1
+      
+      # Handle treatment columns
+      A_cols <- grep("^A\\.", names(wide_reshaped), value = TRUE)
+      if(length(A_cols) > 0) {
+        wide_reshaped[A_cols] <- lapply(wide_reshaped[A_cols], function(x) {
+          if(is.factor(x)) {
+            x <- addNA(x)
+            levels(x) <- c("0", levels(x)[-length(levels(x))])
+          } else {
+            x <- factor(x)
+            x <- addNA(x)
+            levels(x) <- c("0", levels(x)[-length(levels(x))])
+          }
+          as.numeric(as.character(x))
+        })
+      }
+      
+      return(wide_reshaped)
+    }
     
-    tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
-    tmle_covars_Y <- c(grep("L",colnames(tmle_dat),value = TRUE), 
-                       grep("A", colnames(tmle_dat), value = TRUE), 
-                       grep("V", colnames(tmle_dat), value = TRUE),
-                       grep("white", colnames(tmle_dat), value = TRUE),
-                       grep("black", colnames(tmle_dat), value = TRUE),
-                       grep("latino", colnames(tmle_dat), value = TRUE),
-                       grep("other", colnames(tmle_dat), value = TRUE),
-                       grep("mdd", colnames(tmle_dat), value = TRUE),
-                       grep("bipolar", colnames(tmle_dat), value = TRUE),
-                       grep("schiz", colnames(tmle_dat), value = TRUE))
-    tmle_covars_A <- setdiff(tmle_covars_Y, grep("A", colnames(tmle_dat), value = TRUE))
+    # Reshape the data using safe function
+    tmle_dat <- safe_reshape_data(tmle_dat, t_end = t.end)
+    
+    # Define covariates for different models
+    tmle_covars_Y <- c(
+      grep("L", colnames(tmle_dat), value = TRUE),
+      grep("A", colnames(tmle_dat), value = TRUE),
+      grep("V", colnames(tmle_dat), value = TRUE),
+      grep("white|black|latino|other|mdd|bipolar|schiz", 
+           colnames(tmle_dat), value = TRUE)
+    )
+    
+    tmle_covars_A <- setdiff(
+      tmle_covars_Y, 
+      grep("A", colnames(tmle_dat), value = TRUE)
+    )
+    
     tmle_covars_C <- tmle_covars_A
     
     # set NAs to -1 (except treatment NA=0)
@@ -388,8 +481,34 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)])] <- -1
     tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)])] <- -1
     
-    tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)], function(x){`levels<-`(addNA(x), c(0,levels(x)))})
-  }
+    handle_treatment_cols <- function(x) {
+      if(is.factor(x)) {
+        # Get current levels excluding NA
+        curr_levels <- levels(x)
+        # Add NA level first
+        x <- addNA(x)
+        # Create new levels with 0 and original levels
+        new_levels <- c("0", curr_levels)
+        # Assign new levels
+        levels(x) <- new_levels
+        # Convert to numeric
+        return(as.numeric(as.character(x)))
+      } else {
+        # If not a factor, convert to factor first
+        x <- factor(x)
+        # Add NA level
+        x <- addNA(x)
+        # Create levels starting from 0
+        levels(x) <- c("0", levels(x)[-length(levels(x))])
+        # Convert to numeric
+        return(as.numeric(as.character(x)))
+      }
+    }
+    
+    tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(
+      tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)], 
+      handle_treatment_cols)  
+    }
   
   ##  fit initial treatment model
   
@@ -591,7 +710,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Single LSTM call with binary crossentropy
     lstm_preds <- tryCatch({
-      lstm(
+      preds <- lstm(
         data = tmle_dat,
         outcome = A_cols,  # Pass all treatment columns
         covariates = feature_cols,
@@ -602,6 +721,18 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         output_dir = output_dir,
         J = J
       )
+      
+      # Handle potential list output
+      if(is.list(preds) && !is.null(preds[[1]])) {
+        if(is.null(dim(preds[[1]]))) {
+          # Convert to matrix format if needed
+          lapply(preds, function(p) matrix(p, ncol=J))
+        } else {
+          preds
+        }
+      } else {
+        stop("Invalid prediction format")
+      }
     }, error = function(e) {
       print(paste("Error in LSTM training:", e$message))
       NULL
@@ -613,56 +744,60 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Process predictions
     if(is.list(lstm_preds) && length(lstm_preds) > 0) {
-      # Convert predictions to proper format
+      # Convert predictions to matrix format with proper dimensions
       g_preds_bin <- lapply(lstm_preds, function(x) {
-        if(is.null(dim(x))) {
-          matrix(x, ncol=1)
+        # Ensure matrix format with J columns
+        if(is.null(dim(x)) || ncol(x) != J) {
+          pred_matrix <- matrix(as.vector(x), ncol=J)
         } else {
-          x
+          pred_matrix <- x
         }
+        
+        # Add column names 
+        colnames(pred_matrix) <- paste0("A", 1:J)
+        return(pred_matrix)
       })
       
-      # Create cumulative predictions
+      # Create cumulative predictions with consistent dimensions
       g_preds_bin_cuml <- vector("list", t.end + 1)
       g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
       
       for(i in 2:(t.end + 1)) {
-        if(i <= length(g_preds_bin)) {
-          prev_pred <- g_preds_bin_cuml[[i-1]]
-          curr_pred <- g_preds_bin[[i]]
+        # Get dimensions
+        prev_dim <- dim(g_preds_bin_cuml[[i-1]])
+        curr_dim <- dim(g_preds_bin[[i]])
+        
+        # Ensure matching dimensions
+        if(!all(prev_dim == curr_dim)) {
+          # Reshape if needed
+          if(is.null(prev_dim)) prev_dim <- c(length(g_preds_bin_cuml[[i-1]]), 1)
+          if(is.null(curr_dim)) curr_dim <- c(length(g_preds_bin[[i]]), 1)
           
-          # Ensure matrix format
-          if(is.null(dim(prev_pred))) prev_pred <- matrix(prev_pred, ncol=1)
-          if(is.null(dim(curr_pred))) curr_pred <- matrix(curr_pred, ncol=1)
-          
-          # Multiply probabilities
-          g_preds_bin_cuml[[i]] <- prev_pred * curr_pred
-        } else {
-          g_preds_bin_cuml[[i]] <- g_preds_bin_cuml[[i-1]]
+          # Match rows if needed
+          if(prev_dim[1] != curr_dim[1]) {
+            min_rows <- min(prev_dim[1], curr_dim[1])
+            g_preds_bin_cuml[[i-1]] <- g_preds_bin_cuml[[i-1]][1:min_rows,, drop=FALSE]
+            g_preds_bin[[i]] <- g_preds_bin[[i]][1:min_rows,, drop=FALSE]
+          }
         }
+        
+        # Multiply probabilities
+        g_preds_bin_cuml[[i]] <- g_preds_bin[[i]] * g_preds_bin_cuml[[i-1]]
       }
       
-      # Bound predictions
+      # Final check and cleanup
       g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) {
-        bounded <- boundProbs(as.matrix(x), bounds = gbound)
-        if(is.null(dim(bounded))) {
-          matrix(bounded, ncol = 1)
-        } else {
-          bounded
+        # Ensure matrix format
+        if(is.null(dim(x))) {
+          x <- matrix(x, ncol=J)
         }
+        # Add column names
+        colnames(x) <- paste0("A", 1:J)
+        # Apply bounds
+        boundProbs(x, bounds=gbound)
       })
-      
-      # Print diagnostics
-      print("Final prediction structure:")
-      print(paste("Number of time points:", length(g_preds_bin_cuml_bounded)))
-      print("Shapes at each time point:")
-      for(i in seq_along(g_preds_bin_cuml_bounded)) {
-        print(paste("Time", i-1, "shape:", 
-                    paste(dim(g_preds_bin_cuml_bounded[[i]]), collapse=" x ")))
-      }
-      
     } else {
-      stop("Invalid prediction format returned from LSTM")
+      stop("Invalid prediction format")
     }
     
     # Print some debugging information
@@ -727,8 +862,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       out_activation="sigmoid", 
       loss_fn = "binary_crossentropy", 
       output_dir = output_dir,
-      J = 1,  # Censoring is binary
-      is_censoring = TRUE  # Add this flag
+      J = 1,
+      is_censoring = TRUE
     )
     
     # Transform lstm_C_preds into a data matrix of n x t.end
@@ -739,39 +874,31 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     initial_model_for_C <- list("preds" = transformed_C_preds, "data" = tmle_dat)
     
     # Process the transformed predictions
-    C_preds <- lapply(1:length(initial_model_for_C$preds), function(i) 1 - initial_model_for_C$preds[[i]])
-    
-    # Assuming tmle_dat has a column 'ID' that contains the IDs
-    C_preds_ID <- replicate(length(C_preds), 1:n, simplify = FALSE)
+    C_preds <- lapply(1:length(initial_model_for_C$preds), function(i) {
+      pred <- initial_model_for_C$preds[[i]]
+      # Ensure matrix format with one column
+      if(is.null(dim(pred))) {
+        pred <- matrix(pred, ncol=1)
+      }
+      1 - pred  # Convert to uncensored probability
+    })
     
     # Initialize C_preds_cuml and compute cumulative predictions
     C_preds_cuml <- vector("list", length(C_preds))
     C_preds_cuml[[1]] <- C_preds[[1]]
     
     for (i in 2:length(C_preds)) {
-      # Find common IDs
-      common_ids <- intersect(C_preds_ID[[i]], C_preds_ID[[i-1]])
-      
-      if (length(common_ids) > 0) {
-        # Calculate cumulative predictions for common IDs
-        common_indices_i <- match(common_ids, C_preds_ID[[i]])
-        common_indices_i_minus_1 <- match(common_ids, C_preds_ID[[i-1]])
-        
-        # Check if C_preds[[i]] is a vector or a matrix
-        if (is.vector(C_preds[[i]]) || length(dim(C_preds[[i]])) == 1) {
-          # Handle the vector case
-          C_preds_cuml[[i]] <- C_preds[[i]][common_indices_i] * C_preds_cuml[[i-1]][common_indices_i_minus_1]
-        } else {
-          # Handle the matrix case
-          C_preds_cuml[[i]] <- C_preds[[i]][common_indices_i, ] * C_preds_cuml[[i-1]][common_indices_i_minus_1, ]
-        }
-      } else {
-        warning("No common IDs found for iteration ", i)
-      }
+      C_preds_cuml[[i]] <- C_preds[[i]] * C_preds_cuml[[i-1]]
     }
     
     # Apply boundProbs to each cumulative prediction
-    C_preds_cuml_bounded <- lapply(C_preds_cuml, function(x) boundProbs(x, bounds = gbound))
+    C_preds_cuml_bounded <- lapply(C_preds_cuml, function(x) {
+      # Ensure matrix format
+      if(is.null(dim(x))) {
+        x <- matrix(x, ncol=1)
+      }
+      boundProbs(x, bounds = gbound)
+    })
   }
   
   ## sequential g-formula
@@ -816,8 +943,94 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
     }
   } else if(estimator=='tmle-lstm'){
+    # Helper function to safely reshape data from long to wide format
+    safe_reshape <- function(data, id_col = "ID", time_col = "t") {
+      # Ensure ID and time columns are properly formatted
+      data[[id_col]] <- as.numeric(data[[id_col]])
+      data[[time_col]] <- as.numeric(data[[time_col]])
+      
+      # Get all columns except ID and time
+      value_cols <- setdiff(names(data), c(id_col, time_col))
+      
+      # Create empty wide format dataset
+      wide_data <- data.frame(ID = unique(data[[id_col]]))
+      
+      # For each value column, reshape it to wide format
+      for (col in value_cols) {
+        # Create temporary subset with just this column
+        temp_data <- data[, c(id_col, time_col, col)]
+        
+        # Reshape using base R reshape (more stable than tidyr for this case)
+        temp_wide <- reshape(temp_data,
+                             direction = "wide",
+                             idvar = id_col,
+                             timevar = time_col,
+                             v.names = col)
+        
+        # Add reshaped columns to main wide dataset
+        wide_cols <- grep(paste0("^", col, "\\."), names(temp_wide), value = TRUE)
+        wide_data[wide_cols] <- temp_wide[wide_cols]
+      }
+      
+      return(wide_data)
+    }
     
-    lstm_Y_preds <- lstm(data=tmle_dat[c(grep("Y",colnames(tmle_dat),value = TRUE),tmle_covars_Y)], outcome=grep("Y",colnames(tmle_dat),value = TRUE), covariates=tmle_covars_Y, t_end=t.end, window_size=window.size, out_activation="sigmoid", loss_fn = "binary_crossentropy", output_dir)
+    # Modified LSTM data preparation function
+    prepare_lstm_data <- function(tmle_dat, t.end, window_size) {
+      # First ensure the data is in the correct format
+      if (!"ID" %in% names(tmle_dat)) {
+        stop("Data must contain an ID column")
+      }
+      
+      # Convert categorical variables to dummy variables
+      categorical_cols <- c("V1", "V2")
+      for (col in categorical_cols) {
+        if (col %in% names(tmle_dat)) {
+          dummy_mat <- model.matrix(~ tmle_dat[[col]] - 1)
+          colnames(dummy_mat) <- paste0(col, "_", 1:ncol(dummy_mat))
+          tmle_dat <- cbind(tmle_dat[, !names(tmle_dat) %in% col], dummy_mat)
+        }
+      }
+      
+      # Reshape to wide format using our safe reshape function
+      wide_data <- safe_reshape(tmle_dat)
+      
+      # Handle missing values
+      na_cols <- c(
+        grep("^Y\\.", names(wide_data), value = TRUE),
+        grep("^C\\.", names(wide_data), value = TRUE),
+        grep("^L[1-3]\\.", names(wide_data), value = TRUE),
+        grep("^V3\\.", names(wide_data), value = TRUE)
+      )
+      
+      wide_data[na_cols][is.na(wide_data[na_cols])] <- -1
+      
+      # Special handling for treatment (A) columns
+      A_cols <- grep("^A\\.", names(wide_data), value = TRUE)
+      if (length(A_cols) > 0) {
+        wide_data[A_cols] <- lapply(wide_data[A_cols], function(x) {
+          x <- addNA(factor(x))
+          levels(x) <- c(0, levels(x)[-length(levels(x))])
+          as.numeric(as.character(x))
+        })
+      }
+      
+      return(wide_data)
+    }
+    
+    tmle_dat <- prepare_lstm_data(tmle_dat, t.end, window_size)
+    
+    lstm_Y_preds <- lstm(
+      data = tmle_dat,
+      outcome = grep("Y", colnames(tmle_dat), value = TRUE),
+      covariates = setdiff(colnames(tmle_dat), 
+                           c("ID", grep("^Y\\.", colnames(tmle_dat), value = TRUE))),
+      t_end = t.end,
+      window_size = window_size,
+      out_activation = "sigmoid",
+      loss_fn = "binary_crossentropy",
+      output_dir = output_dir
+    )
     
     # Transform lstm_Y_preds into a data matrix of n x t.end
     transformed_Y_preds <- do.call(cbind, c(replicate(window.size, lstm_Y_preds[[1]], simplify = FALSE), lstm_Y_preds))

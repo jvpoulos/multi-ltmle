@@ -344,118 +344,113 @@ def load_data_from_csv(input_file, output_file):
         raise
 
 def configure_gpu(policy=None):
-    """Configure GPU to adapt to different types and numbers of GPUs."""
-    # Set correct CUDA path
-    cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
-    
-    # Basic GPU configuration
-    os.environ.update({
-        'CUDA_HOME': cuda_path,
-        'LD_LIBRARY_PATH': f"{cuda_path}/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
-        'PATH': f"{cuda_path}/bin:{os.environ.get('PATH', '')}",
-        'CUDA_DEVICE_ORDER': "PCI_BUS_ID",
-        'CUDA_VISIBLE_DEVICES': '0,1',
-        'TF_FORCE_GPU_ALLOW_GROWTH': 'true',  # Changed to true for dynamic memory allocation
-        'TF_CPP_MIN_LOG_LEVEL': '3',
-        'TF_CUDNN_DETERMINISTIC': '1',
-        'TF_ENABLE_ONEDNN_OPTS': '0'
-    })
-
-    # Check for libdevice
-    libdevice_path = f"{cuda_path}/nvvm/libdevice/libdevice.10.bc"
-    if os.path.exists(libdevice_path):
-        if not os.path.exists("./libdevice.10.bc"):
-            try:
-                os.symlink(libdevice_path, "./libdevice.10.bc")
-            except Exception as e:
-                logger.warning(f"Could not create libdevice symlink: {e}")
-    else:
-        logger.warning(f"libdevice not found at {libdevice_path}")
-
-    # Reset session and clear memory
-    tf.keras.backend.clear_session()
-    gc.collect()
-
+    """Configure GPU for Tesla M40."""
     try:
-        # Set memory growth and configure GPUs
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            for gpu in gpus:
-                try:
-                    # Enable memory growth
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                    
-                    # Configure memory limits (80% of available memory)
-                    gpu_details = tf.config.experimental.get_device_details(gpu)
-                    total_memory = gpu_details.get('memory_limit', 10 * 1024 * 1024 * 1024)
-                    memory_limit = int(0.8 * total_memory)
-                    
-                    tf.config.set_logical_device_configuration(
-                        gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=memory_limit)]
-                    )
-                except RuntimeError as e:
-                    logger.warning(f"Error configuring GPU {gpu}: {e}")
-                    continue
+        # Clear existing sessions and memory
+        tf.keras.backend.clear_session()
+        gc.collect()
 
-            # Enable mixed precision for better performance
-            tf.keras.mixed_precision.set_global_policy('mixed_float16')
+        # Force TensorFlow to use GPU memory growth
+        gpus = tf.config.list_physical_devices('GPU')
+        if not gpus:
+            logger.warning("No GPUs available, using CPU")
+            return False
+
+        # Configure each GPU with error handling
+        configured_gpus = []
+        for gpu in gpus:
+            try:
+                # Set fixed memory limit without memory growth for strategy compatibility
+                tf.config.set_logical_device_configuration(
+                    gpu,
+                    [tf.config.LogicalDeviceConfiguration(memory_limit=8 * 1024)]
+                )
+                
+                logger.info(f"Successfully configured GPU: {gpu.name}")
+                configured_gpus.append(gpu)
+            except RuntimeError as e:
+                logger.error(f"Error configuring GPU {gpu.name}: {e}")
+                continue
+
+        if not configured_gpus:
+            logger.warning("No GPUs were successfully configured")
+            return False
+
+        # Test GPU configuration
+        logger.info("Testing GPU configuration...")
+        try:
+            for i, gpu in enumerate(configured_gpus):
+                with tf.device(f'/GPU:{i}'):
+                    # Test with small tensor
+                    small_tensor = tf.random.normal([100, 100])
+                    result = tf.matmul(small_tensor, small_tensor)
+                    del result, small_tensor
+                    logger.info(f"GPU {i} test successful")
             
-            # Enable XLA compilation for better performance
-            tf.config.optimizer.set_jit(True)
-            
-            # Log GPU information
-            logger.info(f"Found {len(gpus)} GPU(s)")
-            for gpu in gpus:
-                logger.info(f"Using GPU: {gpu.name}")
-            
-            # Return appropriate strategy for multiple GPUs
-            if len(gpus) > 1:
-                logger.info("Using MirroredStrategy for multi-GPU training")
-                return tf.distribute.MirroredStrategy()
-            else:
-                logger.info("Using OneDeviceStrategy for single GPU")
-                return tf.distribute.OneDeviceStrategy(device="/gpu:0")
-        else:
-            logger.warning("No GPU found, using CPU")
-            return tf.distribute.OneDeviceStrategy(device="/cpu:0")
-            
+            return True
+        except Exception as e:
+            logger.error(f"GPU test failed: {e}")
+            return False
+
     except Exception as e:
-        logger.warning(f"GPU configuration failed, using CPU: {str(e)}")
-        return tf.distribute.OneDeviceStrategy(device="/cpu:0")
+        logger.error(f"GPU configuration failed: {e}")
+        logger.error(traceback.format_exc())
+        return False
 
 def get_strategy():
     """Get appropriate distribution strategy with improved GPU handling."""
     try:
-        # Configure GPUs first
+        # Check for GPU availability
         gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            try:
-                for gpu in gpus:
-                    tf.config.experimental.set_memory_growth(gpu, True)
-                
-                # Create MirroredStrategy for multiple GPUs
-                if len(gpus) > 1:
-                    strategy = tf.distribute.MirroredStrategy(
-                        devices=[f"/gpu:{i}" for i in range(len(gpus))]
-                    )
-                    logger.info(f"Using MirroredStrategy with {len(gpus)} GPUs")
-                    return strategy
-                else:
-                    strategy = tf.distribute.OneDeviceStrategy("/gpu:0")
-                    logger.info("Using OneDeviceStrategy with single GPU")
-                    return strategy
-            except RuntimeError as e:
-                logger.warning(f"Error configuring GPUs: {e}")
-        
-        # Fallback to CPU
-        logger.warning("No GPUs available, using CPU")
-        return tf.distribute.OneDeviceStrategy("/cpu:0")
-        
-    except Exception as e:
-        logger.warning(f"Strategy creation failed: {e}")
-        return tf.distribute.get_strategy()
+        if not gpus:
+            logger.warning("No GPUs available, using CPU")
+            return tf.distribute.OneDeviceStrategy("/cpu:0")
 
+        # Create logical GPUs - this is needed for multi-GPU support without memory growth
+        try:
+            # Create logical devices with fixed memory limits
+            for gpu in gpus:
+                tf.config.set_logical_device_configuration(
+                    gpu,
+                    [tf.config.LogicalDeviceConfiguration(memory_limit=8 * 1024)]
+                )
+        except RuntimeError as e:
+            logger.warning(f"Error creating logical devices: {e}")
+
+        # Get logical devices after configuration
+        logical_gpus = tf.config.list_logical_devices('GPU')
+        
+        if len(logical_gpus) > 1:
+            # Use MirroredStrategy for multiple GPUs
+            strategy = tf.distribute.MirroredStrategy(
+                devices=[gpu.name for gpu in logical_gpus],
+                cross_device_ops=tf.distribute.HierarchicalCopyAllReduce()
+            )
+            logger.info(f"Using MirroredStrategy with {len(logical_gpus)} GPUs")
+        else:
+            # Use single GPU
+            strategy = tf.distribute.OneDeviceStrategy("/gpu:0")
+            logger.info("Using OneDeviceStrategy with single GPU")
+
+        # Test strategy
+        try:
+            with strategy.scope():
+                test_tensor = tf.random.normal([100, 100])
+                result = tf.matmul(test_tensor, test_tensor)
+                del result
+                logger.info("Strategy test successful")
+        except Exception as e:
+            logger.warning(f"Strategy test failed: {e}")
+            # Fall back to default strategy
+            strategy = tf.distribute.get_strategy()
+            logger.info("Falling back to default strategy")
+
+        return strategy
+
+    except Exception as e:
+        logger.warning(f"Strategy creation failed: {e}. Falling back to default strategy")
+        return tf.distribute.get_strategy()
+        
 def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False):
     """Create dataset with proper sequence handling."""
     logger.info(f"Creating dataset with parameters:")
@@ -605,6 +600,9 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         strategy = get_strategy()
     
     with strategy.scope():
+        # Use mixed precision
+        tf.keras.mixed_precision.set_global_policy('mixed_float16')
+
         # Input layer with fixed name
         inputs = Input(shape=input_shape, dtype=tf.float32, name="input_1")
         
@@ -741,7 +739,8 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             beta_2=0.999,
             epsilon=1e-7,
             clipnorm=1.0,
-            amsgrad=True
+            amsgrad=True,
+            jit_compile=True  # Enable XLA compilation
         )
         
         # Compile model with appropriate loss and metrics
@@ -750,7 +749,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             loss=loss,
             metrics=metrics,
             run_eagerly=False,
-            jit_compile=False
+            jit_compile=True  # Enable XLA compilation for entire model
         )
         
         return model

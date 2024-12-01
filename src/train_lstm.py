@@ -1,22 +1,28 @@
 import os
 
-# Set correct CUDA path
-cuda_path = "/n/app/cuda/11.7-gcc-9.2.0"
+# Set critical environment variables before any TensorFlow imports
+cuda_base = "/n/app/cuda/12.1-gcc-9.2.0"
 os.environ.update({
-    'CUDA_HOME': cuda_path,
-    'LD_LIBRARY_PATH': f"{cuda_path}/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
-    'PATH': f"{cuda_path}/bin:{os.environ.get('PATH', '')}",
-    'XLA_FLAGS': f'--xla_gpu_cuda_data_dir={cuda_path}',
-    'TF_XLA_FLAGS': '--tf_xla_enable_xla_devices=false --tf_xla_auto_jit=0'
+    'CUDA_HOME': cuda_base,
+    'CUDA_ROOT': cuda_base,
+    'CUDA_PATH': cuda_base,
+    'CUDNN_PATH': f"{cuda_base}/lib64/libcudnn.so",
+    'LD_LIBRARY_PATH': f"{cuda_base}/lib64:{cuda_base}/extras/CUPTI/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
+    'PATH': f"{cuda_base}/bin:{os.environ.get('PATH', '')}",
+    'CUDA_DEVICE_ORDER': 'PCI_BUS_ID',
+    'CUDA_VISIBLE_DEVICES': '0,1',
+    'TF_FORCE_GPU_ALLOW_GROWTH': 'true',
+    'TF_XLA_FLAGS': '--tf_xla_enable_xla_devices',
+    'XLA_FLAGS': f'--xla_gpu_cuda_data_dir={cuda_base}',
+    'TF_GPU_THREAD_MODE': 'gpu_private',
+    'TF_GPU_THREAD_COUNT': '2',
+    'TF_CPP_MIN_LOG_LEVEL': '3'
 })
 
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
-
+import tensorflow as tf
 import numpy as np
 import pandas as pd
 import time
-import tensorflow as tf
 from tensorflow.keras import Model, Input
 from tensorflow.keras.layers import LSTM, Dense, Masking
 from tensorflow.keras.optimizers import Adam
@@ -40,65 +46,15 @@ import gc
 tf.keras.backend.clear_session()
 gc.collect()
 
-# Suppress all tensorflow logging
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL
-logging.getLogger('tensorflow').setLevel(logging.FATAL)
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.FATAL)
-
-# Create custom filter for TensorFlow messages
-class TFMessageFilter(logging.Filter):
-    def filter(self, record):
-        return 'tensorflow' not in record.name.lower() and \
-               'executor.cc' not in record.getMessage() and \
-               'INVALID_ARGUMENT' not in record.getMessage()
-
-# Apply filters to root logger and tensorflow logger
-root_logger = logging.getLogger()
-tf_logger = logging.getLogger('tensorflow')
-message_filter = TFMessageFilter()
-root_logger.addFilter(message_filter)
-tf_logger.addFilter(message_filter)
-
-# Suppress specific tensorflow warnings
+# Suppress warnings and configure logging
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', module='tensorflow')
 
-# Disable AutoGraph warnings
 tf.autograph.set_verbosity(0)
 tf.get_logger().setLevel('ERROR')
-
-# Configure TensorFlow to suppress executor messages
-tf.debugging.disable_traceback_filtering()
-
-# Additional warning suppression environment variables
-os.environ.update({
-    'TF_CPP_MIN_LOG_LEVEL': '3',
-    'AUTOGRAPH_VERBOSITY': '0',
-    'TF_ENABLE_EAGER_CLIENT_STREAMING_ENQUEUE': 'False',
-    'TF_DISABLE_COMPILATION_NOTIFICATIONS': '1',
-    'TF_ENABLE_ONEDNN_OPTS': '0',
-    'TF_DISABLE_MKL': '1',
-    'TF_ENABLE_GPU_GARBAGE_COLLECTION': 'False',
-})
-
-# Configure stdout/stderr to filter TensorFlow messages
-class TFOutputFilter:
-    def __init__(self, original_stream):
-        self.original_stream = original_stream
-
-    def write(self, text):
-        if not any(msg in text for msg in [
-            'tensorflow', 'INVALID_ARGUMENT', 'executor.cc',
-            'GetNextFromShard', 'MultiDeviceIterator'
-        ]):
-            self.original_stream.write(text)
-
-    def flush(self):
-        self.original_stream.flush()
-
-sys.stdout = TFOutputFilter(sys.stdout)
-sys.stderr = TFOutputFilter(sys.stderr)
+logging.getLogger('tensorflow').setLevel(logging.FATAL)
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.FATAL)
 
 # Configure logging format
 logging.basicConfig(
@@ -118,9 +74,71 @@ def main():
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
         
-    # Configure GPU with fallback
+    # Configure GPU
+    print("\nChecking GPU configuration...")
+    
+    # Check CUDA module
+    import subprocess
+    try:
+        module_list = subprocess.check_output('module list', shell=True).decode('utf-8')
+        print("Loaded modules:")
+        print(module_list)
+    except:
+        print("Could not check modules - may not be in module environment")
+
+    # Check system CUDA
+    try:
+        nvcc_version = subprocess.check_output('nvcc --version', shell=True).decode('utf-8')
+        print("\nNVCC Version:")
+        print(nvcc_version)
+    except:
+        print("nvcc not found in PATH")
+
+    # Check GPU devices
+    try:
+        nvidia_smi = subprocess.check_output('nvidia-smi', shell=True).decode('utf-8')
+        print("\nGPU Devices (nvidia-smi):")
+        print(nvidia_smi)
+    except:
+        print("nvidia-smi not found!")
+
+    # Configure GPU with detailed output
     gpu_available = configure_gpu(None)
-    logger.info(f"Using {'GPU' if gpu_available else 'CPU'} for training")
+    if gpu_available:
+        print("\nGPU configuration successful")
+        gpus = tf.config.list_physical_devices('GPU')
+        for i, gpu in enumerate(gpus):
+            details = tf.config.experimental.get_device_details(gpu)
+            print(f"\nGPU {i} Name: {gpu.name}")
+            print(f"GPU {i} Details: {details}")
+
+        # Test GPU availability with a simple operation
+        print("\nTesting GPU with simple operation...")
+        with tf.device('/GPU:0'):
+            try:
+                a = tf.constant([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+                b = tf.constant([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+                c = tf.matmul(a, b)
+                print("GPU test successful. Matrix multiplication result:", c.numpy())
+            except Exception as e:
+                print(f"GPU test failed: {e}")
+    else:
+        print("\nGPU configuration failed, falling back to CPU")
+        print("This will significantly impact performance")
+        print("\nDebug information:")
+        print(f"CUDA_HOME: {os.getenv('CUDA_HOME')}")
+        print(f"LD_LIBRARY_PATH: {os.getenv('LD_LIBRARY_PATH')}")
+        print(f"PATH: {os.getenv('PATH')}")
+
+    # Get distribution strategy based on available devices
+    strategy = get_strategy()
+    logger.info(f"Using distribution strategy: {strategy.__class__.__name__}")
+    
+    # Log device info
+    logical_devices = tf.config.list_logical_devices()
+    logger.info("Available logical devices:")
+    for device in logical_devices:
+        logger.info(f"  {device.name} ({device.device_type})")
 
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Loss function: {loss_fn}")
@@ -137,10 +155,6 @@ def main():
 
     n_pre = int(window_size)
     batch_size = int(nb_batches)
-
-    # Get distribution strategy
-    strategy = get_strategy()
-    logger.info(f"Using distribution strategy: {strategy.__class__.__name__}")
 
     # Load data
     x_data, y_data = load_data_from_csv(f"{output_dir}input_data.csv", f"{output_dir}output_data.csv")
@@ -372,20 +386,26 @@ def main():
         predictions = predictions[:n_valid_predictions]
         
         # Save predictions
-        pred_path = os.path.join(output_dir, 
-                               'lstm_cat_preds.npy' if loss_fn == "sparse_categorical_crossentropy" 
-                               else 'lstm_bin_preds.npy')
-        np.save(pred_path, predictions)
-        
-        # Save prediction info
-        info_path = os.path.join(output_dir, 
-                               'lstm_cat_preds_info.npz' if loss_fn == "sparse_categorical_crossentropy" 
-                               else 'lstm_bin_preds_info.npz')
+        # Determine prediction filename based on case
+        if is_censoring:
+            pred_filename = 'lstm_bin_C_preds.npy'
+            info_filename = 'lstm_bin_C_preds_info.npz'
+        else:
+            if loss_fn == "sparse_categorical_crossentropy":
+                pred_filename = 'lstm_cat_A_preds.npy'
+                info_filename = 'lstm_cat_A_preds_info.npz'
+            else:
+                pred_filename = 'lstm_bin_A_preds.npy'
+                info_filename = 'lstm_bin_A_preds_info.npz'
 
-        logger.info(f"Predictions shape: {predictions.shape}")
-        logger.info(f"Predictions type: {predictions.dtype}")
-        logger.info(f"Sample predictions: {predictions[:5]}")
-        
+        # Set prediction and info paths
+        pred_path = os.path.join(output_dir, pred_filename)
+        info_path = os.path.join(output_dir, info_filename)
+
+        # Save predictions
+        np.save(pred_path, predictions)
+
+        # Save prediction info
         np.savez(
             info_path,
             shape=predictions.shape,
@@ -395,7 +415,9 @@ def main():
             num_samples=n_valid_predictions,
             num_features=num_features
         )
-        logger.info("Predictions saved successfully")
+
+        logger.info(f"Predictions saved to: {pred_path}")
+        logger.info(f"Prediction info saved to: {info_path}")
 
     except Exception as e:
         wandb.alert(
