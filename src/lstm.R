@@ -215,7 +215,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$loss_fn <- loss_fn
   py$lr <- 0.001
   py$dr <- 0.5
-  py$nb_batches <- as.integer(128)
+  py$nb_batches <- as.integer(256)
   py$patience <- as.integer(1)
   py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)

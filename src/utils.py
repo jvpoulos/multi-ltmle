@@ -100,7 +100,7 @@ def setup_wandb(config, validation_steps=None, train_dataset=None):
     callback_config = {
         'monitor': 'val_loss',
         'log_weights': True,
-        'log_gradients': True,
+        'log_gradients': False,  # Disable gradient logging to avoid NoneType error
         'save_model': False,
         'validation_data': None,  # Remove validation data logging
         'compute_flops': False,   # Disable FLOPS computation
@@ -344,57 +344,45 @@ def load_data_from_csv(input_file, output_file):
         raise
 
 def configure_gpu(policy=None):
-    """Configure GPU for Tesla M40."""
     try:
-        # Clear existing sessions and memory
         tf.keras.backend.clear_session()
         gc.collect()
 
-        # Force TensorFlow to use GPU memory growth
         gpus = tf.config.list_physical_devices('GPU')
         if not gpus:
             logger.warning("No GPUs available, using CPU")
             return False
 
-        # Configure each GPU with error handling
-        configured_gpus = []
+        # Use more memory on each GPU
         for gpu in gpus:
             try:
-                # Set fixed memory limit without memory growth for strategy compatibility
+                # Use 10GB instead of 8GB
                 tf.config.set_logical_device_configuration(
                     gpu,
-                    [tf.config.LogicalDeviceConfiguration(memory_limit=8 * 1024)]
+                    [tf.config.LogicalDeviceConfiguration(memory_limit=10 * 1024)]
                 )
-                
                 logger.info(f"Successfully configured GPU: {gpu.name}")
-                configured_gpus.append(gpu)
             except RuntimeError as e:
                 logger.error(f"Error configuring GPU {gpu.name}: {e}")
                 continue
 
-        if not configured_gpus:
-            logger.warning("No GPUs were successfully configured")
-            return False
+        # Optimize for older GPUs
+        tf.config.optimizer.set_experimental_options({
+            'layout_optimizer': True,
+            'constant_folding': True,
+            'shape_optimization': True,
+            'remapping': True,
+            'arithmetic_optimization': True,
+            'dependency_optimization': True,
+            'loop_optimization': True,
+            'function_optimization': True,
+            'debug_stripper': True,
+        })
 
-        # Test GPU configuration
-        logger.info("Testing GPU configuration...")
-        try:
-            for i, gpu in enumerate(configured_gpus):
-                with tf.device(f'/GPU:{i}'):
-                    # Test with small tensor
-                    small_tensor = tf.random.normal([100, 100])
-                    result = tf.matmul(small_tensor, small_tensor)
-                    del result, small_tensor
-                    logger.info(f"GPU {i} test successful")
-            
-            return True
-        except Exception as e:
-            logger.error(f"GPU test failed: {e}")
-            return False
+        return True
 
     except Exception as e:
         logger.error(f"GPU configuration failed: {e}")
-        logger.error(traceback.format_exc())
         return False
 
 def get_strategy():
@@ -450,7 +438,7 @@ def get_strategy():
     except Exception as e:
         logger.warning(f"Strategy creation failed: {e}. Falling back to default strategy")
         return tf.distribute.get_strategy()
-        
+
 def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False):
     """Create dataset with proper sequence handling."""
     logger.info(f"Creating dataset with parameters:")
@@ -555,16 +543,16 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         # Configure dataset
         dataset = dataset.batch(batch_size, drop_remainder=is_training)
         
-        # Set dataset options
+        # Set dataset options using current API
         options = tf.data.Options()
-        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
-        options.deterministic = False
+        options.threading.private_threadpool_size = 16  # Reduced from 48
+        options.threading.max_intra_op_parallelism = 4
         dataset = dataset.with_options(options)
         
         if is_training:
             dataset = dataset.cache()
             dataset = dataset.shuffle(
-                buffer_size=min(batch_size * 100, len(x_sequences)),
+                buffer_size=min(batch_size * 50, len(x_sequences)),
                 reshuffle_each_iteration=True
             )
         
@@ -600,9 +588,6 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         strategy = get_strategy()
     
     with strategy.scope():
-        # Use mixed precision
-        tf.keras.mixed_precision.set_global_policy('mixed_float16')
-
         # Input layer with fixed name
         inputs = Input(shape=input_shape, dtype=tf.float32, name="input_1")
         
@@ -619,8 +604,8 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             'kernel_regularizer': l2(0.001),
             'recurrent_regularizer': l2(0.001),
             'bias_regularizer': l2(0.001),
-            'kernel_constraint': tf.keras.constraints.MaxNorm(3),
-            'recurrent_constraint': tf.keras.constraints.MaxNorm(3),
+            'kernel_constraint': None,  # Remove MaxNorm constraint
+            'recurrent_constraint': None,  # Remove MaxNorm constraint
             'dropout': 0.0,
             'recurrent_dropout': 0.0,
             'dtype': tf.float32
@@ -659,7 +644,6 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             units=n_hidden,
             activation='relu',
             kernel_regularizer=l2(0.001),
-            kernel_constraint=tf.keras.constraints.MaxNorm(3),
             name="dense_1"
         )(x)
         x = tf.keras.layers.LayerNormalization(name="norm_4")(x)
@@ -721,15 +705,11 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         model = Model(inputs=inputs, outputs=outputs, name='lstm_model')
         
         # Learning rate schedule with warm-up
-        initial_learning_rate = lr
-        decay_steps = steps_per_epoch * 2
-        
-        lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
-            initial_learning_rate=initial_learning_rate,
-            first_decay_steps=decay_steps,
-            t_mul=2.0,
-            m_mul=0.95,
-            alpha=0.1
+        lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+            initial_learning_rate=lr,
+            decay_steps=steps_per_epoch * 2,
+            decay_rate=0.95,
+            staircase=True
         )
         
         # Optimizer with gradient clipping
@@ -739,8 +719,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             beta_2=0.999,
             epsilon=1e-7,
             clipnorm=1.0,
-            amsgrad=True,
-            jit_compile=True  # Enable XLA compilation
+            amsgrad=False  # Disable amsgrad
         )
         
         # Compile model with appropriate loss and metrics
@@ -749,7 +728,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             loss=loss,
             metrics=metrics,
             run_eagerly=False,
-            jit_compile=True  # Enable XLA compilation for entire model
+            jit_compile=False
         )
         
         return model
