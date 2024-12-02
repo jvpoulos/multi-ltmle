@@ -55,10 +55,15 @@ def test_model():
         if is_censoring:
             model_filename = 'lstm_bin_C_model.h5'
         else:
-            if loss_fn == "sparse_categorical_crossentropy":
-                model_filename = 'lstm_cat_A_model.h5'
+            # Check if outcome is Y and has binary loss function
+            is_Y_outcome = any(col.startswith('Y') for col in (outcome_cols if isinstance(outcome_cols, list) else [outcome]))
+            if is_Y_outcome and loss_fn == "binary_crossentropy":
+                model_filename = 'lstm_bin_Y_model.h5'
             else:
-                model_filename = 'lstm_bin_A_model.h5'
+                if loss_fn == "sparse_categorical_crossentropy":
+                    model_filename = 'lstm_cat_A_model.h5'
+                else:
+                    model_filename = 'lstm_bin_A_model.h5'
 
         # Set model path
         model_path = os.path.join(output_dir, model_filename)

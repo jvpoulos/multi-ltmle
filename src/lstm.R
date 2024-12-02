@@ -256,9 +256,15 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     preds_file <- if(is_censoring) {
       paste0(output_dir, 'lstm_bin_C_preds.npy')
     } else {
-      ifelse(loss_fn == "sparse_categorical_crossentropy",
-             paste0(output_dir, 'lstm_cat_A_preds.npy'),
-             paste0(output_dir, 'lstm_bin_A_preds.npy'))
+      # Check if outcome is Y and has binary loss function
+      is_Y_outcome <- any(grepl("^Y", outcome_cols))
+      if(is_Y_outcome && loss_fn == "binary_crossentropy") {
+        paste0(output_dir, 'lstm_bin_Y_preds.npy')
+      } else {
+        ifelse(loss_fn == "sparse_categorical_crossentropy",
+               paste0(output_dir, 'lstm_cat_A_preds.npy'),
+               paste0(output_dir, 'lstm_bin_A_preds.npy'))
+      }
     }
     
     if(file.exists(preds_file)) {

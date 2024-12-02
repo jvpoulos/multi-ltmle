@@ -508,7 +508,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(
       tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)], 
       handle_treatment_cols)  
-    }
+  }
   
   ##  fit initial treatment model
   
@@ -566,7 +566,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     # Identify outcome and covariate columns
     outcome_cols <- grep("^A\\.", colnames(tmle_dat), value = TRUE)
     covariate_cols <- setdiff(colnames(tmle_dat), c("ID", "t", outcome_cols, "C", "Y"))
-
+    
     print("Debug info before lstm call:")
     print("tmle_dat columns:")
     print(colnames(tmle_dat))
@@ -944,12 +944,117 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   } else if(estimator=='tmle-lstm'){
     # Helper function to safely reshape data from long to wide format
-    safe_reshape <- function(data, id_col = "ID", time_col = "t") {
-      # Ensure ID and time columns are properly formatted
-      data[[id_col]] <- as.numeric(data[[id_col]])
-      data[[time_col]] <- as.numeric(data[[time_col]])
+    prepare_lstm_data <- function(tmle_dat, t.end, window_size) {
+      # Input validation
+      if (!"ID" %in% names(tmle_dat)) {
+        stop("Data must contain an ID column")
+      }
       
-      # Get all columns except ID and time
+      # Print debug info
+      print("Available columns in tmle_dat:")
+      print(names(tmle_dat))
+      
+      # More flexible column pattern matching
+      L_cols <- grep("^L[0-9]+\\.|^L\\.[0-9]+", names(tmle_dat), value=TRUE)
+      V_cols <- grep("^V[0-9]+|^V\\.[0-9]+", names(tmle_dat), value=TRUE)
+      A_cols <- grep("^A\\.[0-9]+|^A[0-9]+$", names(tmle_dat), value=TRUE)
+      Y_cols <- grep("^Y\\.[0-9]+", names(tmle_dat), value=TRUE)
+      C_cols <- grep("^C\\.[0-9]+", names(tmle_dat), value=TRUE)
+      
+      print("Found column patterns:")
+      print(paste("L columns:", paste(L_cols, collapse=", ")))
+      print(paste("V columns:", paste(V_cols, collapse=", ")))
+      print(paste("A columns:", paste(A_cols, collapse=", ")))
+      print(paste("Y columns:", paste(Y_cols, collapse=", ")))
+      print(paste("C columns:", paste(C_cols, collapse=", ")))
+      
+      # Data is already in wide format, just needs cleaning
+      wide_data <- tmle_dat
+      
+      # Extract existing base columns
+      base_cols <- c("ID", "V3", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
+      base_cols <- base_cols[base_cols %in% names(wide_data)]
+      
+      # Handle missing values for numeric columns
+      numeric_cols <- sapply(wide_data, is.numeric)
+      wide_data[numeric_cols][is.na(wide_data[numeric_cols])] <- -1
+      
+      # Special handling for treatment (A) columns
+      A_cols_all <- union(grep("^A\\.", names(wide_data), value=TRUE),
+                          grep("^A[0-9]+$", names(wide_data), value=TRUE))
+      
+      if (length(A_cols_all) > 0) {
+        wide_data[A_cols_all] <- lapply(wide_data[A_cols_all], function(x) {
+          if (is.factor(x)) {
+            x <- addNA(x)
+            levels(x) <- c("0", levels(x)[-length(levels(x))])
+          } else {
+            x <- as.factor(x)
+            x <- addNA(x)
+            levels(x) <- c("0", levels(x)[-length(levels(x))])
+          }
+          as.numeric(as.character(x))
+        })
+      }
+      
+      # Handle categorical variables that exist
+      categorical_vars <- c("white", "black", "latino", "other", "mdd", "bipolar", "schiz")
+      existing_categorical <- intersect(categorical_vars, names(wide_data))
+      
+      for (col in existing_categorical) {
+        if (all(is.na(wide_data[[col]]))) {
+          wide_data[[col]] <- 0
+        }
+      }
+      
+      # Ensure all required columns exist with proper naming
+      time_points <- 0:t.end
+      expected_cols <- c(
+        paste0("L1.", time_points),
+        paste0("L2.", time_points),
+        paste0("L3.", time_points),
+        paste0("A.", time_points),
+        paste0("C.", time_points),
+        paste0("Y.", time_points)
+      )
+      
+      missing_cols <- setdiff(expected_cols, names(wide_data))
+      if (length(missing_cols) > 0) {
+        print(paste("Warning: Missing expected columns:", paste(missing_cols, collapse=", ")))
+        # Add missing columns with default values
+        for (col in missing_cols) {
+          wide_data[[col]] <- -1
+        }
+      }
+      
+      return(wide_data)
+    }
+    
+    # Updated safe_reshape function with improved pattern matching
+    safe_reshape <- function(data, id_col = "ID", time_col = "t") {
+      # Input validation
+      if (!id_col %in% names(data)) {
+        stop(paste("ID column", id_col, "not found in data"))
+      }
+      
+      # Ensure we have data to process
+      if (nrow(data) == 0) {
+        stop("Input data is empty")
+      }
+      
+      # Convert ID and time to numeric, handling NAs
+      data[[id_col]] <- as.numeric(as.character(data[[id_col]]))
+      if (!time_col %in% names(data)) {
+        # If time column doesn't exist, create it based on unique IDs
+        n_times <- nrow(data) %/% length(unique(data[[id_col]]))
+        data[[time_col]] <- rep(0:(n_times-1), each = length(unique(data[[id_col]])))
+      }
+      data[[time_col]] <- as.numeric(as.character(data[[time_col]]))
+      
+      # Remove any rows with NA in ID or time
+      data <- data[!is.na(data[[id_col]]) & !is.na(data[[time_col]]),]
+      
+      # Get all value columns
       value_cols <- setdiff(names(data), c(id_col, time_col))
       
       # Create empty wide format dataset
@@ -957,61 +1062,33 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       
       # For each value column, reshape it to wide format
       for (col in value_cols) {
-        # Create temporary subset with just this column
-        temp_data <- data[, c(id_col, time_col, col)]
-        
-        # Reshape using base R reshape (more stable than tidyr for this case)
-        temp_wide <- reshape(temp_data,
-                             direction = "wide",
-                             idvar = id_col,
-                             timevar = time_col,
-                             v.names = col)
-        
-        # Add reshaped columns to main wide dataset
-        wide_cols <- grep(paste0("^", col, "\\."), names(temp_wide), value = TRUE)
-        wide_data[wide_cols] <- temp_wide[wide_cols]
-      }
-      
-      return(wide_data)
-    }
-    
-    # Modified LSTM data preparation function
-    prepare_lstm_data <- function(tmle_dat, t.end, window_size) {
-      # First ensure the data is in the correct format
-      if (!"ID" %in% names(tmle_dat)) {
-        stop("Data must contain an ID column")
-      }
-      
-      # Convert categorical variables to dummy variables
-      categorical_cols <- c("V1", "V2")
-      for (col in categorical_cols) {
-        if (col %in% names(tmle_dat)) {
-          dummy_mat <- model.matrix(~ tmle_dat[[col]] - 1)
-          colnames(dummy_mat) <- paste0(col, "_", 1:ncol(dummy_mat))
-          tmle_dat <- cbind(tmle_dat[, !names(tmle_dat) %in% col], dummy_mat)
-        }
-      }
-      
-      # Reshape to wide format using our safe reshape function
-      wide_data <- safe_reshape(tmle_dat)
-      
-      # Handle missing values
-      na_cols <- c(
-        grep("^Y\\.", names(wide_data), value = TRUE),
-        grep("^C\\.", names(wide_data), value = TRUE),
-        grep("^L[1-3]\\.", names(wide_data), value = TRUE),
-        grep("^V3\\.", names(wide_data), value = TRUE)
-      )
-      
-      wide_data[na_cols][is.na(wide_data[na_cols])] <- -1
-      
-      # Special handling for treatment (A) columns
-      A_cols <- grep("^A\\.", names(wide_data), value = TRUE)
-      if (length(A_cols) > 0) {
-        wide_data[A_cols] <- lapply(wide_data[A_cols], function(x) {
-          x <- addNA(factor(x))
-          levels(x) <- c(0, levels(x)[-length(levels(x))])
-          as.numeric(as.character(x))
+        tryCatch({
+          # Create temporary subset
+          temp_data <- data[, c(id_col, time_col, col)]
+          names(temp_data)[3] <- "value"
+          
+          # Handle missing values before reshape
+          temp_data$value[is.na(temp_data$value)] <- -1
+          
+          # Reshape
+          temp_wide <- reshape(temp_data,
+                               direction = "wide",
+                               idvar = id_col,
+                               timevar = time_col,
+                               v.names = "value")
+          
+          # Add reshaped columns to main wide dataset
+          if (!is.null(temp_wide)) {
+            wide_cols <- grep("^value\\.", names(temp_wide), value = TRUE)
+            if (length(wide_cols) > 0) {
+              # Rename columns to use original column name
+              names(temp_wide)[names(temp_wide) %in% wide_cols] <- 
+                paste0(col, ".", gsub("^value\\.", "", wide_cols))
+              wide_data[names(temp_wide)] <- temp_wide
+            }
+          }
+        }, error = function(e) {
+          warning(paste("Error reshaping column", col, ":", e$message))
         })
       }
       
@@ -1020,36 +1097,75 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     tmle_dat <- prepare_lstm_data(tmle_dat, t.end, window_size)
     
+    print("Training LSTM model for Y")
     lstm_Y_preds <- lstm(
       data = tmle_dat,
-      outcome = grep("Y", colnames(tmle_dat), value = TRUE),
+      outcome = grep("Y", colnames(tmle_dat), value = TRUE), 
       covariates = setdiff(colnames(tmle_dat), 
                            c("ID", grep("^Y\\.", colnames(tmle_dat), value = TRUE))),
       t_end = t.end,
       window_size = window_size,
-      out_activation = "sigmoid",
-      loss_fn = "binary_crossentropy",
-      output_dir = output_dir
+      out_activation = "sigmoid", # Always sigmoid for binary Y
+      loss_fn = "binary_crossentropy", # Always binary crossentropy for Y
+      output_dir = output_dir,
+      J = 1, # J should be 1 for binary Y
+      is_censoring = FALSE
+    )
+
+    # Transform lstm_Y_preds into a data matrix of n x t.end
+    transformed_Y_preds <- sapply(lstm_Y_preds, function(x) {
+      # Ensure single column matrix
+      if(is.null(dim(x))) {
+        x <- matrix(x, ncol=1)  
+      }
+      # Take first column for binary prediction
+      x[,1]
+    })
+    
+    # Get number of time points and IDs
+    n_ids <- length(unique(tmle_dat$ID))
+    time_points <- 0:36
+    n_times <- length(time_points)
+    
+    # Create correct base data frame with proper dimensions 
+    long_data <- data.frame(
+      ID = rep(sort(unique(tmle_dat$ID)), each=n_times),
+      t = rep(time_points, times=n_ids)
     )
     
-    # Transform lstm_Y_preds into a data matrix of n x t.end
-    transformed_Y_preds <- do.call(cbind, c(replicate(window.size, lstm_Y_preds[[1]], simplify = FALSE), lstm_Y_preds))
+    # Add non-time-varying columns with proper replication
+    static_cols <- c("white", "black", "latino", "other", "mdd", "bipolar", "schiz", "V3") 
+    static_cols <- intersect(static_cols, names(tmle_dat))
+    for(col in static_cols) {
+      long_data[[col]] <- rep(tmle_dat[[col]], each=n_times)
+    }
     
-    # Reshape tmle_dat from wide to long format
-    long_data <- tmle_dat %>%
-      # Convert all columns to character type to avoid data type conflicts
-      mutate(across(-t, as.character)) %>%
-      pivot_longer(
-        cols = -t,  # Select all columns except 't'
-        names_to = "covariate_id",
-        values_to = "value"
-      ) %>%
-      separate(covariate_id, into = c("covariate", "ID"), sep = "\\.") %>%
-      pivot_wider(
-        names_from = covariate,
-        values_from = value,
-        id_cols = c(t, ID)
-      )
+    # Add time-varying columns
+    time_vars <- grep("\\.", names(tmle_dat), value=TRUE)
+    base_vars <- unique(gsub("\\..*$", "", time_vars))
+    
+    for(var in base_vars) {
+      var_cols <- grep(paste0("^", var, "\\."), names(tmle_dat), value=TRUE)
+      sorted_cols <- mixedsort(var_cols)  # Ensure proper time ordering
+      
+      if(var == "A") {
+        # Handle treatment variable
+        values <- as.vector(t(as.matrix(tmle_dat[sorted_cols])))
+        long_data$A <- factor(values)
+      } else {
+        # Handle other time-varying variables
+        values <- as.vector(t(as.matrix(tmle_dat[sorted_cols])))
+        long_data[[var]] <- values
+      }
+    }
+    
+    # Convert to data frame and fix column names
+    long_data <- as.data.frame(long_data)
+    colnames(long_data) <- gsub("\\..*$", "", colnames(long_data))
+    
+    # Convert all columns to numeric except 'A'
+    long_data[setdiff(names(long_data), "A")] <- lapply(long_data[setdiff(names(long_data), "A")], as.numeric)
+    long_data$A <- as.factor(long_data$A)
     
     # Convert all columns to numeric except 'A', which is converted to a factor
     long_data <- long_data %>%
@@ -1062,7 +1178,10 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     names(long_data) <- gsub("\\.ID", "", names(long_data))
     
     # Create initial_model_for_Y using the transformed predictions
-    initial_model_for_Y <- list("preds" = boundProbs(transformed_Y_preds, ybound), "data" = long_data)
+    initial_model_for_Y <- list(
+      "preds" = boundProbs(transformed_Y_preds[,1], ybound), # Take first prediction only
+      "data" = long_data
+    )
     
     tmle_rules <- list("static" = static_mtp_lstm,
                        "dynamic" = dynamic_mtp_lstm,
@@ -1133,7 +1252,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       })
     }, mc.cores = cores)
   }
-    
+  
   # plot estimated survival curves
   
   tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
@@ -1407,9 +1526,9 @@ if(doMPI){
   
   if(estimator!='tmle-lstm'){
     cl <- parallel::makeCluster(cores, outfile="")
-  
+    
     doParallel::registerDoParallel(cl) # register cluster
-}
+  }
 }
 
 # output directory
