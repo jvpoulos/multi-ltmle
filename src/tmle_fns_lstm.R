@@ -3,7 +3,6 @@
 # estimate each treatment rule-specific mean                      #
 ###################################################################
 
-# Modified getTMLELongLSTM function with improved data handling
 getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
                             tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, 
                             obs.treatment, obs.rules, gbound, ybound, t.end, window.size) {
@@ -21,6 +20,27 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   # Create time sequence
   n_time_points <- t.end + 1
   print(paste("Number of time points:", n_time_points))
+  print(paste("Length of predictions:", length(initial_model_for_Y_preds)))
+  
+  # Process predictions to match number of IDs
+  # Create mapping of IDs to prediction indices
+  id_map <- match(initial_model_for_Y_data$ID, ids)
+  pred_by_id <- numeric(n_ids)
+  
+  # Calculate mean prediction for each ID
+  for(i in 1:n_ids) {
+    id_preds <- initial_model_for_Y_preds[id_map == i]
+    if(length(id_preds) > 0) {
+      pred_by_id[i] <- mean(id_preds, na.rm = TRUE)
+    } else {
+      pred_by_id[i] <- mean(initial_model_for_Y_preds, na.rm = TRUE)  # Use overall mean if no predictions
+    }
+  }
+  
+  # Replace original predictions with ID-averaged predictions
+  initial_model_for_Y_preds <- pred_by_id
+  
+  print(paste("Final prediction length:", length(initial_model_for_Y_preds)))
   
   # Initialize output matrices
   predicted_Y <- predict_Qstar <- matrix(NA, nrow = n_ids, ncol = length(tmle_rules))
@@ -39,17 +59,17 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       return(NULL)
     })
     
-    if (is.null(HAW) || nrow(HAW) == 0) next
+    if(is.null(HAW) || nrow(HAW) == 0) next
     
     # Remove NA rows
     HAW <- HAW[!is.na(HAW[,1]), , drop = FALSE]
-    if (nrow(HAW) == 0) next
+    if(nrow(HAW) == 0) next
     
     # Update predictions
-    pred_Q <- initial_model_for_Y_preds
+    pred_Q <- initial_model_for_Y_preds # Now matches n_ids
     valid_ids <- as.character(HAW[,"ID"]) %in% as.character(ids)
     
-    if (any(valid_ids)) {
+    if(any(valid_ids)) {
       observed_Y[match(HAW$ID[valid_ids], ids)] <- 
         initial_model_for_Y_data$Y[match(HAW$ID[valid_ids], initial_model_for_Y_data$ID)]
       predicted_Y[,i] <- predict_Qstar[,i] <- pred_Q
@@ -87,60 +107,70 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   print("TMLE calculations completed")
   return(results)
 }
-  
-  # Return results
-  results <- list(
-    "Qstar" = boundProbs(predict_Qstar, ybound),
-    "epsilon" = epsilon,
-    "Qstar_gcomp" = boundProbs(predicted_Y, ybound),
-    "Qstar_iptw" = sapply(seq_len(ncol(predict_Qstar)), function(i) {
-      boundProbs(weighted.mean(
-        predicted_Y[, i],
-        w = (1 / boundProbs(g_preds_bounded[ids, obs.treatment[obs.rules[, i] == 1]], gbound)),
-        na.rm = TRUE
-      ), ybound)
-    }),
-    "Y" = observed_Y
-  )
-  
-  return(results)
-}
-
-# Example modifications to treatment rule functions to ensure they handle missing values and edge cases
 
 static_mtp_lstm <- function(tmle_dat) {
-  IDs <- tmle_dat %>% group_by(ID) %>% filter(row_number() == n()) %>% ungroup() %>% pull(ID)
-  data.frame(
+  # Get unique IDs
+  IDs <- unique(tmle_dat$ID)
+  
+  # Create index mapping for subsetting
+  id_indices <- match(IDs, tmle_dat$ID)
+  
+  result <- data.frame(
     'ID' = IDs,
     "A0" = ifelse(
-      tmle_dat[IDs, 'mdd'] == 1 & tmle_dat[IDs, 't'] == 1, 1,
+      tmle_dat$mdd[id_indices] == 1 & tmle_dat$t[id_indices] == 1, 1,
       ifelse(
-        tmle_dat[IDs, 'bipolar'] == 1 & tmle_dat[IDs, 't'] == 1, 4,
-        ifelse(tmle_dat[IDs, 'schiz'] == 1 & tmle_dat[IDs, 't'] == 1, 2, 0)
+        tmle_dat$bipolar[id_indices] == 1 & tmle_dat$t[id_indices] == 1, 4,
+        ifelse(tmle_dat$schiz[id_indices] == 1 & tmle_dat$t[id_indices] == 1, 2, 0)
       )
     )
   )
+  rownames(result) <- seq_len(nrow(result))
+  return(result)
 }
 
 dynamic_mtp_lstm <- function(tmle_dat) {
-  IDs <- tmle_dat %>% group_by(ID) %>% filter(row_number() == n()) %>% ungroup() %>% pull(ID)
-  data.frame(
+  # Get unique IDs
+  IDs <- unique(tmle_dat$ID)
+  
+  # Create index mapping for subsetting
+  id_indices <- match(IDs, tmle_dat$ID)
+  
+  result <- data.frame(
     'ID' = IDs,
     "A0" = ifelse(
-      tmle_dat[IDs, 'mdd'] == 1 & (tmle_dat[IDs, 'L1'] > 0 | tmle_dat[IDs, 'L2'] > 0 | tmle_dat[IDs, 'L3'] > 0), 1,
+      tmle_dat$mdd[id_indices] == 1 & 
+        (tmle_dat$L1[id_indices] > 0 | tmle_dat$L2[id_indices] > 0 | tmle_dat$L3[id_indices] > 0), 1,
       ifelse(
-        tmle_dat[IDs, 'bipolar'] == 1 & (tmle_dat[IDs, 'L1'] > 0 | tmle_dat[IDs, 'L2'] > 0 | tmle_dat[IDs, 'L3'] > 0), 4,
-        ifelse(tmle_dat[IDs, 'schiz'] == 1 & (tmle_dat[IDs, 'L1'] > 0 | tmle_dat[IDs, 'L2'] > 0 | tmle_dat[IDs, 'L3'] > 0), 2, 5)
+        tmle_dat$bipolar[id_indices] == 1 & 
+          (tmle_dat$L1[id_indices] > 0 | tmle_dat$L2[id_indices] > 0 | tmle_dat$L3[id_indices] > 0), 4,
+        ifelse(tmle_dat$schiz[id_indices] == 1 & 
+                 (tmle_dat$L1[id_indices] > 0 | tmle_dat$L2[id_indices] > 0 | tmle_dat$L3[id_indices] > 0), 2, 5)
       )
     )
   )
+  rownames(result) <- seq_len(nrow(result))
+  return(result)
 }
 
 stochastic_mtp_lstm <- function(tmle_dat) {
-  IDs <- tmle_dat %>% group_by(ID) %>% filter(row_number() == n()) %>% ungroup() %>% pull(ID)
-  prev_treat <- as.numeric(tmle_dat[IDs, grep("A", colnames(tmle_dat), value = TRUE)])
-  data.frame(
+  # Get unique IDs 
+  IDs <- unique(tmle_dat$ID)
+  
+  # Create index mapping for subsetting
+  id_indices <- match(IDs, tmle_dat$ID)
+  
+  # Get previous treatment column
+  A_cols <- grep("^A$", colnames(tmle_dat), value = TRUE)
+  prev_treat <- as.numeric(tmle_dat[id_indices, A_cols])
+  
+  result <- data.frame(
     'ID' = IDs,
-    "A0" = sapply(seq_along(prev_treat), function(x) sample(c(1:6), size = 1, prob = c(0, 0.01, 0.01, 0.01, 0.01, 0.96)[prev_treat[x]]))
+    "A0" = sapply(seq_along(prev_treat), function(x) {
+      probs <- c(0, 0.01, 0.01, 0.01, 0.01, 0.96)
+      sample(c(1:6), size = 1, prob = probs[prev_treat[x]])
+    })
   )
+  rownames(result) <- seq_len(nrow(result))
+  return(result)
 }

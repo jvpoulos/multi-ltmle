@@ -1112,15 +1112,11 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       is_censoring = FALSE
     )
 
-    # Transform lstm_Y_preds into a data matrix of n x t.end
-    transformed_Y_preds <- sapply(lstm_Y_preds, function(x) {
-      # Ensure single column matrix
-      if(is.null(dim(x))) {
-        x <- matrix(x, ncol=1)  
-      }
-      # Take first column for binary prediction
-      x[,1]
-    })
+    # Transform lstm_Y_preds into proper matrix format
+    transformed_Y_preds <- do.call(cbind, lstm_Y_preds)
+    if(is.null(dim(transformed_Y_preds))) {
+      transformed_Y_preds <- matrix(transformed_Y_preds, ncol=length(lstm_Y_preds))
+    }
     
     # Get number of time points and IDs
     n_ids <- length(unique(tmle_dat$ID))
@@ -1190,20 +1186,21 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_contrasts <- list()
     tmle_contrasts_bin <- list()
     
+    # When calling getTMLELongLSTM, pass the actual predictions not the list structure
     tmle_contrasts[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = initial_model_for_Y$preds[, t.end], 
-      initial_model_for_Y_data = initial_model_for_Y$data, 
+      initial_model_for_Y_preds = transformed_Y_preds[, t.end], # Pass vector directly
+      initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
-      tmle_covars_Y=tmle_covars_Y, 
-      g_preds_bounded=g_preds_cuml_bounded[[t.end+1]], 
-      C_preds_bounded=C_preds_cuml_bounded[[t.end]], 
-      obs.treatment=treatments[[t.end+1]], 
-      obs.rules=obs.rules[[t.end+1]], 
-      gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
+      tmle_covars_Y = tmle_covars_Y, 
+      g_preds_bounded = g_preds_cuml_bounded[[t.end+1]], 
+      C_preds_bounded = C_preds_cuml_bounded[[t.end]], 
+      obs.treatment = treatments[[t.end+1]], 
+      obs.rules = obs.rules[[t.end+1]], 
+      gbound = gbound, ybound = ybound, t.end = t.end, window.size = window.size
     )
     
     tmle_contrasts_bin[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = initial_model_for_Y$preds[, t.end], 
+      initial_model_for_Y_preds = transformed_Y_preds[, t.end], # Pass vector directly 
       initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y=tmle_covars_Y, 
