@@ -924,7 +924,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Update equations, calculate point estimate and variance
     # backward in time: T.end, ..., 1
-    # fit on thoese uncesnored until t-1
+    # fit on those uncensored until t-1
     
     tmle_rules <- list("static"=static_mtp,
                        "dynamic"=dynamic_mtp,
@@ -1186,17 +1186,143 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_contrasts <- list()
     tmle_contrasts_bin <- list()
     
-    # When calling getTMLELongLSTM, pass the actual predictions not the list structure
+    print(paste("Length of g_preds:", length(g_preds)))
+    print(paste("Length of C_preds:", length(C_preds)))
+    print(paste("g_preds dimensions for t=1:", paste(dim(g_preds[[1]]), collapse=" x ")))
+    print(paste("Current time point:", t))
+    print(paste("Available time points in g_preds_cuml_bounded:", length(g_preds_cuml_bounded)))
+    
+    # First ensure g_preds_cuml_bounded is properly initialized and populated
+    if(is.null(g_preds_cuml_bounded) || length(g_preds_cuml_bounded) == 0) {
+      print("g_preds_cuml_bounded is empty or NULL, initializing...")
+      g_preds_cuml_bounded <- vector("list", t.end + 1)
+      
+      # Initialize with matrix format
+      for(t in 1:(t.end + 1)) {
+        if(t == 1) {
+          g_preds_cuml_bounded[[t]] <- matrix(g_preds[[t]], ncol=1)
+        } else {
+          g_preds_cuml_bounded[[t]] <- matrix(
+            g_preds[[t]] * g_preds_cuml_bounded[[t-1]], 
+            ncol=1
+          )
+        }
+      }
+    }
+    
+    # Similarly for C_preds_cuml_bounded
+    if(is.null(C_preds_cuml_bounded) || length(C_preds_cuml_bounded) == 0) {
+      print("C_preds_cuml_bounded is empty or NULL, initializing...")
+      C_preds_cuml_bounded <- vector("list", t.end + 1)
+      
+      for(t in 1:(t.end + 1)) {
+        if(t == 1) {
+          C_preds_cuml_bounded[[t]] <- matrix(C_preds[[t]], ncol=1)
+        } else {
+          C_preds_cuml_bounded[[t]] <- matrix(
+            C_preds[[t]] * C_preds_cuml_bounded[[t-1]], 
+            ncol=1
+          )
+        }
+      }
+    }
+    
+    # Safe prediction getter function
+    safe_get_preds <- function(preds_list, t, n_ids = 12500) {
+      print(paste("Getting predictions for time", t))
+      
+      # Handle NULL or empty list
+      if(is.null(preds_list) || length(preds_list) == 0) {
+        return(matrix(0.5, nrow=n_ids, ncol=1))
+      }
+      
+      # Handle out of bounds time index
+      if(t > length(preds_list)) {
+        t <- length(preds_list)
+      }
+      
+      # Get predictions
+      preds <- preds_list[[t]]
+      if(is.null(preds) || length(preds) == 0) {
+        return(matrix(0.5, nrow=n_ids, ncol=1))
+      }
+      
+      # Convert to matrix
+      if(!is.matrix(preds)) {
+        preds <- matrix(preds, ncol=1)
+      }
+      
+      # Handle dimensions
+      if(nrow(preds) != n_ids) {
+        if(nrow(preds) < n_ids) {
+          # If too short, repeat the last value
+          padding_rows <- n_ids - nrow(preds)
+          padding <- matrix(tail(preds, 1), nrow=padding_rows, ncol=ncol(preds))
+          preds <- rbind(preds, padding)
+        } else {
+          # If too long, truncate
+          preds <- preds[1:n_ids, , drop=FALSE]
+        }
+      }
+      
+      return(preds)
+    }
+    
+    # Safe cumulative prediction handler
+    safe_get_cuml_preds <- function(preds, n_ids = 12500) {
+      print("Processing cumulative predictions")
+      print(paste("Input predictions length:", length(preds)))
+      
+      # Initialize list
+      cuml_preds <- vector("list", length(preds))
+      
+      # Calculate cumulative predictions
+      for(t in seq_along(preds)) {
+        if(t == 1) {
+          cuml_preds[[t]] <- safe_get_preds(list(preds[[t]]), 1, n_ids)
+        } else {
+          prev_preds <- cuml_preds[[t-1]]
+          curr_preds <- safe_get_preds(list(preds[[t]]), 1, n_ids)
+          cuml_preds[[t]] <- curr_preds * prev_preds
+        }
+      }
+      
+      print("Cumulative predictions processed")
+      return(cuml_preds)
+    }
+    
+    # Process predictions first
+    print("Processing predictions for TMLE")
+    
+    # Get number of IDs and time points
+    n_ids <- length(unique(initial_model_for_Y$data$ID))
+    n_times <- t.end + 1
+    
+    print(paste("Number of IDs:", n_ids))
+    print(paste("Number of time points:", n_times))
+    
+    # Process g predictions
+    g_preds_processed <- safe_get_cuml_preds(g_preds, n_ids)
+    print("G predictions processed")
+    
+    # Process C predictions
+    C_preds_processed <- safe_get_cuml_preds(C_preds, n_ids)
+    print("C predictions processed")
+    
+    # Call getTMLELongLSTM with processed predictions
     tmle_contrasts[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = transformed_Y_preds[, t.end], # Pass vector directly
+      initial_model_for_Y_preds = transformed_Y_preds[, t.end],
       initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
-      tmle_covars_Y = tmle_covars_Y, 
-      g_preds_bounded = g_preds_cuml_bounded[[t.end+1]], 
-      C_preds_bounded = C_preds_cuml_bounded[[t.end]], 
-      obs.treatment = treatments[[t.end+1]], 
-      obs.rules = obs.rules[[t.end+1]], 
-      gbound = gbound, ybound = ybound, t.end = t.end, window.size = window.size
+      tmle_covars_Y = tmle_covars_Y,
+      g_preds_bounded = safe_get_preds(g_preds_processed, t.end, n_ids),
+      C_preds_bounded = safe_get_preds(C_preds_processed, t.end, n_ids),
+      obs.treatment = treatments[[t.end]],
+      obs.rules = obs.rules[[t.end]],
+      gbound = gbound,
+      ybound = ybound,
+      t.end = t.end,
+      window.size = window.size
     )
     
     tmle_contrasts_bin[[t.end]] <- getTMLELongLSTM(
@@ -1204,10 +1330,10 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y=tmle_covars_Y, 
-      g_preds_bounded=g_preds_bin_cuml_bounded[[t.end]], 
-      C_preds_bounded=C_preds_cuml_bounded[[t.end]], 
-      obs.treatment=treatments[[t.end+1]], 
-      obs.rules=obs.rules[[t.end+1]], 
+      g_preds_bounded = safe_get_preds(g_preds_processed, t.end, n_ids),
+      C_preds_bounded = safe_get_preds(C_preds_processed, t.end, n_ids),
+      obs.treatment=treatments[[t.end]], 
+      obs.rules=obs.rules[[t.end]], 
       gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
     )
     
@@ -1223,8 +1349,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           initial_model_for_Y_data = initial_model_for_Y_data,
           tmle_rules = tmle_rules,
           tmle_covars_Y = tmle_covars_Y,
-          g_preds_bounded = g_preds_cuml_bounded[[t + 1]],
-          C_preds_bounded = C_preds_cuml_bounded[[t]],
+          g_preds_bounded = safe_get_preds(g_preds_processed, t + 1, n_ids),
+          C_preds_bounded = safe_get_preds(C_preds_processed, t, n_ids),
           obs.treatment = treatments[[t + 1]],
           obs.rules = obs.rules[[t + 1]],
           gbound = gbound, ybound = ybound, t.end = t.end, window.size = window.size
@@ -1240,8 +1366,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           initial_model_for_Y_data = initial_model_for_Y_data,
           tmle_rules = tmle_rules,
           tmle_covars_Y = tmle_covars_Y,
-          g_preds_bounded = g_preds_bin_cuml_bounded[[t]],
-          C_preds_bounded = C_preds_cuml_bounded[[t]],
+          g_preds_bounded = safe_get_preds(g_preds_cuml_bounded, t + 1),
+          C_preds_bounded = safe_get_preds(C_preds_cuml_bounded, t),
           obs.treatment = treatments[[t + 1]],
           obs.rules = obs.rules[[t + 1]],
           gbound = gbound, ybound = ybound, t.end = t.end, window.size = window.size

@@ -204,6 +204,20 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     stop("No target columns found in data")
   }
   
+  # Extract outcome columns from the data
+  if (is_censoring) {
+    outcome_cols <- grep("^C\\.[0-9]+$|^C$", colnames(data), value=TRUE)
+  } else {
+    # For treatment or Y prediction
+    if (is.character(outcome)) {
+      outcome_cols <- outcome
+    } else if (!is.null(colnames(outcome))) {
+      outcome_cols <- colnames(outcome)
+    } else {
+      stop("Invalid outcome specification")
+    }
+  }
+  
   # Set Python variables
   py$is_censoring <- is_censoring
   py$J <- as.integer(if(is_censoring) 1 else J)
@@ -220,13 +234,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)
   py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")
-  py$outcome_cols <- if(is.character(outcome)) {
-    if(length(outcome) > 0) outcome else stop("Empty outcome")
-  } else if(!is.null(colnames(outcome))) {
-    colnames(outcome)
-  } else {
-    stop("Invalid outcome specification")
-  }
+  py$outcome_cols <- outcome_cols  # Pass outcome columns
   
   # Import numpy
   np <- reticulate::import("numpy")

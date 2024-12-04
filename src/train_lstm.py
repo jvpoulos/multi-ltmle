@@ -340,9 +340,9 @@ def main():
         if is_censoring:
             model_filename = 'lstm_bin_C_model.h5'
         else:
-            # Check if outcome is Y and has binary loss function
-            is_Y_outcome = any(col.startswith('Y') for col in (outcome_cols if isinstance(outcome_cols, list) else [outcome]))
-            if is_Y_outcome and loss_fn == "binary_crossentropy":
+            # Check if Y columns exist in input data
+            y_cols = [col for col in x_data.columns if col.startswith('Y')]
+            if y_cols and loss_fn == "binary_crossentropy":
                 model_filename = 'lstm_bin_Y_model.h5'
             else:
                 if loss_fn == "sparse_categorical_crossentropy":
@@ -390,14 +390,20 @@ def main():
         n_valid_predictions = len(x_data_final) - n_pre + 1
         predictions = predictions[:n_valid_predictions]
         
-        # Save predictions
-        # Determine prediction filenames based on case
+        is_Y_outcome = any(col.startswith('Y') for col in outcome_cols if isinstance(outcome_cols, str))
+        # OR if we need to handle both string and list cases
+        if isinstance(outcome_cols, list):
+            is_Y_outcome = any(col.startswith('Y') for col in outcome_cols)
+        elif isinstance(outcome_cols, str):
+            is_Y_outcome = outcome_cols.startswith('Y')
+        else:
+            is_Y_outcome = False
+
+        # Use this to determine prediction filenames
         if is_censoring:
             pred_filename = 'lstm_bin_C_preds.npy'
             info_filename = 'lstm_bin_C_preds_info.npz'
         else:
-            # Check if outcome is Y and has binary loss function
-            is_Y_outcome = any(col.startswith('Y') for col in (outcome_cols if isinstance(outcome_cols, list) else [outcome]))
             if is_Y_outcome and loss_fn == "binary_crossentropy":
                 pred_filename = 'lstm_bin_Y_preds.npy'
                 info_filename = 'lstm_bin_Y_preds_info.npz'

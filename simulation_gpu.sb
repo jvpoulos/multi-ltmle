@@ -6,7 +6,7 @@
 #SBATCH --mem=50GB
 #SBATCH -t 1-00:00:00
 
-# srun --pty -p gpu --gres=gpu:2 -t 0-12:00 --mem 50G -c 10 bash
+# srun --pty -p gpu --gres=gpu:teslaM40:2 -t 0-06:00 --mem 50G -c 10 bash
 
 cd multi-ltmle
 
