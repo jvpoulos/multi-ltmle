@@ -40,7 +40,7 @@ safe_weighted_mean <- function(x, w, na.rm = TRUE) {
 
 getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
                             tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, 
-                            obs.treatment, obs.rules, gbound, ybound, t.end, window.size) {
+                            obs.treatment, obs.rules, gbound, ybound, t_end, window_size = 7) {
   
   # Input validation with error handling
   result <- tryCatch({
@@ -58,10 +58,19 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     # Ensure consistent length
     n_ids <- length(unique(initial_model_for_Y_data$ID))
     
-    # Pad or truncate predictions
-    pad_or_truncate <- function(x, n) {
+    # Pad or truncate predictions with window size consideration
+    pad_or_truncate <- function(x, n, window = window_size) {
       if(length(x) < n) {
-        c(x, rep(safe_mean(x), n - length(x)))
+        # Use window-based padding
+        pad_length <- n - length(x)
+        if(pad_length <= window) {
+          # If padding needed is less than window size, use last value
+          c(x, rep(x[length(x)], pad_length))
+        } else {
+          # Otherwise use mean value
+          mean_val <- safe_mean(x, na.rm = TRUE)
+          c(x, rep(mean_val, pad_length))
+        }
       } else if(length(x) > n) {
         x[1:n]
       } else {
@@ -99,43 +108,56 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       HAW <- HAW[!is.na(HAW[,1]), , drop = FALSE]
       if(nrow(HAW) == 0) next
       
-      # Update predictions
+      # Update predictions with window size handling
       pred_Q <- initial_model_for_Y_preds
-      valid_ids <- match(HAW[,"ID"], unique(initial_model_for_Y_data$ID))
+      
+      # Map IDs considering window size
+      id_map <- data.frame(
+        orig_id = unique(initial_model_for_Y_data$ID),
+        new_id = seq_len(n_ids)
+      )
+      
+      valid_ids <- match(HAW[,"ID"], id_map$orig_id)
       valid_ids <- valid_ids[!is.na(valid_ids)]
       
       if(length(valid_ids) > 0) {
-        observed_Y[valid_ids] <- initial_model_for_Y_data$Y[match(HAW$ID, initial_model_for_Y_data$ID)]
+        # Get Y values using the ID mapping
+        y_idx <- match(HAW$ID, initial_model_for_Y_data$ID)
+        observed_Y[valid_ids] <- initial_model_for_Y_data$Y[y_idx]
         predicted_Y[,i] <- predict_Qstar[,i] <- pred_Q
       }
       
       # Calculate H and update epsilon
       tryCatch({
-        rule_indices <- which(obs.rules[,i] == 1)
-        if(length(rule_indices) == 0) next
-        
-        treat_index <- as.numeric(HAW$A0[match(seq_len(n_ids), HAW$ID)])
-        treat_index <- treat_index[rule_indices]
-        print("Treatment index summary:")
-        print(table(treat_index, useNA="ifany"))
-        
-        # Calculate denominator
-        denom <- boundProbs(g_preds_bounded[rule_indices] * C_preds_bounded[rule_indices], gbound)
-        print("Denominator summary:")
-        print(summary(denom))
-        
-        # Calculate H
-        H <- numeric(n_ids)
-        H[rule_indices] <- (1 / denom) * treat_index
-        print("H summary:")
-        print(summary(H))
-        
-        if(!all(H == 0) && !all(is.na(H))) {
-          epsilon_model <- glm(observed_Y ~ -1 + offset(qlogis(pred_Q)) + H, 
-                               family = binomial)
-          epsilon <- coef(epsilon_model)[1]
-          predict_Qstar[,i] <- plogis(qlogis(pred_Q) + epsilon * H)
-          print(paste("Epsilon:", epsilon))
+        # Safe array indexing with bounds check
+        if(i <= ncol(obs.rules)) {
+          rule_indices <- which(obs.rules[,i] == 1)
+          if(length(rule_indices) == 0) next
+          
+          # Get treatment index with window consideration
+          treat_index <- as.numeric(HAW$A0[match(seq_len(n_ids), id_map$new_id)])
+          treat_index <- treat_index[rule_indices]
+          print("Treatment index summary:")
+          print(table(treat_index, useNA="ifany"))
+          
+          # Calculate denominator
+          denom <- boundProbs(g_preds_bounded[rule_indices] * C_preds_bounded[rule_indices], gbound)
+          print("Denominator summary:")
+          print(summary(denom))
+          
+          # Calculate H
+          H <- numeric(n_ids)
+          H[rule_indices] <- (1 / denom) * treat_index
+          print("H summary:")
+          print(summary(H))
+          
+          if(!all(H == 0) && !all(is.na(H))) {
+            epsilon_model <- glm(observed_Y ~ -1 + offset(qlogis(pred_Q)) + H, 
+                                 family = binomial)
+            epsilon <- coef(epsilon_model)[1]
+            predict_Qstar[,i] <- plogis(qlogis(pred_Q) + epsilon * H)
+            print(paste("Epsilon:", epsilon))
+          }
         }
       }, error = function(e) {
         print("Error in calculations:")
@@ -143,7 +165,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       })
     }
     
-    # Return results with safe calculations
+    # Return results
     list(
       "Qstar" = boundProbs(predict_Qstar, ybound),
       "epsilon" = epsilon,

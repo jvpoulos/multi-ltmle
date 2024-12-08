@@ -1312,7 +1312,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Call getTMLELongLSTM with processed predictions
     tmle_contrasts[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = transformed_Y_preds[, t.end],
+      initial_model_for_Y_preds = transformed_Y_preds[, min(t, ncol(transformed_Y_preds))],
       initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y = tmle_covars_Y,
@@ -1322,12 +1322,12 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       obs.rules = obs.rules[[t.end]],
       gbound = gbound,
       ybound = ybound,
-      t.end = t.end,
-      window.size = window.size
+      t_end = t.end,
+      window_size = window.size
     )
     
     tmle_contrasts_bin[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = transformed_Y_preds[, t.end], # Pass vector directly 
+      initial_model_for_Y_preds = transformed_Y_preds[, min(t, ncol(transformed_Y_preds))],
       initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y=tmle_covars_Y, 
@@ -1335,7 +1335,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       C_preds_bounded = safe_get_preds(C_preds_processed, t.end, n_ids),
       obs.treatment=treatments[[t.end]], 
       obs.rules=obs.rules[[t.end]], 
-      gbound=gbound, ybound=ybound, t.end=t.end, window.size=window.size
+      gbound=gbound, ybound=ybound, t_end=t.end, window_size=window.size
     )
     
     # Pre-compute lengths and other constants outside the loop

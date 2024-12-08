@@ -261,7 +261,7 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
     callbacks = [
         # Early stopping
         tf.keras.callbacks.EarlyStopping(
-            monitor='val_auc',
+            monitor='val_accuracy',
             patience=patience,
             restore_best_weights=True,
             mode='max'
@@ -270,7 +270,7 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
         # Best model checkpoint
         tf.keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(checkpoint_dir, 'best_model.keras'),
-            monitor='val_auc',
+            monitor='val_accuracy',
             save_best_only=True,
             mode='max'
         ),
@@ -288,7 +288,7 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
             filepath=os.path.join(checkpoint_dir, 'model_epoch_{epoch:02d}.keras'),
             keep_n=3,
             save_weights_only=False,
-            monitor='val_auc',
+            monitor='val_accuracy',
             mode='max'
         ),
         
