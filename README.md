@@ -2,7 +2,7 @@
 
 Simulation code for Longitudinal TMLE (LTMLE) with multi-valued treatments. 
 
-Please cite the following papers if you use this repo:
+Please cite the following paper if you use this repo:
 
 ```
 @article{doi:10.1002/sim.10003,
@@ -14,139 +14,164 @@ Please cite the following papers if you use this repo:
 }
 ```
 
-```
-@article{doi:10.1017/S0033291723001502,
-  title={Antipsychotics and the risk of diabetes and death among adults with serious mental illnesses},
-  author={Poulos, Jason and Normand, Sharon-Lise T and Zelevinsky, Katya and Newcomer, John W and Agniel, Denis and Abing, Haley K and Horvitz-Lennon, Marcela},
-  journal={Psychological Medicine},
-  volume={53},
-  number={16},
-  pages={7677--7684},
-  year={2023},
-  publisher={Cambridge University Press}
-}
-```
-
 Prerequsites
 ------
 
-* **R** (tested on 4.0.1 using a 6.2.0 GCC compile)
+* **R** (tested on 4.0.1 using a 6.2.0 GCC compiler)
 + Required **R** packages located in ***package_list.R***
 + The result of sessionInfo() is in ***session_info.txt***
 
-* For use of 'tmle-lstm' as an estimator: **R** (tested on 4.3.1), **python3** (3.10.11), and **TensorFlow** (2.15) using a GCC 9.2.0 compiler and CUDA 12.1 for GPU computation
-+ instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
-```
-# create virtual environment within directory
-cd multi-ltmle
-python3 -m venv env
-source env/bin/activate
+* For use of 'tmle-lstm' as an estimator: **R** (4.3.3), **python3** (3.10.12), and **TensorFlow** (2.18.0)
 
-# install Tensorflow
-pip install --upgrade pip
++ Instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
+```bash
+# Create virtual environment within directory
+cd multi-ltmle
+
+# Manually set up a virtual environment
+python3.10 -m ensurepip --upgrade  # Ensure pip is installed/upgraded
+python3.10 -m pip install virtualenv  # Install virtualenv if not already available
+virtualenv myenv  # Create a virtual environment named 'myenv'
+source myenv/bin/activate  # Activate the new environment
+
+# Install TensorFlow
+python3 -m pip install --upgrade pip  # Upgrade pip to the latest version
+# For GPU users:
+pip install tensorflow[and-cuda]
+# For CPU users:
 pip install tensorflow
 
-# verify Installation: Check the installed TensorFlow version and CUDA compatibility:
+# Verify the GPU installation:
+python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
 
-python -c "import tensorflow as tf; print(tf.__version__); print(tf.config.list_physical_devices('GPU'))"
-
-# ensure CUDA Libraries Are Properly Set: Since CUDA 12.1 is loaded, ensure that LD_LIBRARY_PATH includes the required libraries. Check:
-
-echo $LD_LIBRARY_PATH
-
-# if needed, append the paths:
-
-export LD_LIBRARY_PATH=/path/to/cuda/lib64:$LD_LIBRARY_PATH
-
-# test GPU Functionality: Run a simple TensorFlow program to confirm GPU usage:
-
-python
-Copy code
-import tensorflow as tf
-print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
+# Verify the CPU installation:
+python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))"
 ```
 + The following Python packages are required: numpy (tested on 1.19.5), pandas (1.1.5), and wandb (0.15.12)
+```bash
+python3 -m pip install pandas
+python3 -m pip install wandb
 ```
-pip install numpy
-pip install pandas
-pip install wandb
-```
-+ Additional **R** packages are required by setting the *keras* flag in ***package_list.R*** to TRUE. Make sure to install these packages in the virtual environment where python3 and Tensorflow are installed.
++ Additional **R** package in ***package_list.R***  are required. Make sure to install these packages in the virtual environment where python3 and Tensorflow are installed.
 
 + Ensure that the path in *use_python()* in **simulation.R** corresponds to the virtual environment python path, which you can find using
-```
+```bash
 which python
 ```
+
++ **Test with R and Reticulate**  
+   Load the `reticulate` library and bind to the shared Python:
+   ```r
+   library(reticulate)
+   use_python("./myenv/bin/python", required = TRUE)
+   py_config()
+   ```
+
++ **Important Notes**  
+   - If the shared library is still not found, adjust the `LD_LIBRARY_PATH` as required:
+     ```bash
+     export LD_LIBRARY_PATH=/path/to/libpython3.10.so:$LD_LIBRARY_PATH
+     ```
+   - For consistent performance, ensure all dependencies align with the Python version used in your virtual environment.
 
 Contents
 ------
 
-* ***package_list.R*** install required **R** packages.
-	+ *doMPI*: logical flag. When TRUE, install packages needed for MPI parallel processing. Defaults to FALSE.
-	+ *keras*: logical flag. When TRUE, install packages needed for Keras/TensorFlow. Defaults to TRUE.
+### **package_list.R**
+- Installs required **R** packages.
+  - **doMPI**: Logical flag. When `TRUE`, installs packages required for MPI parallel processing (defaults to `FALSE`).
+  - **keras**: Logical flag. When `TRUE`, installs packages required for Keras/TensorFlow (defaults to `TRUE`).
 
-* ***src/misc_fns***: includes misc. functions, including a function to bound predicted probabilities; functions generate different distributions; and a forest plot function. 
+### **src/misc_fns.R**
+- Includes miscellaneous functions:
+  - Bounding predicted probabilities.
+  - Generating various distributions.
+  - A function for forest plot visualization.
 
-* ***src/simcausal_fns***: defines distribution functions for *simcausal* software.
+### **src/simcausal_fns.R**
+- Defines distribution functions for the *simcausal* software.
 
-* ***src/simcausal_dgp***: defines data generating process for *simcausal* software.
+### **src/simcausal_dgp.R**
+- Defines the data-generating process for the *simcausal* software.
 
-* ***src/tmle_fns***: define treatment rule functions for our implementation. 
+### **src/tmle_fns.R**
+- Defines treatment rule functions used for Targeted Maximum Likelihood Estimation (TMLE).
 
-* ***src/tmle_calculation_long.R***: function for generating counterfactual means under each treatment rule in longitudinal data. Inputs initial Y estimates, bounded cumulative treatment/censoring probabilities, observed treatment, and observed outcomes. Outputs treatment-rule specific means.
+### **src/tmle_IC.R**
+- Implements influence curve (IC)-based methods for variance estimation in TMLE.
 
-* ***src/tmleContrastLong.R***: function for calculating contrasts across all treatment rules in longitudinal data. Inputs treatment-rule-specific means, the contrast matrix, and logical flags. Outputs ATE and variance estimates. 
+### **src/SL3_fns.R**
+- Provides custom learner definitions for use with the SuperLearner framework.
 
-* ***src/lstm.R***: function for calling Python code for estimating with LSTMs within R; used when estimator ='tmle-lstm'. 
+### **src/tmle_fns_lstm.R**
+- TMLE implementation for incorporating Long Short-Term Memory (LSTM) neural networks into the TMLE workflow.
 
-* ***src/train_lstm.py***: Python code for training LSTMs and predicting on the same data; used when estimator ='tmle-lstm'.
+### **src/lstm.R**
+- Facilitates integration between R and Python for LSTM-based estimations. Used when `estimator='tmle-lstm'`.
 
-* ***src/test_lstm.py***: Python code for inference using a trained LSTMs model on new data; used when estimator ='tmle-lstm'.
+### **src/train_lstm.py**
+- Python script for training LSTMs and predicting on the same dataset.
 
-* ***simulation.R***: longitudinal setting simulation, comparing the performance of manual multinomial TMLE with existing implementations using multiple binary treatments, with multiple levels of treatment. Simulates data over multiple runs and compares implementations in terms of bias, coverage, and CI width. The script consists of the following relevant parameters:
+### **src/test_lstm.py**
+- Python script for inference using a trained LSTM model on new datasets.
 
-	+ *estimator*: Select which estimator to use: 'tmle' for our TMLE implementation (multinomial and multiple binary),  using a standard super learner ensemble (also returns estimates from an inverse probability of treatment weighting, IPTW, estimator and g-computation estimator); 'tmle-lstm' for multinomial and multiple binary TMLE using an ensemble of LSTMs (also returns IPTW and g-computation estimates).
+### **simulation.R**
+- Simulates longitudinal data for comparing the performance of multinomial TMLE with LSTM-based approaches.
+  - **Key parameters**:
+    - **estimator**: Choose between `'tmle'` or `'tmle-lstm'`.
+    - **treatment.rule**: Specify "static", "dynamic", "stochastic", or "all".
+    - **gbound**/**ybound**: Bounds for propensity scores and initial predictions, respectively.
+    - **J**: Number of treatments (`J=6`).
+    - **n**: Sample size (default is `12500`).
+    - **t.end**: Number of time periods (must be between `4` and `36`).
+    - **R**: Number of simulation runs (default is `325`).
+    - **target.gwt**: Logical flag to adjust weights in the clever covariate (default is `TRUE`).
+    - **use.SL**: Logical flag to enable Super Learner (default is `TRUE`).
+    - **scale.continuous**: Logical flag for scaling continuous variables.
+    - **n.folds**: Number of cross-validation folds for Super Learner (default is `5`).
 
-	+ *treatment.rule*: Treatment rule; can be "static", "dynamic", "stochastic", or "all" (if *estimator*='tmle')
+### **long_sim_plots.R**
+- Aggregates and visualizes the output of `simulation.R`. Includes:
+  - Counterfactual risk estimations.
+  - Bias, coverage, and confidence interval widths.
 
-	+ *gbound* and *ybound* numerical vectors defining bounds to be used for the propensity score and initial Y predictions, resp. Default is c(0.05,1)  and c(0.0001,0.9999), resp.
-
-	+ *J*: number of treatments; must be J=6.
-
-	+ *n*: sample size. Defaults to 12500.
-
-	+ *t.end*: number of time periods, must be at least 4 and no more than 36. Defaults to 36 (must be 36 if estimator='tmle').  
-
-	+ *R*: number of simulation runs. Default is 325. 
-
-	+ *target.gwt*: logical flag. When TRUE, moves propensity weights from denominator of clever covariate to regression weight when fitting updated model for Y; used only for 'tmle' estimator. Default is TRUE. 
-
-	+ *use.SL*: logical flag. When TRUE, use Super Learner for treatment and outcome model estimation; if FALSE, use GLM (**use.SL=FALSE not functional**). 
-
-	+ *scale.continuous*: logical flag. When TRUE, use scale continuous variables before training. Default is FALSE. 
-
-	+ *n.folds*: number of cross-validation folds for Super Learner. Defaults to 5 (must be at at least 3). 
-
-* ***long_sim_plots.R*** combine output from ***simulation.R*** and plot.
 
 Required File Modifications
 ------
 
 Below is a list of files that require user modifications to match their environment or particular settings. Please ensure to make these changes before running the code.
 
-### simulation.R
+### `simulation.R`
 - Update the Python path used by `use_python()`. Modify it to point to the Python interpreter you wish to use. For example:
   ```r
-  use_python("/n/app/python/3.10.11.conda/bin/python")
+  use_python("./myenv/bin/python", required=TRUE)
   ```
 
-### utils.py and train_lstm.py
-- Configure the GPU settings by modifying `configure_gpu()` or updating relevant CUDA paths if different CUDA versions are used. The default setting is:
+### `train_lstm.py`
+- **If using a GPU**, configure the GPU settings by updating relevant CUDA paths to match your environment. The default settings are:
   ```python
-  cuda_path = "/n/app/cuda/12.1-gcc-9.2.0/bin/nvcc"
+  cuda_base = "/n/app/cuda/12.1-gcc-9.2.0"
+  os.environ.update({
+      'CUDA_HOME': cuda_base,
+      'CUDA_ROOT': cuda_base,
+      'CUDA_PATH': cuda_base,
+      'CUDNN_PATH': f"{cuda_base}/lib64/libcudnn.so",
+      'LD_LIBRARY_PATH': f"{cuda_base}/lib64:{cuda_base}/extras/CUPTI/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
+      'PATH': f"{cuda_base}/bin:{os.environ.get('PATH', '')}",
+      'CUDA_DEVICE_ORDER': 'PCI_BUS_ID',
+      'CUDA_VISIBLE_DEVICES': '0,1',
+      'TF_FORCE_GPU_ALLOW_GROWTH': 'true',
+      'TF_XLA_FLAGS': '--tf_xla_enable_xla_devices',
+      'XLA_FLAGS': f'--xla_gpu_cuda_data_dir={cuda_base}',
+      'TF_GPU_THREAD_MODE': 'gpu_private',
+      'TF_GPU_THREAD_COUNT': '2',
+      'TF_CPP_MIN_LOG_LEVEL': '3'
+  })
   ```
 
-- Set the number of GPUs used in `os.environ.update`. By default, we use two GPUs:
+- If no GPU is used, the script will automatically fall back to CPU-based execution. No additional changes are required in this case.
+
+- Set the number of GPUs to use in `os.environ.update`. The default is two GPUs:
   ```python
   'CUDA_VISIBLE_DEVICES': '0,1',
   ```
@@ -154,57 +179,111 @@ Below is a list of files that require user modifications to match their environm
 Instructions
 ------
 
-1. Install require **R** packages: `Rscript package_list.R` and follow Python installation instructions in the Prerequsites section. Make sure to start **R** in virtual environment where python3 and Tensorflow are installed.
+### 1. Install Required R Packages and Set Up Environment
+- Run the following command to install the required **R** packages:
+  ```bash
+  Rscript package_list.R
+  ```
+- Follow the Python installation instructions provided in the **Prerequisites** section. 
+- Ensure you start **R** within the virtual environment where Python 3 and TensorFlow are installed.
 
-2. For simulations, run: `Rscript simulation.R [arg1] [arg2] [arg3] [arg4]`; where `[arg1]` specifies the estimator ["tmle", "tmle-lstm"], `[arg2]` is a number specifying the treatment rule [1 for all treatment rules should be used], and `[arg3]`  is a logical flag if super learner estimation is to be used ["TRUE" or "FALSE"], and `[arg4]` is a logical flag for using MPI parallel programming; e.g., 
+---
 
-	`Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'`
+### 2. Run Simulations
+To execute simulations, use the following command:
 
-	or 
+```bash
+Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
+```
 
-`Rscript simulation.R 'tmle-lstm' 1 'FALSE' 'FALSE'`
+#### Arguments:
+- **`[arg1]`**: Specifies the estimator. Options:
+  - `"tmle"`: Targeted Maximum Likelihood Estimation.
+  - `"tmle-lstm"`: Targeted Maximum Likelihood Estimation with Long Short-Term Memory.
+- **`[arg2]`**: A numeric value indicating the treatment rule:
+  - `1`: Use all treatment rules.
+- **`[arg3]`**: Logical flag to indicate whether super learner estimation should be used:
+  - `"TRUE"` or `"FALSE"`.
+- **`[arg4]`**: Logical flag for enabling MPI parallel programming:
+  - `"TRUE"` or `"FALSE"`.
 
-3. To plot simulation results, run: `Rscript long_sim_plots.R [arg1]`; where `[arg1]` specifies the output path of the simulation results. E.g., 
-	
-	`Rscript long_sim_plots.R 'outputs/20240215'`
+#### Examples:
+1. Using the `"tmle"` estimator with super learner enabled and no MPI:
+   ```bash
+   Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'
+   ```
 
+2. Using the `"tmle-lstm"` estimator without super learner or MPI:
+   ```bash
+   Rscript simulation.R 'tmle-lstm' 1 'FALSE' 'FALSE'
+   ```
 
-Model weights and intermediate results
+---
+
+### 3. Plot Simulation Results
+To visualize simulation results, use the following command:
+
+```bash
+Rscript long_sim_plots.R [arg1]
+```
+
+#### Arguments:
+- **`[arg1]`**: Path to the output directory containing the simulation results.
+
+#### Example:
+To plot results from simulations saved in the `outputs/20240215` directory:
+```bash
+Rscript long_sim_plots.R 'outputs/20240215'
+```
+
+---
+
+Model Weights, Intermediate Results, and Visualizations
 ------
 
-The following intermediate results are from a single simulated longitudinal dataset (r=1) for n=12500 patients. We estimate the counterfactual diabetes risk for those who continued to follow each of 3 regimes (static, dynamic, stochastic) in each of 36 time periods, based on the observed outcomes and covariates. They are saved in `ex_outputs/`.
+This section outlines the model weights, intermediate results, and visualizations available for analysis and evaluation. The results pertain to a single simulated longitudinal dataset (r=1) for 12,500 patients, estimating counterfactual diabetes risk under three regimes: static, dynamic, and stochastic. Data and results are saved in the `ex_outputs/` directory.
 
-* Simulated dataset in long format `tmle_dat_long_R_1_n_12500_J_6.rds`
+#### Key Files and Descriptions:
 
-<!-- * Super learner treatment model [initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/kw5epwh30z4vh5twilxw5/initial_model_for_A_estimator_tmle_treatment_rule_all_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=lxyku41sg1kugtn6n24us3s18&dl=0) -->
+1. **Simulated Dataset**
+   - Long format dataset: `tmle_dat_long_R_1_n_12500_J_6.rds`
 
-* TMLE simulation results [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
+2. **Simulation Results**
+   - TMLE simulation:  
+     [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
 
-* RNN-based model simulation results [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
+   - RNN-based model simulation:  
+     [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
 
-* RNN-based model validation predictions and info (multiple binary and categorical treatment)
-	+ lstm_bin_C_preds.npy, lstm_bin_C_preds_info.npz
-	+ lstm_cat_A_preds.npy, lstm_cat_A_preds_info.npz
-	+ lstm_bin_A_preds.npy. lstm_bin_A_preds_info.npz
+3. **Validation Predictions**
+   - Multiple binary and categorical treatments:
+     - Binary `C` predictions: `lstm_bin_C_preds.npy`, `lstm_bin_C_preds_info.npz`
+     - Categorical `A` predictions: `lstm_cat_A_preds.npy`, `lstm_cat_A_preds_info.npz`
+     - Binary `A` predictions: `lstm_bin_A_preds.npy`, `lstm_bin_A_preds_info.npz`
 
-* RNN-based model test predictions and info:
-	+ test_bin_C_preds.npy, test_bin_C_preds_info.npz
-	+ test_cat_A_preds.npy, test_cat_A_preds_info.npz
-	+ test_bin_A_preds.npy, test_bin_A_preds_info.npz
+4. **Test Predictions**
+   - Binary and categorical treatments:
+     - Binary `C` predictions: `test_bin_C_preds.npy`, `test_bin_C_preds_info.npz`
+     - Categorical `A` predictions: `test_cat_A_preds.npy`, `test_cat_A_preds_info.npz`
+     - Binary `A` predictions: `test_bin_A_preds.npy`, `test_bin_A_preds_info.npz`
 
-* RNN-based model weights (multiple binary and categorical treatment)
-	+ `lstm_bin_A_model.h5`
-	+ `lstm_cat_A_model.h5`
-	+ `lstm_bin_C_model.h5`
+5. **Model Weights**
+   - Weights for RNN models with multiple binary and categorical treatments:
+     - `lstm_bin_A_model.h5`
+     - `lstm_cat_A_model.h5`
+     - `lstm_bin_C_model.h5`
 
-* Descriptive plots 
+6. **Descriptive Plots**
+   - Graphical outputs summarizing the simulation and analysis:
+     - Directed Acyclic Graph (DAG):  
+       ![DAG Plot](./ex_outputs/DAG_plot.png)
+     - Treatment adherence:  
+       ![Adherence Plot](./ex_outputs/treatment_adherence_10000.png)
+     - Survival plots:
+       - Observed:  
+         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_10000.png)
+       - Truth:  
+         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_10000.png)
+       - TMLE estimates:  
+         ![TMLE Estimates Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle)
 
-![demo](./ex_outputs/DAG_plot.png)
-
-![demo](./ex_outputs/treatment_adherence_10000.png)
-
-![demo](./ex_outputs/survival_plot_observed_10000.png)
-
-![demo](./ex_outputs/survival_plot_truth_10000.png)
-
-![demo](./ex_outputs/survival_plot_tmle_estimates_12500_tmle)

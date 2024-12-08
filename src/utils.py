@@ -99,14 +99,21 @@ def setup_wandb(config, validation_steps=None, train_dataset=None):
     # Configure WandB callback with SavedModel format
     callback_config = {
         'monitor': 'val_loss',
-        'log_weights': True,
-        'log_gradients': False,  # Disable gradient logging to avoid NoneType error
         'save_model': False,
-        'validation_data': None,  # Remove validation data logging
-        'compute_flops': False,   # Disable FLOPS computation
-        'batch_size': None,       # Don't set batch size
-        'log_evaluation': False,  # Disable evaluation logging
-        'log_batch_frequency': 100 if train_dataset else None
+        'save_graph': False,  # Disable graph saving
+        'log_weights': False,  # Disable weight logging
+        'log_gradients': False,
+        'training_data': None,
+        'validation_data': None,
+        'validation_steps': validation_steps if validation_steps else None,
+        'global_step_transform': None,
+        'log_graph': False,  # Explicitly disable graph logging
+        'input_type': None,  # Don't try to infer input type
+        'output_type': None,  # Don't try to infer output type
+        'compute_flops': False,
+        'batch_size': None,
+        'log_evaluation': False,
+        'log_batch_frequency': None  # Disable batch logging
     }
     
     # Add optional configurations if provided
@@ -130,27 +137,33 @@ class CustomNanCallback(tf.keras.callbacks.Callback):
                 self.model.stop_training = True
                 break
 
+# In utils.py - Replace the CustomCallback class:
+
 class CustomCallback(tf.keras.callbacks.Callback):
+    """Fixed implementation of CustomCallback"""
+    
     def __init__(self, train_dataset):
-        super(CustomCallback, self).__init__()
-        self.train_dataset = train_dataset
-        self.start_time = time.time()
-        self.model = None
- 
+        super().__init__()  # Properly initialize parent class
+        self._train_dataset = train_dataset
+        self._start_time = time.time()
+        self._epoch_start_time = None
+        self._current_model = None  # Use a different name to avoid conflicts
+    
     def set_model(self, model):
-        super(CustomCallback, self).set_model(model)
-        self.model = model
+        """Properly handle model setting"""
+        super().set_model(model)
+        self._current_model = model
                
     def on_epoch_begin(self, epoch, logs=None):
-        self.epoch_start_time = time.time()
+        self._epoch_start_time = time.time()
     
     def on_epoch_end(self, epoch, logs=None):
         if not logs:
             logs = {}
                 
-        epoch_time = time.time() - self.epoch_start_time
+        epoch_time = time.time() - self._epoch_start_time
             
-        if self.model is None:
+        if self._current_model is None:
             logger.warning("Model not set in CustomCallback")
             return
                 
@@ -162,7 +175,12 @@ class CustomCallback(tf.keras.callbacks.Callback):
         
         # Safely get learning rate
         try:
-            metrics_dict['learning_rate'] = float(K.eval(self.model.optimizer.learning_rate))
+            if hasattr(self._current_model.optimizer, 'learning_rate'):
+                lr = self._current_model.optimizer.learning_rate
+                if hasattr(lr, 'numpy'):
+                    metrics_dict['learning_rate'] = float(lr.numpy())
+                elif callable(lr):
+                    metrics_dict['learning_rate'] = float(lr(epoch))
         except:
             logger.warning("Could not log learning rate")
         
@@ -175,12 +193,12 @@ class CustomCallback(tf.keras.callbacks.Callback):
             
         try:
             # Sample predictions with safer handling
-            for x_batch in self.train_dataset.take(1):
+            for x_batch in self._train_dataset.take(1):
                 if isinstance(x_batch, tuple):
                     x_batch = x_batch[0]
                     
                 # Get predictions
-                sample_pred = self.model.predict(x_batch, verbose=0)
+                sample_pred = self._current_model.predict(x_batch, verbose=0)
                 
                 # Remove any NaN values
                 sample_pred = np.nan_to_num(sample_pred, nan=0.0)
@@ -203,7 +221,6 @@ class CustomCallback(tf.keras.callbacks.Callback):
         if not logs:
             logs = {}
             
-        # Log batch-level metrics periodically
         if batch % 100 == 0:
             wandb.log({
                 'batch': batch,
@@ -252,7 +269,7 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
         
         # Best model checkpoint
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(checkpoint_dir, 'best_model.h5'),
+            filepath=os.path.join(checkpoint_dir, 'best_model.keras'),
             monitor='val_auc',
             save_best_only=True,
             mode='max'
@@ -268,7 +285,7 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
 
         # Regular checkpoints (keep last 3)
         CustomModelCheckpoint(
-            filepath=os.path.join(checkpoint_dir, 'model_epoch_{epoch:02d}.h5'),
+            filepath=os.path.join(checkpoint_dir, 'model_epoch_{epoch:02d}.keras'),
             keep_n=3,
             save_weights_only=False,
             monitor='val_auc',
@@ -385,65 +402,115 @@ def configure_gpu(policy=None):
         logger.error(f"GPU configuration failed: {e}")
         return False
 
+# In utils.py - Replace the get_strategy function:
+
 def get_strategy():
-    """Get appropriate distribution strategy with improved GPU handling."""
+    """Get appropriate distribution strategy with improved GPU/CPU handling."""
     try:
+        # Configure CPU threads for better performance
+        tf.config.threading.set_inter_op_parallelism_threads(2)
+        tf.config.threading.set_intra_op_parallelism_threads(4)
+        
         # Check for GPU availability
         gpus = tf.config.list_physical_devices('GPU')
         if not gpus:
-            logger.warning("No GPUs available, using CPU")
+            logger.info("No GPUs available, using CPU optimization strategy")
             return tf.distribute.OneDeviceStrategy("/cpu:0")
 
-        # Create logical GPUs - this is needed for multi-GPU support without memory growth
+        # Try to configure GPU if available
         try:
-            # Create logical devices with fixed memory limits
             for gpu in gpus:
-                tf.config.set_logical_device_configuration(
-                    gpu,
-                    [tf.config.LogicalDeviceConfiguration(memory_limit=8 * 1024)]
-                )
-        except RuntimeError as e:
-            logger.warning(f"Error creating logical devices: {e}")
-
-        # Get logical devices after configuration
-        logical_gpus = tf.config.list_logical_devices('GPU')
-        
-        if len(logical_gpus) > 1:
-            # Use MirroredStrategy for multiple GPUs
-            strategy = tf.distribute.MirroredStrategy(
-                devices=[gpu.name for gpu in logical_gpus],
-                cross_device_ops=tf.distribute.HierarchicalCopyAllReduce()
-            )
-            logger.info(f"Using MirroredStrategy with {len(logical_gpus)} GPUs")
-        else:
-            # Use single GPU
-            strategy = tf.distribute.OneDeviceStrategy("/gpu:0")
-            logger.info("Using OneDeviceStrategy with single GPU")
-
-        # Test strategy
-        try:
-            with strategy.scope():
-                test_tensor = tf.random.normal([100, 100])
-                result = tf.matmul(test_tensor, test_tensor)
-                del result
-                logger.info("Strategy test successful")
+                try:
+                    # Allow memory growth
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                except Exception as e:
+                    logger.warning(f"Could not set memory growth for GPU {gpu}: {e}")
+                
+                try:
+                    # Set memory limit
+                    tf.config.set_logical_device_configuration(
+                        gpu,
+                        [tf.config.LogicalDeviceConfiguration(memory_limit=8 * 1024)]
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not set memory limit for GPU {gpu}: {e}")
+            
+            # Get logical devices after configuration
+            logical_gpus = tf.config.list_logical_devices('GPU')
+            
+            if len(logical_gpus) > 0:
+                logger.info(f"Successfully configured {len(logical_gpus)} GPU(s)")
+                if len(logical_gpus) > 1:
+                    strategy = tf.distribute.MirroredStrategy()
+                    logger.info("Using MirroredStrategy for multiple GPUs")
+                else:
+                    strategy = tf.distribute.OneDeviceStrategy("/gpu:0")
+                    logger.info("Using OneDeviceStrategy with single GPU")
+                
+                # Test GPU strategy
+                with strategy.scope():
+                    test = tf.random.uniform((100, 100))
+                    result = tf.matmul(test, test)
+                    del result  # Clean up test tensors
+                
+                return strategy
+            
         except Exception as e:
-            logger.warning(f"Strategy test failed: {e}")
-            # Fall back to default strategy
-            strategy = tf.distribute.get_strategy()
-            logger.info("Falling back to default strategy")
-
-        return strategy
+            logger.warning(f"GPU configuration failed: {e}")
+        
+        # Fall back to CPU if GPU configuration fails
+        logger.info("Falling back to CPU strategy")
+        return tf.distribute.OneDeviceStrategy("/cpu:0")
 
     except Exception as e:
-        logger.warning(f"Strategy creation failed: {e}. Falling back to default strategy")
-        return tf.distribute.get_strategy()
+        logger.warning(f"Strategy creation failed: {e}. Using default CPU strategy")
+        return tf.distribute.OneDeviceStrategy("/cpu:0")
+
+def configure_device():
+    """Configure device settings for optimal performance."""
+    try:
+        # Clear any existing sessions
+        tf.keras.backend.clear_session()
+        gc.collect()
+
+        # Try GPU configuration first
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            logger.info("Found GPU(s), attempting to configure...")
+            return configure_gpu(None)
+        
+        # CPU optimizations if no GPU
+        logger.info("Configuring CPU optimizations...")
+        
+        # Enable CPU optimizations
+        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '1'
+        os.environ['TF_CPU_DETERMINED'] = '1'
+        
+        # Configure thread settings
+        tf.config.threading.set_inter_op_parallelism_threads(2)
+        tf.config.threading.set_intra_op_parallelism_threads(4)
+        
+        # Set memory growth if supported
+        try:
+            physical_devices = tf.config.list_physical_devices()
+            for device in physical_devices:
+                try:
+                    tf.config.experimental.set_memory_growth(device, True)
+                except:
+                    pass
+        except:
+            pass
+        
+        return True
+
+    except Exception as e:
+        logger.warning(f"Device configuration failed: {e}")
+        return False
 
 def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False):
-    """Create dataset with proper sequence handling."""
+    """Create dataset with proper sequence handling for CPU TensorFlow."""
     logger.info(f"Creating dataset with parameters:")
     logger.info(f"n_pre: {n_pre}, batch_size: {batch_size}, loss_fn: {loss_fn}, J: {J}")
-    logger.info(f"Input shape: {x_data.shape}, Output shape: {y_data.shape}")
     
     try:
         # Remove ID if present
@@ -456,13 +523,11 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         std = np.nanstd(x_values, axis=0)
         std[std < 1e-6] = 1.0
         
-        # Prepare targets based on loss function
+        # Prepare targets
         if loss_fn == "sparse_categorical_crossentropy":
-            # For categorical case - keep existing logic that works
             if 'target' in y_data.columns:
                 y_values = y_data['target'].values.astype(np.int32)
             else:
-                # Get treatment labels from 'A' column if it exists
                 if 'A' in y_data.columns:
                     y_values = y_data['A'].values.astype(np.int32)
                 else:
@@ -473,33 +538,26 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                         raise ValueError("No target or treatment columns found")
             y_values = np.clip(y_values, 0, J-1)
         else:
-            # For binary case - ensure proper one-hot encoding
+            # Handle binary case...
             if 'A' in y_data.columns:
-                # Convert single 'A' column to one-hot
                 y_single = y_data['A'].values.astype(np.int32)
-                logger.info(f"Unique treatment values before one-hot: {np.unique(y_single)}")
                 y_values = np.zeros((len(y_single), J), dtype=np.float32)
                 for i in range(len(y_single)):
-                    class_idx = min(y_single[i], J-1)  # Clip to valid range
+                    class_idx = min(y_single[i], J-1)
                     y_values[i, class_idx] = 1.0
             else:
-                # If target column exists, use it
                 if 'target' in y_data.columns:
                     y_single = y_data['target'].values.astype(np.int32)
                     y_values = np.zeros((len(y_single), J), dtype=np.float32)
                     for i in range(len(y_single)):
-                        class_idx = min(y_single[i], J-1)  # Clip to valid range
+                        class_idx = min(y_single[i], J-1)
                         y_values[i, class_idx] = 1.0
                 else:
-                    # Use existing treatment columns if available
                     treatment_cols = [f'A{i}' for i in range(J)]
                     if all(col in y_data.columns for col in treatment_cols):
                         y_values = y_data[treatment_cols].values.astype(np.float32)
                     else:
                         raise ValueError("No suitable treatment columns found")
-        
-        logger.info(f"Target shape before sequence creation: {y_values.shape}")
-        logger.info(f"Target unique values: {np.unique(y_values)}")
         
         # Create sequences
         num_samples = len(x_values) - n_pre + 1
@@ -507,7 +565,6 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         y_sequences = []
         
         for i in range(num_samples):
-            # Features
             x_seq = x_values[i:i + n_pre].copy()
             x_seq = np.clip((x_seq - mean) / std, -10, 10)
             
@@ -516,53 +573,38 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                 noise = np.clip(noise, -0.03, 0.03)
                 x_seq += noise
             
-            # Target for this sequence
             y_seq = y_values[i + n_pre - 1].copy()
             
             x_sequences.append(x_seq)
             y_sequences.append(y_seq)
-            
-            if i % 10000 == 0:
-                logger.info(f"Processed {i} sequences")
         
-        # Convert to arrays
         x_sequences = np.array(x_sequences, dtype=np.float32)
         y_sequences = np.array(y_sequences, dtype=np.float32)
         
-        # Final validation
-        logger.info(f"Final sequences_x shape: {x_sequences.shape}")
-        logger.info(f"Final sequences_y shape: {y_sequences.shape}")
-        logger.info(f"Final sequences_y unique values: {np.unique(y_sequences)}")
-        
-        # Create dataset without sample weights
-        dataset = tf.data.Dataset.from_tensor_slices((
-            x_sequences,
-            y_sequences
-        ))
-        
-        # Configure dataset
-        dataset = dataset.batch(batch_size, drop_remainder=is_training)
-        
-        # Set dataset options using current API
-        options = tf.data.Options()
-        options.threading.private_threadpool_size = 16  # Reduced from 48
-        options.threading.max_intra_op_parallelism = 4
-        dataset = dataset.with_options(options)
+        # Create TensorFlow datasets
+        dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences))
         
         if is_training:
-            dataset = dataset.cache()
-            dataset = dataset.shuffle(
-                buffer_size=min(batch_size * 50, len(x_sequences)),
-                reshuffle_each_iteration=True
-            )
+            # For training, shuffle and repeat
+            dataset = dataset.shuffle(buffer_size=min(10000, len(x_sequences)))
+            dataset = dataset.batch(batch_size, drop_remainder=True)
+            dataset = dataset.repeat()
+        else:
+            # For validation/testing, just batch
+            dataset = dataset.batch(batch_size)
         
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
         
-        return dataset, num_samples
+        # Calculate steps explicitly
+        steps = len(x_sequences) // batch_size
+        if not is_training and len(x_sequences) % batch_size != 0:
+            steps += 1
+            
+        return dataset, steps
         
     except Exception as e:
         logger.error(f"Error creating dataset: {str(e)}")
-        logger.error(f"Stack trace: {traceback.format_exc()}")
+        logger.error(traceback.format_exc())
         raise
         
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
@@ -727,8 +769,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             optimizer=optimizer,
             loss=loss,
             metrics=metrics,
-            run_eagerly=False,
-            jit_compile=False
+            run_eagerly=False
         )
         
         return model

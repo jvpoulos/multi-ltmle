@@ -53,17 +53,17 @@ def test_model():
     try:
         # Determine model filename based on case
         if is_censoring:
-            model_filename = 'lstm_bin_C_model.h5'
+            model_filename = 'lstm_bin_C_model.keras'
         else:
             # Check if Y columns exist in input data
             y_cols = [col for col in x_data.columns if col.startswith('Y')]
             if y_cols and loss_fn == "binary_crossentropy":
-                model_filename = 'lstm_bin_Y_model.h5'
+                model_filename = 'lstm_bin_Y_model.keras'
             else:
                 if loss_fn == "sparse_categorical_crossentropy":
-                    model_filename = 'lstm_cat_A_model.h5'
+                    model_filename = 'lstm_cat_A_model.keras'
                 else:
-                    model_filename = 'lstm_bin_A_model.h5'
+                    model_filename = 'lstm_bin_A_model.keras'
 
         # Set model path
         model_path = os.path.join(output_dir, model_filename)
@@ -128,7 +128,7 @@ def test_model():
         # Calculate test steps
         test_steps = max(1, (test_samples - n_pre + 1) // batch_size)
         logger.info(f"Test steps: {test_steps}")
-        
+
         # Load and verify model
         logger.info("\nLoading model...")
         with strategy.scope():

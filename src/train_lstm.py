@@ -19,7 +19,13 @@ os.environ.update({
     'TF_CPP_MIN_LOG_LEVEL': '3'
 })
 
+# Import necessary modules
 import tensorflow as tf
+
+# Configure TensorFlow for CPU
+tf.config.threading.set_inter_op_parallelism_threads(2)
+tf.config.threading.set_intra_op_parallelism_threads(4)
+    
 import numpy as np
 import pandas as pd
 import time
@@ -32,7 +38,7 @@ from tensorflow.keras.initializers import GlorotNormal, GlorotUniform
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 
-from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_gpu, get_strategy, setup_wandb, CustomCallback, log_metrics, FilterPatterns, CustomNanCallback
+from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, FilterPatterns, CustomNanCallback
 
 import sys
 import traceback
@@ -74,71 +80,31 @@ def main():
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
         
-    # Configure GPU
-    print("\nChecking GPU configuration...")
-    
-    # Check CUDA module
-    import subprocess
-    try:
-        module_list = subprocess.check_output('module list', shell=True).decode('utf-8')
-        print("Loaded modules:")
-        print(module_list)
-    except:
-        print("Could not check modules - may not be in module environment")
-
-    # Check system CUDA
-    try:
-        nvcc_version = subprocess.check_output('nvcc --version', shell=True).decode('utf-8')
-        print("\nNVCC Version:")
-        print(nvcc_version)
-    except:
-        print("nvcc not found in PATH")
-
-    # Check GPU devices
-    try:
-        nvidia_smi = subprocess.check_output('nvidia-smi', shell=True).decode('utf-8')
-        print("\nGPU Devices (nvidia-smi):")
-        print(nvidia_smi)
-    except:
-        print("nvidia-smi not found!")
-
-    # Configure GPU with detailed output
-    gpu_available = configure_gpu(None)
-    if gpu_available:
-        print("\nGPU configuration successful")
-        gpus = tf.config.list_physical_devices('GPU')
-        for i, gpu in enumerate(gpus):
-            details = tf.config.experimental.get_device_details(gpu)
-            print(f"\nGPU {i} Name: {gpu.name}")
-            print(f"GPU {i} Details: {details}")
-
-        # Test GPU availability with a simple operation
-        print("\nTesting GPU with simple operation...")
-        with tf.device('/GPU:0'):
-            try:
-                a = tf.constant([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-                b = tf.constant([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-                c = tf.matmul(a, b)
-                print("GPU test successful. Matrix multiplication result:", c.numpy())
-            except Exception as e:
-                print(f"GPU test failed: {e}")
-    else:
-        print("\nGPU configuration failed, falling back to CPU")
-        print("This will significantly impact performance")
-        print("\nDebug information:")
-        print(f"CUDA_HOME: {os.getenv('CUDA_HOME')}")
-        print(f"LD_LIBRARY_PATH: {os.getenv('LD_LIBRARY_PATH')}")
-        print(f"PATH: {os.getenv('PATH')}")
-
-    # Get distribution strategy based on available devices
+    configure_device()
     strategy = get_strategy()
-    logger.info(f"Using distribution strategy: {strategy.__class__.__name__}")
     
-    # Log device info
-    logical_devices = tf.config.list_logical_devices()
-    logger.info("Available logical devices:")
-    for device in logical_devices:
-        logger.info(f"  {device.name} ({device.device_type})")
+    # Log device information
+    devices = tf.config.list_physical_devices()
+    logger.info("Available devices:")
+    for device in devices:
+        logger.info(f"  {device.device_type}: {device.name}")
+    
+    # Remove the existing GPU configuration checks and replace with:
+    if tf.config.list_physical_devices('GPU'):
+        logger.info("Running with GPU support")
+        # Log GPU memory info if available
+        try:
+            gpu_devices = tf.config.list_physical_devices('GPU')
+            for gpu in gpu_devices:
+                gpu_details = tf.config.experimental.get_device_details(gpu)
+                logger.info(f"GPU Details: {gpu_details}")
+        except:
+            pass
+    else:
+        logger.info("Running on CPU")
+        logger.info(f"Number of CPU cores: {os.cpu_count()}")
+        logger.info(f"TensorFlow inter-op threads: {tf.config.threading.get_inter_op_parallelism_threads()}")
+        logger.info(f"TensorFlow intra-op threads: {tf.config.threading.get_intra_op_parallelism_threads()}")
 
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Loss function: {loss_fn}")
@@ -294,23 +260,22 @@ def main():
         train_dataset=train_dataset
     )
     
-    with strategy.scope():
-        model = create_model(
-            input_shape=input_shape,
-            output_dim=output_dim,
-            lr=lr,
-            dr=dr,
-            n_hidden=n_hidden,
-            hidden_activation=hidden_activation,
-            out_activation=out_activation,
-            loss_fn=loss_fn,
-            J=J,
-            epochs=epochs,
-            steps_per_epoch=steps_per_epoch,
-            y_data=y_data,
-            strategy=strategy,
-            is_censoring=is_censoring
-        )
+    model = create_model(
+        input_shape=input_shape,
+        output_dim=output_dim,
+        lr=lr,
+        dr=dr,
+        n_hidden=n_hidden,
+        hidden_activation=hidden_activation,
+        out_activation=out_activation,
+        loss_fn=loss_fn,
+        J=J,
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
+        y_data=y_data,
+        strategy=strategy,
+        is_censoring=is_censoring
+    )
 
     # Get callbacks
     callbacks = get_optimized_callbacks(patience, output_dir, train_dataset)
@@ -318,134 +283,121 @@ def main():
     callbacks.append(CustomCallback(train_dataset))
     callbacks.append(CustomNanCallback())
 
-    try:
-        # Train model with class weights for binary classification
-        history = model.fit(
-            train_dataset,
-            validation_data=val_dataset,
-            epochs=epochs,
-            steps_per_epoch=steps_per_epoch,
-            validation_steps=validation_steps,
-            callbacks=callbacks,
-            verbose=1,
-            max_queue_size=10,
-            workers=1,
-            use_multiprocessing=False
-        )
+    # Train model with class weights for binary classification
+    history = model.fit(
+        train_dataset,
+        validation_data=val_dataset,
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps,
+        callbacks=callbacks,
+        verbose=1
+    )
 
-        # Log metrics with proper handling of binary case
-        log_metrics(history, start_time)        
+    # Log metrics with proper handling of binary case
+    log_metrics(history, start_time)        
 
-        # Determine model filename based on case
-        if is_censoring:
-            model_filename = 'lstm_bin_C_model.h5'
+    # Determine model filename based on case
+    if is_censoring:
+        model_filename = 'lstm_bin_C_model.keras'
+    else:
+        # Check if Y columns exist in input data
+        y_cols = [col for col in x_data.columns if col.startswith('Y')]
+        if y_cols and loss_fn == "binary_crossentropy":
+            model_filename = 'lstm_bin_Y_model.keras'
         else:
-            # Check if Y columns exist in input data
-            y_cols = [col for col in x_data.columns if col.startswith('Y')]
-            if y_cols and loss_fn == "binary_crossentropy":
-                model_filename = 'lstm_bin_Y_model.h5'
+            if loss_fn == "sparse_categorical_crossentropy":
+                model_filename = 'lstm_cat_A_model.keras'
             else:
-                if loss_fn == "sparse_categorical_crossentropy":
-                    model_filename = 'lstm_cat_A_model.h5'
-                else:
-                    model_filename = 'lstm_bin_A_model.h5'
+                model_filename = 'lstm_bin_A_model.keras'
 
-        # Set model path
-        model_path = os.path.join(output_dir, model_filename)
+    # Set model path
+    model_path = os.path.join(output_dir, model_filename)
 
-        # Save model
-        model.save(model_path)
-        logger.info(f"Model saved to: {model_path}")
+    # Save model
+    model.save(model_path)
+    logger.info(f"Model saved to: {model_path}")
 
-        # Log the SavedModel as a WandB Artifact
-        artifact = wandb.Artifact('trained_model', type='model')
-        artifact.add_file(model_path)
-        run.log_artifact(artifact)
+    # Log the SavedModel as a WandB Artifact
+    artifact = wandb.Artifact('trained_model', type='model')
+    artifact.add_file(model_path)
+    run.log_artifact(artifact)
+    
+    # Generate final predictions
+    logger.info("\nGenerating predictions for all data...")
+    
+    x_data_final = x_data.copy()
+    if 'ID' in x_data_final.columns:
+        x_data_final = x_data_final.drop(columns=['ID'])
+
+    final_dataset, final_samples = create_dataset(
+        x_data_final,
+        y_data,
+        n_pre,
+        batch_size,
+        loss_fn,
+        J,
+        is_training=False,
+        is_censoring=output_dim==1
+    )
+    
+    total_steps = max(1, (final_samples - n_pre + 1) // batch_size)
+    predictions = model.predict(
+        final_dataset,
+        steps=total_steps,
+        verbose=1
+    )
         
-        # Generate final predictions
-        logger.info("\nGenerating predictions for all data...")
-        
-        x_data_final = x_data.copy()
-        if 'ID' in x_data_final.columns:
-            x_data_final = x_data_final.drop(columns=['ID'])
-        
-        final_dataset, final_samples = create_dataset(
-            x_data_final,
-            y_data,
-            n_pre,
-            batch_size,
-            loss_fn,
-            J,
-            is_training=False,
-            is_censoring=output_dim==1
-        )
-        
-        total_steps = max(1, (final_samples - n_pre + 1) // batch_size)
-        predictions = model.predict(
-            final_dataset,
-            steps=total_steps,
-            verbose=1
-        )
-        
-        n_valid_predictions = len(x_data_final) - n_pre + 1
-        predictions = predictions[:n_valid_predictions]
-        
-        is_Y_outcome = any(col.startswith('Y') for col in outcome_cols if isinstance(outcome_cols, str))
-        # OR if we need to handle both string and list cases
-        if isinstance(outcome_cols, list):
-            is_Y_outcome = any(col.startswith('Y') for col in outcome_cols)
-        elif isinstance(outcome_cols, str):
-            is_Y_outcome = outcome_cols.startswith('Y')
+    n_valid_predictions = len(x_data_final) - n_pre + 1
+    predictions = predictions[:n_valid_predictions]
+    
+    is_Y_outcome = any(col.startswith('Y') for col in outcome_cols if isinstance(outcome_cols, str))
+    # OR if we need to handle both string and list cases
+    if isinstance(outcome_cols, list):
+        is_Y_outcome = any(col.startswith('Y') for col in outcome_cols)
+    elif isinstance(outcome_cols, str):
+        is_Y_outcome = outcome_cols.startswith('Y')
+    else:
+        is_Y_outcome = False
+
+    # Use this to determine prediction filenames
+    if is_censoring:
+        pred_filename = 'lstm_bin_C_preds.npy'
+        info_filename = 'lstm_bin_C_preds_info.npz'
+    else:
+        if is_Y_outcome and loss_fn == "binary_crossentropy":
+            pred_filename = 'lstm_bin_Y_preds.npy'
+            info_filename = 'lstm_bin_Y_preds_info.npz'
         else:
-            is_Y_outcome = False
-
-        # Use this to determine prediction filenames
-        if is_censoring:
-            pred_filename = 'lstm_bin_C_preds.npy'
-            info_filename = 'lstm_bin_C_preds_info.npz'
-        else:
-            if is_Y_outcome and loss_fn == "binary_crossentropy":
-                pred_filename = 'lstm_bin_Y_preds.npy'
-                info_filename = 'lstm_bin_Y_preds_info.npz'
+            if loss_fn == "sparse_categorical_crossentropy":
+                pred_filename = 'lstm_cat_A_preds.npy'
+                info_filename = 'lstm_cat_A_preds_info.npz'
             else:
-                if loss_fn == "sparse_categorical_crossentropy":
-                    pred_filename = 'lstm_cat_A_preds.npy'
-                    info_filename = 'lstm_cat_A_preds_info.npz'
-                else:
-                    pred_filename = 'lstm_bin_A_preds.npy'
-                    info_filename = 'lstm_bin_A_preds_info.npz'
+                pred_filename = 'lstm_bin_A_preds.npy'
+                info_filename = 'lstm_bin_A_preds_info.npz'
 
-        # Set prediction and info paths
-        pred_path = os.path.join(output_dir, pred_filename)
-        info_path = os.path.join(output_dir, info_filename)
+    # Set prediction and info paths
+    pred_path = os.path.join(output_dir, pred_filename)
+    info_path = os.path.join(output_dir, info_filename)
 
-        # Save predictions
-        np.save(pred_path, predictions)
+    # Save predictions
+    np.save(pred_path, predictions)
 
-        # Save prediction info
-        np.savez(
-            info_path,
-            shape=predictions.shape,
-            dtype=str(predictions.dtype),
-            min_value=np.min(predictions),
-            max_value=np.max(predictions),
-            num_samples=n_valid_predictions,
-            num_features=num_features
-        )
+    # Save prediction info
+    np.savez(
+        info_path,
+        shape=predictions.shape,
+        dtype=str(predictions.dtype),
+        min_value=np.min(predictions),
+        max_value=np.max(predictions),
+        num_samples=n_valid_predictions,
+        num_features=num_features
+    )
 
-        logger.info(f"Predictions saved to: {pred_path}")
-        logger.info(f"Prediction info saved to: {info_path}")
-
-    except Exception as e:
-        wandb.alert(
-            title="Training Failed",
-            text=str(e)
-        )
-        logger.error(f"Error during execution: {str(e)}")
-        logger.error(f"Traceback:", exc_info=True)
-        return
-    finally:
-        wandb.finish()
+    logger.info(f"Predictions saved to: {pred_path}")
+    logger.info(f"Prediction info saved to: {info_path}")
+    
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
