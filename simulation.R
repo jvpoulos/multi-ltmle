@@ -1111,7 +1111,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       J = 1, # J should be 1 for binary Y
       is_censoring = FALSE
     )
-
+    
     # Transform lstm_Y_preds into proper matrix format
     transformed_Y_preds <- do.call(cbind, lstm_Y_preds)
     if(is.null(dim(transformed_Y_preds))) {
@@ -1420,8 +1420,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                   obs.rules = obs.rules[[t + 1]],
                   gbound = gbound,
                   ybound = ybound,
-                  t.end = t.end,
-                  window.size = window.size
+                  t_end = t.end,
+                  window_size = window.size
                 )
               }, error = function(e) {
                 print(paste("Error in rule", i, "at time", t, ":", e$message))
