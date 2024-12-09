@@ -171,11 +171,6 @@ Below is a list of files that require user modifications to match their environm
 
 - If no GPU is used, the script will automatically fall back to CPU-based execution. No additional changes are required in this case.
 
-- Set the number of GPUs to use in `os.environ.update`. The default is two GPUs:
-  ```python
-  'CUDA_VISIBLE_DEVICES': '0,1',
-  ```
-
 Instructions
 ------
 

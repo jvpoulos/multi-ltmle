@@ -1338,206 +1338,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       gbound=gbound, ybound=ybound, t_end=t.end, window_size=window.size
     )
     
-    # Pre-compute lengths and other constants outside the loop
-    tmle_rules_length <- length(tmle_rules)
-    initial_model_for_Y_data <- initial_model_for_Y$data
-    
-    # Pre-process predictions for all time points at once
-    prepare_predictions <- function(preds, n_ids, n_times, name = "") {
-      print(paste("Pre-processing", name, "predictions"))
-      
-      # Pre-allocate matrix
-      result <- matrix(0.5, nrow = n_ids, ncol = n_times)
-      
-      # Early return if no predictions
-      if(is.null(preds) || length(preds) == 0) {
-        return(result)
-      }
-      
-      # Convert predictions to standard format
-      if(is.matrix(preds)) {
-        pred_matrix <- preds
-      } else if(is.list(preds)) {
-        # Convert list to matrix
-        pred_matrix <- do.call(cbind, lapply(preds, function(x) {
-          if(is.matrix(x)) as.vector(x) else x
-        }))
-      } else {
-        pred_matrix <- matrix(preds, ncol = 1)
-      }
-      
-      # Ensure correct dimensions
-      if(nrow(pred_matrix) < n_ids) {
-        # Pad rows
-        mean_vals <- colMeans(pred_matrix, na.rm = TRUE)
-        padding <- matrix(rep(mean_vals, each = n_ids - nrow(pred_matrix)), 
-                          ncol = ncol(pred_matrix))
-        pred_matrix <- rbind(pred_matrix, padding)
-      } else if(nrow(pred_matrix) > n_ids) {
-        pred_matrix <- pred_matrix[1:n_ids, , drop = FALSE]
-      }
-      
-      # Fill result matrix
-      for(t in 1:min(ncol(pred_matrix), n_times)) {
-        result[,t] <- pred_matrix[,t]
-      }
-      
-      # Fill remaining columns with last available values
-      if(ncol(pred_matrix) < n_times) {
-        for(t in (ncol(pred_matrix) + 1):n_times) {
-          result[,t] <- result[,ncol(pred_matrix)]
-        }
-      }
-      
-      return(result)
-    }
-    
-    # Safer batch processing function
-    process_batch <- function(batch, t.end, Y_matrix, g_matrix, C_matrix, 
-                              initial_model_for_Y_data, tmle_rules, tmle_covars_Y,
-                              treatments, obs.rules, gbound, ybound, window.size) {
-      
-      tryCatch({
-        # Process each time point in batch
-        lapply(batch, function(t) {
-          tryCatch({
-            # Get predictions
-            Y_preds <- matrix(Y_matrix[,t], ncol = 1)
-            g_preds <- matrix(g_matrix[,t + 1], ncol = 1)
-            C_preds <- matrix(C_matrix[,t], ncol = 1)
-            
-            # Process rules
-            result <- sapply(seq_along(tmle_rules), function(i) {
-              tryCatch({
-                getTMLELongLSTM(
-                  initial_model_for_Y_preds = Y_preds,
-                  initial_model_for_Y_data = initial_model_for_Y_data,
-                  tmle_rules = tmle_rules,
-                  tmle_covars_Y = tmle_covars_Y,
-                  g_preds_bounded = g_preds,
-                  C_preds_bounded = C_preds,
-                  obs.treatment = treatments[[t + 1]],
-                  obs.rules = obs.rules[[t + 1]],
-                  gbound = gbound,
-                  ybound = ybound,
-                  t_end = t.end,
-                  window_size = window.size
-                )
-              }, error = function(e) {
-                print(paste("Error in rule", i, "at time", t, ":", e$message))
-                # Return default result structure
-                n_ids <- nrow(Y_preds)
-                list(
-                  "Qstar" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-                  "epsilon" = rep(0, n_ids),
-                  "Qstar_gcomp" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-                  "Qstar_iptw" = rep(0.5, length(tmle_rules)),
-                  "Y" = rep(NA, n_ids)
-                )
-              })
-            })
-            result
-          }, error = function(e) {
-            print(paste("Error processing time point", t, ":", e$message))
-            NULL
-          })
-        })
-      }, error = function(e) {
-        print(paste("Error processing batch:", e$message))
-        NULL
-      })
-    }
-    
-    # Optimized process_time_points function
-    process_time_points <- function(t.end, initial_model_for_Y, initial_model_for_Y_data,
-                                    tmle_rules, tmle_covars_Y, g_preds_processed, C_preds_processed,
-                                    treatments, obs.rules, gbound, ybound, window.size, cores) {
-      
-      n_ids <- length(unique(initial_model_for_Y_data$ID))
-      n_times <- t.end
-      
-      # Pre-process predictions with error handling
-      Y_matrix <- prepare_predictions(initial_model_for_Y$preds, n_ids, n_times, "Y")
-      g_matrix <- prepare_predictions(g_preds_processed, n_ids, n_times, "g")
-      C_matrix <- prepare_predictions(C_preds_processed, n_ids, n_times, "C")
-      
-      # Create batches
-      n_batches <- min(cores, t.end - 1)
-      batch_size <- ceiling((t.end - 1) / n_batches)
-      batches <- split(1:(t.end - 1), ceiling(seq_along(1:(t.end - 1)) / batch_size))
-      
-      print(paste("Processing", length(batches), "batches"))
-      
-      # Process batches
-      results <- tryCatch({
-        batch_results <- mclapply(batches, function(batch) {
-          process_batch(
-            batch = batch,
-            t.end = t.end,
-            Y_matrix = Y_matrix,
-            g_matrix = g_matrix,
-            C_matrix = C_matrix,
-            initial_model_for_Y_data = initial_model_for_Y_data,
-            tmle_rules = tmle_rules,
-            tmle_covars_Y = tmle_covars_Y,
-            treatments = treatments,
-            obs.rules = obs.rules,
-            gbound = gbound,
-            ybound = ybound,
-            window.size = window.size
-          )
-        }, mc.cores = cores)
-        
-        # Handle NULL results
-        batch_results <- lapply(seq_along(batch_results), function(i) {
-          if(is.null(batch_results[[i]])) {
-            print(paste("Batch", i, "returned NULL, using default values"))
-            # Return default values for this batch
-            lapply(batches[[i]], function(t) {
-              default_result <- sapply(seq_along(tmle_rules), function(j) {
-                list(
-                  "Qstar" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-                  "epsilon" = rep(0, n_ids),
-                  "Qstar_gcomp" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-                  "Qstar_iptw" = rep(0.5, length(tmle_rules)),
-                  "Y" = rep(NA, n_ids)
-                )
-              })
-              default_result
-            })
-          } else {
-            batch_results[[i]]
-          }
-        })
-        
-        # Combine results
-        tmle_contrasts <- vector("list", t.end)
-        batch_idx <- 1
-        for(batch in batch_results) {
-          for(t_results in batch) {
-            if(!is.null(t_results)) {
-              tmle_contrasts[[batch_idx]] <- t_results
-              batch_idx <- batch_idx + 1
-            }
-          }
-        }
-        
-        tmle_contrasts
-        
-      }, error = function(e) {
-        print(paste("Error in parallel processing:", e$message))
-        # Return default list of appropriate length
-        vector("list", t.end)
-      })
-      
-      results
-    }
-    
-    # Usage
     tmle_contrasts <- process_time_points(
-      t.end = t.end,
-      initial_model_for_Y = initial_model_for_Y,
-      initial_model_for_Y_data = initial_model_for_Y_data,
+      initial_model_for_Y = initial_model_for_Y$preds,
+      initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y = tmle_covars_Y,
       g_preds_processed = g_preds_processed,
@@ -1546,14 +1349,15 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       obs.rules = obs.rules,
       gbound = gbound,
       ybound = ybound,
-      window.size = window.size,
+      t_end = t.end,
+      window_size = window_size,
       cores = cores
     )
     
+    # Similar update for binary case
     tmle_contrasts_bin <- process_time_points(
-      t.end = t.end,
-      initial_model_for_Y = initial_model_for_Y,
-      initial_model_for_Y_data = initial_model_for_Y_data,
+      initial_model_for_Y = initial_model_for_Y$preds,
+      initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y = tmle_covars_Y,
       g_preds_processed = g_preds_bin_processed,
@@ -1562,7 +1366,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       obs.rules = obs.rules,
       gbound = gbound,
       ybound = ybound,
-      window.size = window.size,
+      t_end = t.end,
+      window_size = window_size,
       cores = cores
     )
   }
