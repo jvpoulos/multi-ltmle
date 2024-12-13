@@ -3,6 +3,132 @@
 # estimate each treatment rule-specific mean                      #
 ###################################################################
 
+# Fast array preprocessing with dimension checks
+prep_array <- function(x, n_ids, n_cols = 1, default = 0.5) {
+  if(is.null(x)) return(matrix(default, nrow = n_ids, ncol = n_cols))
+  
+  if(!is.matrix(x)) {
+    if(length(x) == n_ids) {
+      x <- matrix(x, ncol = 1)
+    } else {
+      x <- matrix(rep_len(x, n_ids), ncol = 1)
+    }
+  }
+  
+  if(ncol(x) < n_cols) {
+    x <- cbind(x, matrix(x[,ncol(x)], nrow = nrow(x), ncol = n_cols - ncol(x)))
+  }
+  
+  if(nrow(x) != n_ids) {
+    x <- matrix(rep_len(as.vector(x), n_ids * n_cols), nrow = n_ids)
+  }
+  
+  return(x)
+}
+
+# Optimized getTMLELongLSTM
+getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
+                            tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, 
+                            obs.treatment, obs.rules, gbound, ybound, t_end, window_size = 7) {
+  
+  # Fast initialization
+  n_ids <- length(unique(initial_model_for_Y_data$ID))
+  n_rules <- length(tmle_rules)
+  unique_ids <- sort(unique(initial_model_for_Y_data$ID))
+  id_map <- match(initial_model_for_Y_data$ID, unique_ids)
+  
+  # Pre-allocate arrays with proper dimensions
+  predicted_Y <- predict_Qstar <- matrix(0.5, nrow = n_ids, ncol = n_rules)
+  observed_Y <- rep(NA_real_, n_ids)
+  epsilon <- rep(0, n_rules)
+  
+  # Process Y values once
+  if("Y" %in% names(initial_model_for_Y_data)) {
+    y_values <- pmin(pmax(initial_model_for_Y_data$Y, ybound[1]), ybound[2])
+    observed_Y[id_map] <- y_values
+  }
+  
+  # Ensure predictions have correct dimensions
+  initial_Y_preds <- prep_array(initial_model_for_Y_preds, n_ids)
+  g_preds <- prep_array(g_preds_bounded, n_ids)
+  c_preds <- prep_array(C_preds_bounded, n_ids)
+  
+  # Process rules in parallel if possible
+  use_parallel <- requireNamespace("parallel", quietly = TRUE) && 
+    parallel::detectCores() > 1
+  
+  process_rule <- function(i) {
+    tryCatch({
+      # Get rule result
+      rule_result <- tmle_rules[[i]](initial_model_for_Y_data)
+      if(is.null(rule_result) || nrow(rule_result) == 0) return(NULL)
+      
+      # Match IDs efficiently
+      valid_ids <- match(rule_result$ID, unique_ids)
+      valid_ids <- valid_ids[!is.na(valid_ids)]
+      if(length(valid_ids) == 0) return(NULL)
+      
+      # Calculate H vector efficiently
+      denom <- boundProbs(g_preds[valid_ids] * c_preds[valid_ids], gbound)
+      treat_values <- as.numeric(rule_result$A0[match(unique_ids[valid_ids], rule_result$ID)])
+      
+      H <- numeric(n_ids)
+      H[valid_ids] <- (1 / denom) * treat_values
+      
+      # Process valid observations
+      valid_obs <- !is.na(observed_Y[valid_ids])
+      if(!any(valid_obs)) return(NULL)
+      
+      filtered_ids <- valid_ids[valid_obs]
+      glm_data <- data.frame(
+        y = observed_Y[filtered_ids],
+        h = H[filtered_ids],
+        offset = qlogis(initial_Y_preds[filtered_ids])
+      )
+      
+      # Fit GLM and calculate predictions
+      glm_fit <- glm(y ~ h + offset(offset), family = binomial(), data = glm_data)
+      eps <- coef(glm_fit)["h"]
+      
+      if(is.finite(eps)) {
+        list(
+          epsilon = eps,
+          predictions = plogis(qlogis(initial_Y_preds) + eps * H),
+          orig_preds = initial_Y_preds
+        )
+      } else NULL
+      
+    }, error = function(e) NULL)
+  }
+  
+  # Process rules either in parallel or sequentially
+  if(use_parallel) {
+    results <- parallel::mclapply(seq_len(n_rules), process_rule, 
+                                  mc.cores = parallel::detectCores() - 1)
+  } else {
+    results <- lapply(seq_len(n_rules), process_rule)
+  }
+  
+  # Update results with proper dimension checks
+  for(i in seq_len(n_rules)) {
+    if(!is.null(results[[i]])) {
+      epsilon[i] <- results[[i]]$epsilon
+      predict_Qstar[,i] <- results[[i]]$predictions
+      predicted_Y[,i] <- results[[i]]$orig_preds[,1]
+    }
+  }
+  
+  # Return results with efficient bounds checking
+  list(
+    "Qstar" = boundProbs(predict_Qstar, ybound),
+    "epsilon" = epsilon,
+    "Qstar_gcomp" = boundProbs(predicted_Y, ybound),
+    "Qstar_iptw" = apply(predicted_Y, 2, function(x) boundProbs(mean(x, na.rm=TRUE), ybound)),
+    "Y" = observed_Y
+  )
+}
+
+# Optimized process_time_points
 process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data, 
                                 tmle_rules, tmle_covars_Y, 
                                 g_preds_processed, C_preds_processed,
@@ -10,237 +136,61 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
                                 gbound, ybound, t_end, window_size,
                                 cores = 1, debug = FALSE) {
   
-  # Initialize results list
-  tmle_contrasts <- vector("list", t_end)
+  # Initialize with proper dimensions
+  n_ids <- length(unique(initial_model_for_Y_data$ID))
   
-  # Validate time indices
-  if(length(obs.rules) < t_end) {
-    if(debug) print("Warning: obs.rules shorter than t_end, padding with last value")
-    last_rule <- obs.rules[[length(obs.rules)]]
-    obs.rules <- c(obs.rules, replicate(t_end - length(obs.rules), last_rule, simplify = FALSE))
-  }
-  
-  if(length(treatments) < t_end + 1) {
-    if(debug) print("Warning: treatments shorter than t_end + 1, padding with last value")
-    last_treatment <- treatments[[length(treatments)]] 
-    treatments <- c(treatments, replicate(t_end + 1 - length(treatments), last_treatment, simplify = FALSE))
-  }
-  
-  # Process each time point
-  for(t in 1:t_end) {
-    if(debug) {
-      print(paste("Processing time point", t))
-      print(paste("obs.rules length:", length(obs.rules)))
-      print(paste("treatments length:", length(treatments)))
-    }
-    
-    # Get current predictions safely
-    current_g_preds <- if(!is.null(g_preds_processed) && length(g_preds_processed) >= t) {
-      g_preds_processed[[t]]
+  # Pre-process predictions once
+  prep_predictions <- function(preds, t) {
+    if(is.null(preds) || length(preds) == 0 || t > length(preds)) {
+      matrix(0.5, nrow = n_ids, ncol = 1)
     } else {
-      if(debug) print(paste("Warning: No g predictions for time", t))
-      NULL
-    }
-    
-    current_C_preds <- if(!is.null(C_preds_processed) && length(C_preds_processed) >= t) {
-      C_preds_processed[[t]]
-    } else {
-      if(debug) print(paste("Warning: No C predictions for time", t))
-      NULL
-    }
-    
-    # Get current treatments and rules safely
-    current_treatment <- treatments[[min(t + 1, length(treatments))]]
-    current_rules <- obs.rules[[min(t, length(obs.rules))]]
-    
-    # Process single timepoint with error handling
-    tmle_contrasts[[t]] <- tryCatch({
-      getTMLELongLSTM(
-        initial_model_for_Y_preds = initial_model_for_Y,
-        initial_model_for_Y_data = initial_model_for_Y_data,
-        tmle_rules = tmle_rules,
-        tmle_covars_Y = tmle_covars_Y,
-        g_preds_bounded = current_g_preds,
-        C_preds_bounded = current_C_preds,
-        obs.treatment = current_treatment,
-        obs.rules = current_rules,
-        gbound = gbound,
-        ybound = ybound,
-        t_end = t_end,
-        window_size = window_size
-      )
-    }, error = function(e) {
-      if(debug) {
-        print(paste("Error processing time point", t, ":", e$message))
-        print("Returning default values")
+      if(!is.matrix(preds[[t]])) {
+        matrix(preds[[t]], ncol = 1)
+      } else {
+        preds[[t]]
       }
-      # Return default values on error
-      n_ids <- length(unique(initial_model_for_Y_data$ID))
-      list(
-        "Qstar" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-        "epsilon" = rep(0, n_ids),
-        "Qstar_gcomp" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-        "Qstar_iptw" = rep(0.5, length(tmle_rules)),
-        "Y" = rep(NA, n_ids)
-      )
-    })
+    }
+  }
+  
+  # Process timepoints efficiently
+  process_timepoint <- function(t) {
+    # Get predictions for current time
+    g_preds <- prep_predictions(g_preds_processed, t)
+    c_preds <- prep_predictions(C_preds_processed, t)
+    
+    # Get Y predictions
+    y_preds <- if(is.matrix(initial_model_for_Y)) {
+      initial_model_for_Y[, min(t, ncol(initial_model_for_Y))]
+    } else {
+      initial_model_for_Y
+    }
+    
+    # Process timepoint
+    getTMLELongLSTM(
+      initial_model_for_Y_preds = y_preds,
+      initial_model_for_Y_data = initial_model_for_Y_data,
+      tmle_rules = tmle_rules,
+      tmle_covars_Y = tmle_covars_Y,
+      g_preds_bounded = g_preds,
+      C_preds_bounded = c_preds,
+      obs.treatment = treatments[[min(t + 1, length(treatments))]],
+      obs.rules = obs.rules[[min(t, length(obs.rules))]],
+      gbound = gbound,
+      ybound = ybound,
+      t_end = t_end,
+      window_size = window_size
+    )
+  }
+  
+  # Process timepoints in parallel if possible
+  if(cores > 1 && requireNamespace("parallel", quietly = TRUE)) {
+    tmle_contrasts <- parallel::mclapply(1:t_end, process_timepoint, 
+                                         mc.cores = cores)
+  } else {
+    tmle_contrasts <- lapply(1:t_end, process_timepoint)
   }
   
   return(tmle_contrasts)
-}
-
-
-# Add safer array handling in getTMLELongLSTM
-getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
-                            tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, 
-                            obs.treatment, obs.rules, gbound, ybound, t_end, window_size = 7) {
-  
-  tryCatch({
-    # Input validation & preprocessing
-    n_ids <- length(unique(initial_model_for_Y_data$ID))
-    
-    # Validate and prep input arrays
-    prep_array <- function(x, n, default = 0.5) {
-      if(is.null(x)) return(rep(default, n))
-      if(is.matrix(x)) x <- as.vector(x)
-      if(length(x) != n) x <- rep(x[1], n)
-      x
-    }
-    
-    initial_model_for_Y_preds <- prep_array(initial_model_for_Y_preds, n_ids)
-    g_preds_bounded <- prep_array(g_preds_bounded, n_ids)
-    C_preds_bounded <- prep_array(C_preds_bounded, n_ids)
-    
-    # Initialize matrices with safe dimensions
-    n_rules <- length(tmle_rules)
-    predicted_Y <- predict_Qstar <- matrix(0.5, nrow=n_ids, ncol=n_rules)
-    observed_Y <- rep(NA, n_ids)
-    epsilon <- rep(0, n_ids)
-    
-    # Process each rule
-    for(i in seq_len(n_rules)) {
-      print(paste("Processing rule", i))
-      
-      # Get rule predictions
-      HAW <- tryCatch({
-        rule_result <- tmle_rules[[i]](initial_model_for_Y_data)
-        print(paste("Rule result dimensions:", paste(dim(rule_result), collapse=" x ")))
-        print("Rule data summary:")
-        print(summary(rule_result))
-        
-        if(!is.null(rule_result)) {
-          rule_result[!is.na(rule_result[,1]), , drop=FALSE]
-        } else NULL
-      }, error = function(e) {
-        print(paste("Error in rule", i, ":", e$message))
-        NULL
-      })
-      
-      if(!is.null(HAW) && nrow(HAW) > 0) {
-        # Create ID mapping
-        id_map <- data.frame(
-          orig_id = unique(initial_model_for_Y_data$ID),
-          new_id = seq_len(n_ids)
-        )
-        
-        # Update predictions
-        pred_Q <- initial_model_for_Y_preds
-        
-        # Get Y values
-        y_idx <- match(HAW$ID, initial_model_for_Y_data$ID)
-        valid_y_idx <- y_idx[!is.na(y_idx)]
-        if(length(valid_y_idx) > 0) {
-          valid_ids <- match(HAW[,"ID"], id_map$orig_id)
-          valid_ids <- valid_ids[!is.na(valid_ids)]
-          
-          observed_Y[valid_ids] <- initial_model_for_Y_data$Y[valid_y_idx]
-          predicted_Y[,i] <- predict_Qstar[,i] <- pred_Q
-        }
-        
-        # Safe array operations for obs.rules
-        if(!is.null(obs.rules) && ncol(obs.rules) >= i) {
-          rule_indices <- which(obs.rules[,i] == 1)
-          
-          if(length(rule_indices) > 0) {
-            # Get treatment index safely
-            treat_index <- rep(0, n_ids)
-            valid_haw_idx <- match(seq_len(n_ids), id_map$new_id)
-            valid_haw_idx <- valid_haw_idx[!is.na(valid_haw_idx)]
-            
-            if(length(valid_haw_idx) > 0) {
-              treat_values <- as.numeric(HAW$A0[valid_haw_idx])
-              treat_values <- treat_values[!is.na(treat_values)]
-              
-              if(length(treat_values) > 0) {
-                treat_index[valid_haw_idx] <- treat_values
-              }
-            }
-            
-            print("Treatment index summary:")
-            print(table(treat_index[rule_indices], useNA="ifany"))
-            
-            # Calculate denominator
-            denom <- boundProbs(
-              g_preds_bounded[rule_indices] * C_preds_bounded[rule_indices],
-              gbound
-            )
-            
-            print("Denominator summary:")
-            print(summary(denom))
-            
-            # Calculate H
-            H <- numeric(n_ids)
-            H[rule_indices] <- (1 / denom) * treat_index[rule_indices]
-            
-            print("H summary:")
-            print(summary(H))
-            
-            # Update epsilon
-            if(!all(H == 0) && !all(is.na(H))) {
-              epsilon_model <- tryCatch({
-                glm(
-                  observed_Y ~ -1 + offset(qlogis(pred_Q)) + H,
-                  family = binomial()
-                )
-              }, error = function(e) {
-                print(paste("Error in epsilon calculation:", e$message))
-                NULL
-              })
-              
-              if(!is.null(epsilon_model)) {
-                epsilon <- coef(epsilon_model)[1]
-                print(paste("Epsilon:", epsilon))
-                predict_Qstar[,i] <- plogis(qlogis(pred_Q) + epsilon * H)
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    # Return results with bounds checking
-    list(
-      "Qstar" = boundProbs(predict_Qstar, ybound),
-      "epsilon" = epsilon,
-      "Qstar_gcomp" = boundProbs(predicted_Y, ybound),
-      "Qstar_iptw" = sapply(seq_len(ncol(predict_Qstar)), function(i) {
-        boundProbs(mean(predicted_Y[,i], na.rm=TRUE), ybound)
-      }),
-      "Y" = observed_Y
-    )
-    
-  }, error = function(e) {
-    print("Error in getTMLELongLSTM:")
-    print(e$message)
-    # Return safe default values
-    list(
-      "Qstar" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-      "epsilon" = rep(0, n_ids),
-      "Qstar_gcomp" = matrix(0.5, nrow=n_ids, ncol=length(tmle_rules)),
-      "Qstar_iptw" = rep(0.5, length(tmle_rules)),
-      "Y" = rep(NA, n_ids)
-    )
-  })
 }
 
 # Fixed static rule
