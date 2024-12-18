@@ -1030,71 +1030,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       return(wide_data)
     }
     
-    # Updated safe_reshape function with improved pattern matching
-    safe_reshape <- function(data, id_col = "ID", time_col = "t") {
-      # Input validation
-      if (!id_col %in% names(data)) {
-        stop(paste("ID column", id_col, "not found in data"))
-      }
-      
-      # Ensure we have data to process
-      if (nrow(data) == 0) {
-        stop("Input data is empty")
-      }
-      
-      # Convert ID and time to numeric, handling NAs
-      data[[id_col]] <- as.numeric(as.character(data[[id_col]]))
-      if (!time_col %in% names(data)) {
-        # If time column doesn't exist, create it based on unique IDs
-        n_times <- nrow(data) %/% length(unique(data[[id_col]]))
-        data[[time_col]] <- rep(0:(n_times-1), each = length(unique(data[[id_col]])))
-      }
-      data[[time_col]] <- as.numeric(as.character(data[[time_col]]))
-      
-      # Remove any rows with NA in ID or time
-      data <- data[!is.na(data[[id_col]]) & !is.na(data[[time_col]]),]
-      
-      # Get all value columns
-      value_cols <- setdiff(names(data), c(id_col, time_col))
-      
-      # Create empty wide format dataset
-      wide_data <- data.frame(ID = unique(data[[id_col]]))
-      
-      # For each value column, reshape it to wide format
-      for (col in value_cols) {
-        tryCatch({
-          # Create temporary subset
-          temp_data <- data[, c(id_col, time_col, col)]
-          names(temp_data)[3] <- "value"
-          
-          # Handle missing values before reshape
-          temp_data$value[is.na(temp_data$value)] <- -1
-          
-          # Reshape
-          temp_wide <- reshape(temp_data,
-                               direction = "wide",
-                               idvar = id_col,
-                               timevar = time_col,
-                               v.names = "value")
-          
-          # Add reshaped columns to main wide dataset
-          if (!is.null(temp_wide)) {
-            wide_cols <- grep("^value\\.", names(temp_wide), value = TRUE)
-            if (length(wide_cols) > 0) {
-              # Rename columns to use original column name
-              names(temp_wide)[names(temp_wide) %in% wide_cols] <- 
-                paste0(col, ".", gsub("^value\\.", "", wide_cols))
-              wide_data[names(temp_wide)] <- temp_wide
-            }
-          }
-        }, error = function(e) {
-          warning(paste("Error reshaping column", col, ":", e$message))
-        })
-      }
-      
-      return(wide_data)
-    }
-    
     tmle_dat <- prepare_lstm_data(tmle_dat, t.end, window_size)
     
     print("Training LSTM model for Y")
@@ -1310,34 +1245,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     C_preds_processed <- safe_get_cuml_preds(C_preds, n_ids)
     print("C predictions processed")
     
-    # Call getTMLELongLSTM with processed predictions
-    tmle_contrasts[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = transformed_Y_preds[, min(t, ncol(transformed_Y_preds))],
-      initial_model_for_Y_data = initial_model_for_Y$data,
-      tmle_rules = tmle_rules,
-      tmle_covars_Y = tmle_covars_Y,
-      g_preds_bounded = safe_get_preds(g_preds_processed, t.end, n_ids),
-      C_preds_bounded = safe_get_preds(C_preds_processed, t.end, n_ids),
-      obs.treatment = treatments[[t.end]],
-      obs.rules = obs.rules[[t.end]],
-      gbound = gbound,
-      ybound = ybound,
-      t_end = t.end,
-      window_size = window.size
-    )
-    
-    tmle_contrasts_bin[[t.end]] <- getTMLELongLSTM(
-      initial_model_for_Y_preds = transformed_Y_preds[, min(t, ncol(transformed_Y_preds))],
-      initial_model_for_Y_data = initial_model_for_Y$data,
-      tmle_rules = tmle_rules,
-      tmle_covars_Y=tmle_covars_Y, 
-      g_preds_bounded = safe_get_preds(g_preds_processed, t.end, n_ids),
-      C_preds_bounded = safe_get_preds(C_preds_processed, t.end, n_ids),
-      obs.treatment=treatments[[t.end]], 
-      obs.rules=obs.rules[[t.end]], 
-      gbound=gbound, ybound=ybound, t_end=t.end, window_size=window.size
-    )
-    
     tmle_contrasts <- process_time_points(
       initial_model_for_Y = initial_model_for_Y$preds,
       initial_model_for_Y_data = initial_model_for_Y$data,
@@ -1351,25 +1258,30 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       ybound = ybound,
       t_end = t.end,
       window_size = window_size,
-      cores = cores
+      cores = 1,  # Sequential processing
+      debug = TRUE,
+      chunk_size = 1000  # Larger chunks
     )
     
+    tmle_contrasts_bin <- tmle_contrasts # for debugging
     # Similar update for binary case
-    tmle_contrasts_bin <- process_time_points(
-      initial_model_for_Y = initial_model_for_Y$preds,
-      initial_model_for_Y_data = initial_model_for_Y$data,
-      tmle_rules = tmle_rules,
-      tmle_covars_Y = tmle_covars_Y,
-      g_preds_processed = g_preds_bin_processed,
-      C_preds_processed = C_preds_processed,
-      treatments = treatments,
-      obs.rules = obs.rules,
-      gbound = gbound,
-      ybound = ybound,
-      t_end = t.end,
-      window_size = window_size,
-      cores = cores
-    )
+    # tmle_contrasts_bin <- process_time_points(
+    #   initial_model_for_Y = initial_model_for_Y$preds,
+    #   initial_model_for_Y_data = initial_model_for_Y$data,
+    #   tmle_rules = tmle_rules,
+    #   tmle_covars_Y = tmle_covars_Y,
+    #   g_preds_processed = g_preds_bin_processed,
+    #   C_preds_processed = C_preds_processed,
+    #   treatments = treatments,
+    #   obs.rules = obs.rules,
+    #   gbound = gbound,
+    #   ybound = ybound,
+    #   t_end = t.end,
+    #   window_size = window_size,
+      # cores = 1,  # Sequential processing
+      # debug = TRUE,
+      # chunk_size = 1000  # Larger chunks
+    # )
   }
   
   # plot estimated survival curves
@@ -1620,7 +1532,7 @@ ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
 n.folds <- 5
 
-window_size <- 7
+window_size <- 12
 
 # Setup parallel processing
 if(doMPI){
@@ -1643,11 +1555,10 @@ if(doMPI){
   cores <- (parallel::detectCores())
   print(paste0("number of cores used: ", cores))
   
-  if(estimator!='tmle-lstm'){
-    cl <- parallel::makeCluster(cores, outfile="")
-    
-    doParallel::registerDoParallel(cl) # register cluster
-  }
+  cl <- parallel::makeCluster(cores, outfile="")
+  
+  doParallel::registerDoParallel(cl) # register cluster
+  
 }
 
 # output directory
@@ -1718,7 +1629,5 @@ if(doMPI){
   closeCluster(cl) # close down MPIcluster
   mpi.finalize()
 }else{
-  if(estimator!='tmle-lstm'){
-    stopCluster(cl)
-  }
+  stopCluster(cl)
 }
