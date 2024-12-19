@@ -824,7 +824,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         
         # Output layer configuration based on loss function
         if loss_fn == "binary_crossentropy":
-            # For binary treatment case
+            # For binary case (Y model or C model)
             final_activation = 'sigmoid'
             output_units = J  # J is the number of treatment categories
             
@@ -842,15 +842,15 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                 label_smoothing=0.01
             )
             
-            if not is_censoring and J > 1:
+            if is_censoring:
                 metrics = [
-                    tf.keras.metrics.CategoricalAccuracy(name='accuracy'),
-                    tf.keras.metrics.AUC(name='auc', multi_label=True),
-                    tf.keras.metrics.Precision(name='precision'),
-                    tf.keras.metrics.Recall(name='recall')
+                    tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
+                    tf.keras.metrics.AUC(name='auc', curve='PR'),  # Use PR curve for imbalanced data
+                    tf.keras.metrics.Precision(name='precision', thresholds=0.5),
+                    tf.keras.metrics.Recall(name='recall', thresholds=0.5)
                 ]
             else:
-                # Original binary metrics for Y and C models
+                # Original binary metrics for Y model
                 metrics = [
                     tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
                     tf.keras.metrics.AUC(name='auc'),

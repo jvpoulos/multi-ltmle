@@ -284,6 +284,17 @@ def main():
     callbacks.append(CustomNanCallback())
 
     # Train model with class weights for binary classification
+
+    # Add class weights for censoring model
+    if is_censoring:
+        # Calculate class weights to handle imbalance
+        class_weight = {
+            0: 1.0,
+            1: 2.0  # Assign higher weight to censored class
+        }
+    else:
+        class_weight = None
+
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,
@@ -291,6 +302,7 @@ def main():
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=callbacks,
+        class_weight=class_weight,  # Add class weights
         verbose=1
     )
 

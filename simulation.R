@@ -1507,7 +1507,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   print("Calculating share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025")
   
-  # Add error handling and dimension checks for prob_share calculation
   if(estimator == "tmle-lstm") {
     prob_share <- vector("list", t.end + 1)
     prob_share_bin <- vector("list", t.end + 1)
@@ -1529,10 +1528,11 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           }
         }, silent=TRUE)
         
-        if(!inherits(g_mat, "try-error")) {
+        if(!inherits(g_mat, "try-error") && nrow(g_mat) > 0) {
           for(i in 1:3) {  # For each rule
+            # Add bounds checking for rule_ids
             rule_ids <- which(obs.rules[[t]][,i] == 1)
-            if(length(rule_ids) > 0) {
+            if(length(rule_ids) > 0 && max(rule_ids) <= nrow(g_mat)) {
               prob_share[[t]][1,i] <- mean(g_mat[rule_ids,1] < 0.025, na.rm=TRUE)
             }
           }
@@ -1549,10 +1549,11 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           }
         }, silent=TRUE)
         
-        if(!inherits(g_mat_bin, "try-error")) {
+        if(!inherits(g_mat_bin, "try-error") && nrow(g_mat_bin) > 0) {
           for(i in 1:3) {  # For each rule
+            # Add bounds checking for rule_ids
             rule_ids <- which(obs.rules[[t]][,i] == 1)
-            if(length(rule_ids) > 0) {
+            if(length(rule_ids) > 0 && max(rule_ids) <= nrow(g_mat_bin)) {
               prob_share_bin[[t]][1,i] <- mean(g_mat_bin[rule_ids,1] < 0.025, na.rm=TRUE)
             }
           }
@@ -1560,7 +1561,20 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       }
     }
     
-    return(list(prob_share=prob_share, prob_share_bin=prob_share_bin))
+    # Add better error handling
+    tryCatch({
+      return(list(
+        prob_share=prob_share,
+        prob_share_bin=prob_share_bin
+      ))
+    }, error = function(e) {
+      warning(paste("Error in prob_share calculation:", e$message))
+      # Return empty lists if calculation fails
+      return(list(
+        prob_share=vector("list", t.end + 1),
+        prob_share_bin=vector("list", t.end + 1)
+      ))
+    })
   }else{
     prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
     for(t in 1:(t.end+1)){

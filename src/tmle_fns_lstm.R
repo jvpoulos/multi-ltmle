@@ -237,121 +237,122 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
         cat("Initial predictions range:", 
             paste(range(initial_model_for_Y_preds, na.rm=TRUE), collapse="-"), "\n")
       }
-      cat("G predictions range:", paste(range(g_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
-      cat("C predictions range:", paste(range(C_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
+      if(!is.null(g_preds_bounded)) {
+        cat("G predictions range:", paste(range(g_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
+      }
+      if(!is.null(C_preds_bounded)) {
+        cat("C predictions range:", paste(range(C_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
+      }
     }
     
-    # Process initial predictions
+    # Process initial predictions with better handling of matrix inputs
     initial_preds <- if(is.matrix(initial_model_for_Y_preds)) {
       if(ncol(initial_model_for_Y_preds) == 1) {
-        rep(initial_model_for_Y_preds[,1], n_rules)
+        matrix(initial_model_for_Y_preds[,1], nrow=n_ids, ncol=n_rules)
       } else {
-        as.vector(initial_model_for_Y_preds)
+        initial_model_for_Y_preds[1:min(nrow(initial_model_for_Y_preds), n_ids), 
+                                  1:min(ncol(initial_model_for_Y_preds), n_rules), 
+                                  drop=FALSE]
       }
     } else {
-      rep(initial_model_for_Y_preds[1], n_ids * n_rules)
+      matrix(rep(initial_model_for_Y_preds[1], n_ids * n_rules), 
+             nrow=n_ids, ncol=n_rules)
     }
-    initial_preds <- matrix(pmin(pmax(initial_preds, ybound[1]), ybound[2]), 
-                            nrow = n_ids, ncol = n_rules)
     
-    # Initialize with initial predictions
+    initial_preds <- pmin(pmax(initial_preds, ybound[1]), ybound[2])
+    
+    # Initialize outputs
     predicted_Y <- predict_Qstar <- initial_preds
-    observed_Y <- rep(NA, n_ids)  # Start with NAs
+    observed_Y <- rep(ybound[1], n_ids)  # Initialize with lower bound instead of NA
     epsilon <- rep(0, n_rules)
     
-    # Get observed outcomes
+    # Get observed outcomes with improved handling
     if("Y" %in% colnames(initial_model_for_Y_data)) {
       y_data <- initial_model_for_Y_data
-      y_data$Y[is.na(y_data$Y)] <- ybound[1]  # Set NA Y values to lower bound
+      y_data$Y[is.na(y_data$Y)] <- ybound[1]
       y_data$Y <- pmin(pmax(y_data$Y, ybound[1]), ybound[2])
       
-      # Match to unique IDs
-      unique_ids <- unique(y_data$ID)
-      for(id in unique_ids) {
-        idx <- which(id == y_data$ID)[1]  # Take first non-NA value for each ID
-        if(!is.na(idx)) {
-          observed_Y[which(unique_ids == id)] <- y_data$Y[idx]
-        }
-      }
-      
-      if(debug) {
-        cat("Y values summary:\n")
-        print(summary(observed_Y))
-        cat("Number of non-NA Y:", sum(!is.na(observed_Y)), "\n")
+      # More efficient ID matching
+      id_map <- match(unique(initial_model_for_Y_data$ID), y_data$ID)
+      valid_map <- !is.na(id_map)
+      if(any(valid_map)) {
+        observed_Y[valid_map] <- y_data$Y[id_map[valid_map]]
       }
     }
     
-    # Process rules
+    # Process rules with enhanced error handling
     for(i in seq_len(n_rules)) {
       if(debug) cat(sprintf("\nProcessing rule %d/%d\n", i, n_rules))
       
-      # Get rule results
       rule_result <- tryCatch({
         result <- tmle_rules[[i]](initial_model_for_Y_data)
-        if(!is.null(result)) {
-          # Validate rule output
-          if(debug) {
-            cat("Rule result summary:\n")
-            print(summary(result$A0))
-            cat("Number of valid treatments:", sum(!is.na(result$A0)), "\n")
-          }
-          result[!is.na(result$ID) & !is.na(result$A0), , drop=FALSE]
-        } else NULL
+        if(is.null(result)) return(NULL)
+        
+        # Validate rule output
+        result <- result[!is.na(result$ID) & !is.na(result$A0), , drop=FALSE]
+        if(nrow(result) == 0) return(NULL)
+        
+        if(debug) {
+          cat("Rule result summary:\n")
+          print(summary(result$A0))
+          cat("Number of valid treatments:", sum(!is.na(result$A0)), "\n")
+        }
+        result
       }, error = function(e) {
         if(debug) cat(sprintf("Error in rule %d: %s\n", i, conditionMessage(e)))
         NULL
       })
       
-      if(!is.null(rule_result) && nrow(rule_result) > 0) {
-        # Get matched indices
-        matched_ids <- match(rule_result$ID, unique(initial_model_for_Y_data$ID))
-        valid_ids <- !is.na(matched_ids)
+      if(!is.null(rule_result)) {
+        # Get matched indices more efficiently
+        valid_indices <- match(rule_result$ID, unique(initial_model_for_Y_data$ID))
+        valid_indices <- valid_indices[!is.na(valid_indices)]
         
-        if(any(valid_ids)) {
-          valid_indices <- matched_ids[valid_ids]
-          
-          # Calculate H vector
+        if(length(valid_indices) > 0) {
+          # Calculate H vector with better bounds handling
           H <- numeric(n_ids)
-          denom <- g_preds_bounded[valid_indices] * C_preds_bounded[valid_indices]
-          denom <- pmax(denom, gbound[1])  # Ensure minimum bound
+          denom <- pmax(g_preds_bounded[valid_indices] * C_preds_bounded[valid_indices], 
+                        gbound[1])
           
-          # Get treatment values
-          treat_values <- as.numeric(rule_result$A0[valid_ids])
-          if(debug) {
-            cat("Treatment values summary:\n")
-            print(summary(treat_values))
-          }
-          
-          H[valid_indices] <- (1 / denom) * treat_values
+          treat_values <- as.numeric(rule_result$A0[1:length(valid_indices)])
+          H[valid_indices] <- treat_values / denom
           
           if(debug) {
-            cat("\nH vector summary:\n")
+            cat("H vector summary:\n")
             print(summary(H[valid_indices]))
             cat("Number of non-zero H:", sum(H != 0), "\n")
           }
           
-          # Prepare GLM data
-          valid_y <- !is.na(observed_Y[valid_indices])
-          if(any(valid_y)) {
+          # Prepare GLM data more efficiently
+          y_vals <- observed_Y[valid_indices]
+          h_vals <- H[valid_indices]
+          valid_data <- !is.na(y_vals) & !is.na(h_vals) & is.finite(h_vals)
+          
+          if(sum(valid_data) > 0 && var(h_vals[valid_data]) > 0) {
+            # Create GLM data frame only for valid data
             glm_data <- data.frame(
-              y = observed_Y[valid_indices][valid_y],
-              h = H[valid_indices][valid_y],
-              offset = qlogis(initial_preds[valid_indices, i][valid_y])
+              y = y_vals[valid_data],
+              h = h_vals[valid_data],
+              offset = qlogis(initial_preds[valid_indices, i][valid_data])
             )
             
-            # Ensure finite offset
+            # Handle non-finite offset values
             glm_data$offset[!is.finite(glm_data$offset)] <- 0
             
-            if(nrow(glm_data) > 0 && var(glm_data$h) > 0) {
+            if(nrow(glm_data) > 0) {
               if(debug) {
-                cat("\nFitting GLM with data:\n")
+                cat("Fitting GLM with data:\n")
                 print(summary(glm_data))
               }
               
+              # More robust GLM fitting
               glm_result <- tryCatch({
-                fit <- glm(y ~ h + offset(offset), family = binomial(), data = glm_data)
+                fit <- suppressWarnings(glm(y ~ h + offset(offset), 
+                                            family = binomial(), 
+                                            data = glm_data,
+                                            control = glm.control(maxit=50)))
                 eps <- coef(fit)["h"]
-                if(is.finite(eps) && abs(eps) < 10) eps else 0
+                if(is.finite(eps)) pmin(pmax(eps, -10), 10) else 0
               }, error = function(e) {
                 if(debug) cat("GLM error:", conditionMessage(e), "\n")
                 0
@@ -361,16 +362,11 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
               
               if(debug) cat(sprintf("Fitted epsilon[%d]: %f\n", i, epsilon[i]))
               
-              # Update predictions
+              # Update predictions if epsilon is non-zero
               if(epsilon[i] != 0) {
                 logit_pred <- qlogis(initial_preds[,i]) + epsilon[i] * H
                 predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred), ybound[1]), ybound[2])
                 predicted_Y[,i] <- pmin(pmax(initial_preds[,i], ybound[1]), ybound[2])
-                
-                if(debug) {
-                  cat("\nUpdated predictions summary:\n")
-                  print(summary(predict_Qstar[,i]))
-                }
               }
             }
           }
@@ -378,23 +374,22 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Calculate final IPTW means
+    # Calculate IPTW means with better NA handling
     iptw_means <- sapply(1:n_rules, function(r) {
       vals <- predicted_Y[,r]
-      mean_val <- mean(vals[!is.na(vals)])
+      mean_val <- mean(vals[!is.na(vals)], na.rm=TRUE)
       if(!is.finite(mean_val)) mean_val <- ybound[1]
       mean_val
     })
     
     if(debug) {
       cat("\nFinal summary:\n")
-      cat("Qstar range:", paste(range(predict_Qstar), collapse="-"), "\n")
-      cat("Qstar_gcomp range:", paste(range(predicted_Y), collapse="-"), "\n")
+      cat("Qstar range:", paste(range(predict_Qstar, na.rm=TRUE), collapse="-"), "\n")
+      cat("Qstar_gcomp range:", paste(range(predicted_Y, na.rm=TRUE), collapse="-"), "\n")
       cat("Epsilon values:", paste(epsilon, collapse=", "), "\n")
       cat("IPTW means:", paste(iptw_means, collapse=", "), "\n")
     }
     
-    # Return results
     list(
       "Qstar" = predict_Qstar,
       "epsilon" = epsilon,
