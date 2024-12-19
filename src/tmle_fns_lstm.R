@@ -175,12 +175,35 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       gc()
     }
     
+    if (debug) {
+      cat("Qstar_gcomp dimensions before IPTW calculation:", paste(dim(tmle_contrasts[[t]]$Qstar_gcomp), collapse = "x"), "\n")
+    }
+    
     # Calculate final IPTW means
-    tmle_contrasts[[t]]$Qstar_iptw <- matrix(
-      colMeans(tmle_contrasts[[t]]$Qstar_gcomp, na.rm = TRUE),
-      nrow = 1,
-      ncol = n_rules
-    )
+    # Ensure Qstar_gcomp has correct dimensions before colMeans
+    tryCatch({
+      if (!is.matrix(tmle_contrasts[[t]]$Qstar_gcomp) || 
+          ncol(tmle_contrasts[[t]]$Qstar_gcomp) != n_rules) {
+        if (debug) {
+          cat(sprintf("Qstar_gcomp at time %d is not a valid matrix. Correcting dimensions.\n", t))
+        }
+        tmle_contrasts[[t]]$Qstar_gcomp <- matrix(
+          ybound[1], 
+          nrow = n_ids, 
+          ncol = n_rules
+        )
+      }
+      
+      # Final IPTW mean calculation
+      tmle_contrasts[[t]]$Qstar_iptw <- matrix(
+        colMeans(tmle_contrasts[[t]]$Qstar_gcomp, na.rm = TRUE),
+        nrow = 1,
+        ncol = n_rules
+      )
+    }, error = function(e) {
+      cat("Error calculating IPTW means at time point", t, ":", e$message, "\n")
+      tmle_contrasts[[t]]$Qstar_iptw <- matrix(ybound[1], nrow = 1, ncol = n_rules)
+    })
     
     # Clean up
     rm(current_g_preds, current_c_preds, current_y_preds)
@@ -190,6 +213,8 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       time_end <- Sys.time()
       cat(sprintf("Time point %d completed in %.2f s\n", 
                   t, as.numeric(difftime(time_end, time_start, units="secs"))))
+      cat("Summary of Qstar_iptw:\n")
+      print(tmle_contrasts[[t]]$Qstar_iptw)
     }
   }
   

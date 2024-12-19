@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, window_size=7){
+simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
   
   # libraries
   library(simcausal)
@@ -1259,10 +1259,10 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       t_end = t.end,
       window_size = window_size,
       cores = 1,  # Sequential processing
-      debug = TRUE,
-      chunk_size = 1000  # Larger chunks
+      debug = debug,
+      chunk_size = 12500
     )
-    
+
     tmle_contrasts_bin <- tmle_contrasts # for debugging
     # Similar update for binary case
     # tmle_contrasts_bin <- process_time_points(
@@ -1279,15 +1279,179 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     #   t_end = t.end,
     #   window_size = window_size,
       # cores = 1,  # Sequential processing
-      # debug = TRUE,
-      # chunk_size = 1000  # Larger chunks
+      # debug = debug,
+      # chunk_size = 12500
     # )
   }
   
-  # plot estimated survival curves
-  
-  tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
-  tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
+  if(estimator=='tmle-lstm'){
+    # Fix for safe access to obs.rules
+    # Modify the tmle_estimates calculation to handle bounds correctly:
+    
+    tmle_estimates <- cbind(
+      sapply(1:(t.end-1), function(t) {
+        if(debug) cat(sprintf("\nComputing TMLE estimates for time %d\n", t))
+        
+        # Safe access to obs.rules
+        rules_dim <- if(t + 1 <= length(obs.rules)) {
+          ncol(obs.rules[[t + 1]])
+        } else {
+          if(debug) cat(sprintf("Warning: t+1 (%d) exceeds obs.rules length, using last available timepoint\n", t + 1))
+          ncol(obs.rules[[length(obs.rules)]])
+        }
+        
+        sapply(1:rules_dim, function(x) {
+          if(debug) {
+            cat(sprintf("Computing tmle_estimates for time %d, rule %d\n", t, x))
+            cat("Qstar dimensions:", paste(dim(tmle_contrasts[[t]]$Qstar), collapse="x"), "\n")
+            cat("Accessing column", x, "\n")
+          }
+          # Access Qstar as a matrix, not a list
+          1 - mean(tmle_contrasts[[t]]$Qstar[,x], na.rm = TRUE)
+        })
+      }),
+      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
+        if(debug) {
+          cat(sprintf("Computing tmle_estimates for final time %d, rule %d\n", t.end, x))
+          cat("Qstar dimensions:", paste(dim(tmle_contrasts[[t.end]]$Qstar), collapse="x"), "\n")
+          cat("Accessing column", x, "\n")
+        }
+        # Access Qstar as a matrix, not a list
+        1 - mean(tmle_contrasts[[t.end]]$Qstar[,x], na.rm = TRUE)
+      })
+    )
+    
+    # Add additional debug output for verification
+    if(debug) {
+      cat("\nTMLE estimates dimensions:", paste(dim(tmle_estimates), collapse="x"), "\n")
+      cat("TMLE estimates summary:\n")
+      print(summary(as.vector(tmle_estimates)))
+    }
+    
+    tmle_bin_estimates <- cbind(
+      sapply(1:(t.end-1), function(t) {
+        if(debug) cat(sprintf("\nComputing TMLE estimates for time %d\n", t))
+        
+        # Safe access to obs.rules
+        rules_dim <- if(t + 1 <= length(obs.rules)) {
+          ncol(obs.rules[[t + 1]])
+        } else {
+          if(debug) cat(sprintf("Warning: t+1 (%d) exceeds obs.rules length, using last available timepoint\n", t + 1))
+          ncol(obs.rules[[length(obs.rules)]])
+        }
+        
+        sapply(1:rules_dim, function(x) {
+          if(debug) {
+            cat(sprintf("Computing tmle_estimates for time %d, rule %d\n", t, x))
+            cat("Qstar dimensions:", paste(dim(tmle_contrasts_bin[[t]]$Qstar), collapse="x"), "\n")
+            cat("Accessing column", x, "\n")
+          }
+          # Access Qstar as a matrix, not a list
+          1 - mean(tmle_contrasts_bin[[t]]$Qstar[,x], na.rm = TRUE)
+        })
+      }),
+      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
+        if(debug) {
+          cat(sprintf("Computing tmle_bin_estimates for final time %d, rule %d\n", t.end, x))
+          cat("Qstar dimensions:", paste(dim(tmle_contrasts_bin[[t.end]]$Qstar), collapse="x"), "\n")
+          cat("Accessing column", x, "\n")
+        }
+        # Access Qstar as a matrix, not a list
+        1 - mean(tmle_contrasts_bin[[t.end]]$Qstar[,x], na.rm = TRUE)
+      })
+    )
+    
+    # Add additional debug output for verification
+    if(debug) {
+      cat("\nTMLE binary estimates dimensions:", paste(dim(tmle_bin_estimates), collapse="x"), "\n")
+      cat("TMLE binary estimates summary:\n")
+      print(summary(as.vector(tmle_bin_estimates)))
+    }
+    
+    # Similarly update other estimates:
+    iptw_estimates <- cbind(
+      sapply(1:(t.end-1), function(t) {
+        rules_dim <- if(t + 1 <= length(obs.rules)) {
+          ncol(obs.rules[[t + 1]])
+        } else {
+          ncol(obs.rules[[length(obs.rules)]])
+        }
+        
+        sapply(1:rules_dim, function(x) {
+          if(debug) {
+            cat(sprintf("Computing IPTW estimates for time %d, rule %d\n", t, x))
+            cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts[[t]]$Qstar_iptw), collapse="x"), "\n")
+          }
+          1 - tmle_contrasts[[t]]$Qstar_iptw[1,x]
+        })
+      }),
+      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
+        if(debug) {
+          cat(sprintf("Computing IPTW estimates for final time %d, rule %d\n", t.end, x))
+          cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts[[t.end]]$Qstar_iptw), collapse="x"), "\n")
+        }
+        1 - tmle_contrasts[[t.end]]$Qstar_iptw[1,x]
+      })
+    )
+    
+    iptw_bin_estimates <- cbind(
+      sapply(1:(t.end-1), function(t) {
+        rules_dim <- if(t + 1 <= length(obs.rules)) {
+          ncol(obs.rules[[t + 1]])
+        } else {
+          ncol(obs.rules[[length(obs.rules)]])
+        }
+        
+        sapply(1:rules_dim, function(x) {
+          if(debug) {
+            cat(sprintf("Computing IPTW estimates for time %d, rule %d\n", t, x))
+            cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts_bin[[t]]$Qstar_iptw), collapse="x"), "\n")
+          }
+          1 - tmle_contrasts[[t]]$Qstar_iptw[1,x]
+        })
+      }),
+      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
+        if(debug) {
+          cat(sprintf("Computing IPTW estimates for final time %d, rule %d\n", t.end, x))
+          cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts_bin[[t.end]]$Qstar_iptw), collapse="x"), "\n")
+        }
+        1 - tmle_contrasts[[t.end]]$Qstar_iptw[1,x]
+      })
+    )
+    
+    gcomp_estimates <- cbind(
+      sapply(1:(t.end-1), function(t) {
+        rules_dim <- if(t + 1 <= length(obs.rules)) {
+          ncol(obs.rules[[t + 1]])
+        } else {
+          ncol(obs.rules[[length(obs.rules)]])
+        }
+        
+        sapply(1:rules_dim, function(x) {
+          if(debug) {
+            cat(sprintf("Computing G-comp estimates for time %d, rule %d\n", t, x))
+            cat("Qstar_gcomp dimensions:", paste(dim(tmle_contrasts[[t]]$Qstar_gcomp), collapse="x"), "\n")
+          }
+          1 - mean(tmle_contrasts[[t]]$Qstar_gcomp[,x], na.rm=TRUE)
+        })
+      }),
+      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
+        if(debug) {
+          cat(sprintf("Computing G-comp estimates for final time %d, rule %d\n", t.end, x))
+          cat("Qstar_gcomp dimensions:", paste(dim(tmle_contrasts[[t.end]]$Qstar_gcomp), collapse="x"), "\n")
+        }
+        1 - mean(tmle_contrasts[[t.end]]$Qstar_gcomp[,x], na.rm=TRUE)
+      })
+    )
+  }else{
+    tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
+    tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
+    
+    iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) # static, dynamic, stochastic
+    iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) 
+    
+    gcomp_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_gcomp[[x]]))) # static, dynamic, stochastic
+  }
   
   if(r==1){
     png(paste0(output_dir,paste0("survival_plot_tmle_estimates_",n, "_" , estimator,".png")))
@@ -1309,12 +1473,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
-  }
-  
-  iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) # static, dynamic, stochastic
-  iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) 
-  
-  if(r==1){
+    
     png(paste0(output_dir,paste0("survival_plot_iptw_estimates_",n,  "_", estimator,".png")))
     plotSurvEst(surv = list("Static"= iptw_estimates[1,], "Dynamic"= iptw_estimates[2,], "Stochastic"= iptw_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
@@ -1334,11 +1493,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
-  }
-  
-  gcomp_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_gcomp[[x]]))) # static, dynamic, stochastic
-  
-  if(r==1){
+
     png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n,  "_", estimator,".png")))
     plotSurvEst(surv = list("Static"= gcomp_estimates[1,], "Dynamic"= gcomp_estimates[2,], "Stochastic"= gcomp_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
@@ -1350,40 +1505,107 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     dev.off()
   }
   
-  # calc share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025
+  print("Calculating share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025")
   
-  prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
-  for(t in 1:(t.end+1)){
-    colnames(prob_share[[t]]) <- colnames(obs.rules[[(t.end)]])
+  # Add error handling and dimension checks for prob_share calculation
+  if(estimator == "tmle-lstm") {
+    prob_share <- vector("list", t.end + 1)
+    prob_share_bin <- vector("list", t.end + 1)
+    
+    # Pre-initialize matrices with correct dimensions
+    for(t in 1:(t.end + 1)) {
+      prob_share[[t]] <- matrix(0, nrow=1, ncol=3)  # 3 for static, dynamic, stochastic
+      prob_share_bin[[t]] <- matrix(0, nrow=1, ncol=3)
+      colnames(prob_share[[t]]) <- c("static", "dynamic", "stochastic")
+      colnames(prob_share_bin[[t]]) <- c("static", "dynamic", "stochastic")
+      
+      # Safe matrix conversion for predictions
+      if(!is.null(g_preds_cuml_bounded[[t]])) {
+        g_mat <- try({
+          if(!is.matrix(g_preds_cuml_bounded[[t]])) {
+            matrix(g_preds_cuml_bounded[[t]], ncol=1)
+          } else {
+            g_preds_cuml_bounded[[t]]
+          }
+        }, silent=TRUE)
+        
+        if(!inherits(g_mat, "try-error")) {
+          for(i in 1:3) {  # For each rule
+            rule_ids <- which(obs.rules[[t]][,i] == 1)
+            if(length(rule_ids) > 0) {
+              prob_share[[t]][1,i] <- mean(g_mat[rule_ids,1] < 0.025, na.rm=TRUE)
+            }
+          }
+        }
+      }
+      
+      # Similar handling for binary predictions
+      if(!is.null(g_preds_bin_cuml_bounded[[t]])) {
+        g_mat_bin <- try({
+          if(!is.matrix(g_preds_bin_cuml_bounded[[t]])) {
+            matrix(g_preds_bin_cuml_bounded[[t]], ncol=1)
+          } else {
+            g_preds_bin_cuml_bounded[[t]]
+          }
+        }, silent=TRUE)
+        
+        if(!inherits(g_mat_bin, "try-error")) {
+          for(i in 1:3) {  # For each rule
+            rule_ids <- which(obs.rules[[t]][,i] == 1)
+            if(length(rule_ids) > 0) {
+              prob_share_bin[[t]][1,i] <- mean(g_mat_bin[rule_ids,1] < 0.025, na.rm=TRUE)
+            }
+          }
+        }
+      }
+    }
+    
+    return(list(prob_share=prob_share, prob_share_bin=prob_share_bin))
+  }else{
+    prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
+    for(t in 1:(t.end+1)){
+      colnames(prob_share[[t]]) <- colnames(obs.rules[[(t.end)]])
+    }
+    
+    names(prob_share) <- paste0("t=",seq(0,t.end))
+    
+    prob_share_bin <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
+    for(t in 1:(t.end+1)){
+      colnames(prob_share_bin[[t]]) <- colnames(obs.rules[[(t.end)]])
+    }
+    
+    names(prob_share_bin) <- paste0("t=",seq(0,t.end))
   }
+
+  print("Calculating CIs") 
   
-  names(prob_share) <- paste0("t=",seq(0,t.end))
-  
-  prob_share.bin <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
-  for(t in 1:(t.end+1)){
-    colnames(prob_share.bin[[t]]) <- colnames(obs.rules[[(t.end)]])
+  if(estimator=="tmle-lstm"){
+    tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle-lstm")
+    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, estimator="tmle-lstm")
+    
+    iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle-lstm")
+    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE, estimator="tmle-lstm")
+    
+    gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle-lstm")
+  }else{
+    tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle")
+    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, estimator="tmle")
+    
+    iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle")
+    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE, estimator="tmle")
+    
+    gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle")
   }
-  
-  names(prob_share.bin) <- paste0("t=",seq(0,t.end))
-  
-  # calc CIs 
-  
-  tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored)
-  tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored)
-  
-  iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE)
-  iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE)
-  
-  gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE)
-  
-  # store results
+
+  print("Storing results")
   
   Ahat_tmle  <- g_preds_cuml_bounded
   Ahat_tmle_bin  <- g_preds_bin_cuml_bounded
   
   Chat_tmle  <- C_preds_cuml_bounded
   
-  # calculate bias, CP, CIW wrt to est at each t
+  print("Calculating bias, CP, CIW wrt to est at each t")
+  
   bias_tmle  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - tmle_est_var$est[[t]])
   names(bias_tmle) <- paste0("t=",2:t.end)
   
@@ -1475,6 +1697,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     names(CIW_iptw_bin[[t]]) <- names(bias_iptw_bin[[t]])
   }
   
+  print("Returning list")
   return(list("Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
               "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,"tmle_est_var"=tmle_est_var,
@@ -1533,6 +1756,8 @@ ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 n.folds <- 5
 
 window_size <- 12
+
+debug <- TRUE
 
 # Setup parallel processing
 if(doMPI){
@@ -1613,13 +1838,13 @@ if(estimator=='tmle-lstm'){ # run sequentially
   sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
-            use.SL=use.SL, scale.continuous=scale.continuous, window_size=window_size)
+            use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
   }
 }else{ # run in parallel
   sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE, .inorder=FALSE) %dopar% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
-            use.SL=use.SL, scale.continuous=scale.continuous, window_size=window_size)
+            use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
   }
 }
 
