@@ -222,7 +222,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$is_censoring <- is_censoring
   py$J <- as.integer(if(is_censoring) 1 else J)
   py$output_dir <- output_dir
-  py$epochs <- as.integer(10)
+  py$epochs <- as.integer(25)
   py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
@@ -230,7 +230,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$lr <- 0.001
   py$dr <- 0.5
   py$nb_batches <- as.integer(128)
-  py$patience <- as.integer(2)
+  py$patience <- as.integer(5)
   py$t_end <- as.integer(t_end + 1)
   py$window_size <- as.integer(window_size)
   py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")

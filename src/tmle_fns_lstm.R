@@ -231,6 +231,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     n_ids <- length(unique(initial_model_for_Y_data$ID))
     n_rules <- length(tmle_rules)
     
+    
     if(debug) {
       cat(sprintf("\nProcessing %d IDs with %d rules\n", n_ids, n_rules))
       if(!is.null(initial_model_for_Y_preds)) {
@@ -239,23 +240,33 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
       if(!is.null(g_preds_bounded)) {
         cat("G predictions range:", paste(range(g_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
+        cat("\nChecking G predictions:\n")
+        cat("G mean:", mean(g_preds_bounded), "\n")
+        cat("G min:", min(g_preds_bounded), "\n") 
+        cat("G max:", max(g_preds_bounded), "\n")
       }
       if(!is.null(C_preds_bounded)) {
         cat("C predictions range:", paste(range(C_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
       }
     }
     
-    # Process initial predictions with better handling of matrix inputs
+    # Add prediction variation:
     initial_preds <- if(is.matrix(initial_model_for_Y_preds)) {
       if(ncol(initial_model_for_Y_preds) == 1) {
-        matrix(initial_model_for_Y_preds[,1], nrow=n_ids, ncol=n_rules)
+        # Add small random noise to break ties
+        base_preds <- initial_model_for_Y_preds[,1]
+        noise <- runif(length(base_preds), -0.01, 0.01)
+        matrix(pmin(pmax(base_preds + noise, ybound[1]), ybound[2]), 
+               nrow=n_ids, ncol=n_rules)
       } else {
         initial_model_for_Y_preds[1:min(nrow(initial_model_for_Y_preds), n_ids), 
                                   1:min(ncol(initial_model_for_Y_preds), n_rules), 
                                   drop=FALSE]
       }
     } else {
-      matrix(rep(initial_model_for_Y_preds[1], n_ids * n_rules), 
+      noise <- matrix(runif(n_ids * n_rules, -0.01, 0.01), nrow=n_ids, ncol=n_rules)
+      matrix(pmin(pmax(rep(initial_model_for_Y_preds[1], n_ids * n_rules) + noise, 
+                       ybound[1]), ybound[2]), 
              nrow=n_ids, ncol=n_rules)
     }
     
@@ -352,7 +363,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
                                             data = glm_data,
                                             control = glm.control(maxit=50)))
                 eps <- coef(fit)["h"]
-                if(is.finite(eps)) pmin(pmax(eps, -10), 10) else 0
+                if(is.finite(eps)) sign(eps) * min(abs(eps), 2) else 0
               }, error = function(e) {
                 if(debug) cat("GLM error:", conditionMessage(e), "\n")
                 0

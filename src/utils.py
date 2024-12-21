@@ -824,45 +824,68 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         
         # Output layer configuration based on loss function
         if loss_fn == "binary_crossentropy":
-            # For binary case (Y model or C model)
+            # Binary case (Y or C model)
             final_activation = 'sigmoid'
-            output_units = J  # J is the number of treatment categories
-            
-            outputs = tf.keras.layers.Dense(
-                units=output_units,
-                activation=final_activation,
-                kernel_initializer='glorot_uniform',
-                kernel_regularizer=l2(0.001),
-                name="output_dense"
-            )(x)
-            
-            # Binary crossentropy with label smoothing
-            loss = tf.keras.losses.BinaryCrossentropy(
-                from_logits=False,
-                label_smoothing=0.01
-            )
+            output_units = 1 if is_censoring else J
             
             if is_censoring:
+                # Special handling for compliance model with class imbalance
+                pos_ratio = tf.constant(0.02, dtype=tf.float32)  # Based on observed data
+
+                outputs = tf.keras.layers.Dense(
+                    units=output_units,
+                    activation=final_activation,
+                    kernel_initializer='glorot_uniform',
+                    kernel_regularizer=l2(0.001),
+                    bias_initializer=tf.keras.initializers.Constant(np.log(pos_ratio/(1-pos_ratio))),
+                    name="output_dense"
+                )(x)
+
+                # Focal loss for imbalanced case
+                def focal_loss(y_true, y_pred, gamma=2.0, alpha=0.25):
+                    bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
+                    p_t = (y_true * y_pred) + ((1 - y_true) * (1 - y_pred))
+                    alpha_factor = y_true * alpha + (1 - y_true) * (1 - alpha)
+                    modulating_factor = tf.pow(1.0 - p_t, gamma)
+                    return tf.reduce_mean(alpha_factor * modulating_factor * bce)
+                
+                loss = focal_loss
                 metrics = [
-                    tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
-                    tf.keras.metrics.AUC(name='auc', curve='PR'),  # Use PR curve for imbalanced data
-                    tf.keras.metrics.Precision(name='precision', thresholds=0.5),
-                    tf.keras.metrics.Recall(name='recall', thresholds=0.5)
+                    tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.3),
+                    tf.keras.metrics.AUC(name='auc', curve='PR', from_logits=False),
+                    tf.keras.metrics.Precision(name='precision', thresholds=0.3),
+                    tf.keras.metrics.Recall(name='recall', thresholds=0.3)
                 ]
+                class_weight = {0: 1.0, 1: 50.0}  # Strong weight for minority class
             else:
-                # Original binary metrics for Y model
+                outputs = tf.keras.layers.Dense(
+                    units=output_units,
+                    activation=final_activation,
+                    kernel_initializer='glorot_uniform',
+                    kernel_regularizer=l2(0.001),
+                    name="output_dense"
+                )(x)
+
+                # Regular binary case (Y model)
+                loss = tf.keras.losses.BinaryCrossentropy(
+                    from_logits=False,
+                    label_smoothing=0.01
+                )
                 metrics = [
-                    tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
+                    tf.keras.metrics.BinaryAccuracy(name='accuracy'),
                     tf.keras.metrics.AUC(name='auc'),
                     tf.keras.metrics.Precision(name='precision'),
                     tf.keras.metrics.Recall(name='recall')
                 ]
-            
+                class_weight = None
+                
         else:
-            # For categorical treatment case
+            # Categorical case (A model)
             final_activation = 'softmax'
-            output_units = output_dim  # Use output_dim for categorical case
+            output_units = J
             
+            x = tf.keras.layers.Dense(n_hidden//2, activation='relu')(x)
+
             outputs = tf.keras.layers.Dense(
                 units=output_units,
                 activation=final_activation,
@@ -871,36 +894,37 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                 name="output_dense"
             )(x)
             
-            # Sparse categorical crossentropy for categorical case
             loss = tf.keras.losses.SparseCategoricalCrossentropy(
                 from_logits=False
             )
             
-            # Metrics for categorical case
+            # Appropriate metrics for categorical case
             metrics = [
                 tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy'),
                 tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy')
             ]
+            class_weight = None
         
         # Create model
         model = Model(inputs=inputs, outputs=outputs, name='lstm_model')
         
         # Learning rate schedule with warm-up
-        lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            decay_steps=steps_per_epoch * 2,
-            decay_rate=0.95,
-            staircase=True
+            first_decay_steps=steps_per_epoch * 2,
+            t_mul=2.0,
+            m_mul=0.9,
+            alpha=0.1
         )
         
         # Optimizer with gradient clipping
-        optimizer = tf.keras.optimizers.Adam(
+        optimizer = tf.keras.optimizers.AdamW(
             learning_rate=lr_schedule,
+            weight_decay=0.001,
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-7,
-            clipnorm=1.0,
-            amsgrad=False  # Disable amsgrad
+            clipnorm=1.0
         )
         
         # Compile model with appropriate loss and metrics
@@ -908,7 +932,8 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             optimizer=optimizer,
             loss=loss,
             metrics=metrics,
-            run_eagerly=False
+            weighted_metrics=['accuracy'] if class_weight is not None else None,
+            jit_compile=True
         )
         
         return model
