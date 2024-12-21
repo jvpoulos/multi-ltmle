@@ -3,14 +3,77 @@
 ###################################################################
 
 TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.05, iptw=FALSE, gcomp=FALSE, estimator="tmle") {
+  # Debug information
+  cat("\nTMLE_IC Debug Info:\n")
+  cat("tmle_contrasts length:", ifelse(is.null(tmle_contrasts), "NULL", length(tmle_contrasts)), "\n")
+  if(!is.null(tmle_contrasts) && length(tmle_contrasts) > 0) {
+    cat("First element keys:", paste(names(tmle_contrasts[[1]]), collapse=", "), "\n")
+    if("Qstar" %in% names(tmle_contrasts[[1]])) {
+      cat("Qstar dimensions:", paste(dim(tmle_contrasts[[1]]$Qstar), collapse="x"), "\n")
+    }
+  }
+  
+  cat("\ninitial_model_for_Y structure:\n")
+  if(estimator == "tmle-lstm") {
+    if(!is.null(initial_model_for_Y$data)) {
+      cat("Data dimensions:", paste(dim(initial_model_for_Y$data), collapse="x"), "\n")
+      cat("Data columns:", paste(names(initial_model_for_Y$data), collapse=", "), "\n")
+    } else {
+      cat("No data component found\n")
+    }
+  } else {
+    cat("Length:", ifelse(is.null(initial_model_for_Y), "NULL", length(initial_model_for_Y)), "\n")
+  }
+  
+  cat("\ntime.censored structure:\n")
+  if(!is.null(time.censored)) {
+    print(head(time.censored))
+  } else {
+    cat("NULL\n")
+  }
+  
+  # Input validation
+  if(is.null(tmle_contrasts) || length(tmle_contrasts) == 0) {
+    warning("Empty tmle_contrasts provided")
+    return(list(
+      infcurv = list(),
+      CI = list(),
+      var = list(),
+      est = list()
+    ))
+  }
+  
+  if(is.null(initial_model_for_Y) || 
+     (estimator == "tmle-lstm" && is.null(initial_model_for_Y$data))) {
+    warning("Invalid initial_model_for_Y provided")
+    return(list(
+      infcurv = list(),
+      CI = list(),
+      var = list(),
+      est = list()
+    ))
+  }
+  
   # Get end time point safely
-  t.end <- min(length(tmle_contrasts), length(initial_model_for_Y))
+  t.end <- if(estimator == "tmle-lstm") {
+    length(tmle_contrasts)
+  } else {
+    min(length(tmle_contrasts), length(initial_model_for_Y))
+  }
+  
   if(t.end < 1) {
-    stop("No valid time points found in input")
+    warning("No valid time points found in input")
+    return(list(
+      infcurv = list(),
+      CI = list(),
+      var = list(),
+      est = list()
+    ))
   }
   
   # Get number of rules safely
   n.rules <- if(estimator=="tmle-lstm") {
+    # Try multiple ways to determine n.rules
     if(!is.null(tmle_contrasts[[t.end]]$Qstar)) {
       ncol(tmle_contrasts[[t.end]]$Qstar)
     } else if(!is.null(tmle_contrasts[[t.end]]$Qstar_gcomp)) {
@@ -18,27 +81,37 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
     } else if(!is.null(tmle_contrasts[[t.end]]$Qstar_iptw)) {
       ncol(tmle_contrasts[[t.end]]$Qstar_iptw)
     } else {
-      3  # Default
+      # Try to find first non-null element
+      for(t in rev(seq_len(t.end))) {
+        if(!is.null(tmle_contrasts[[t]])) {
+          if(!is.null(tmle_contrasts[[t]]$Qstar)) {
+            return(ncol(tmle_contrasts[[t]]$Qstar))
+          } else if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
+            return(ncol(tmle_contrasts[[t]]$Qstar_gcomp))
+          } else if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
+            return(ncol(tmle_contrasts[[t]]$Qstar_iptw))
+          }
+        }
+      }
+      3  # Default if nothing found
     }
   } else {
-    ncol(tmle_contrasts[[t.end]]$weights)
+    if(!is.null(tmle_contrasts[[t.end]]$weights)) {
+      ncol(tmle_contrasts[[t.end]]$weights)
+    } else {
+      3  # Default
+    }
   }
   
   # Calculate final TMLE estimate
   tmle_final <- if(estimator=="tmle-lstm") {
     lapply(1:t.end, function(t) {
       if(iptw && !is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
-        sapply(1:n.rules, function(x) {
-          mean(tmle_contrasts[[t]]$Qstar_iptw[,x], na.rm=TRUE)
-        })
+        sapply(1:n.rules, function(x) mean(tmle_contrasts[[t]]$Qstar_iptw[,x], na.rm=TRUE))
       } else if(gcomp && !is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
-        sapply(1:n.rules, function(x) {
-          mean(tmle_contrasts[[t]]$Qstar_gcomp[,x], na.rm=TRUE)
-        })
+        sapply(1:n.rules, function(x) mean(tmle_contrasts[[t]]$Qstar_gcomp[,x], na.rm=TRUE))
       } else if(!is.null(tmle_contrasts[[t]]$Qstar)) {
-        sapply(1:n.rules, function(x) {
-          mean(tmle_contrasts[[t]]$Qstar[,x], na.rm=TRUE)
-        })
+        sapply(1:n.rules, function(x) mean(tmle_contrasts[[t]]$Qstar[,x], na.rm=TRUE))
       } else {
         rep(NA, n.rules)
       }
@@ -47,27 +120,18 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
     lapply(1:t.end, function(t) {
       if(iptw) {
         sapply(1:n.rules, function(x) {
-          if(t < t.end) {
-            mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE)
-          } else {
-            mean(tmle_contrasts[[t]]$Qstar_iptw[[x]], na.rm=TRUE)
-          }
+          if(t < t.end) mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE)
+          else mean(tmle_contrasts[[t]]$Qstar_iptw[[x]], na.rm=TRUE)
         })
       } else if(gcomp) {
         sapply(1:n.rules, function(x) {
-          if(t < t.end) {
-            mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]], na.rm=TRUE)
-          } else {
-            mean(tmle_contrasts[[t]]$Qstar_gcomp[[x]], na.rm=TRUE)
-          }
+          if(t < t.end) mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]], na.rm=TRUE)
+          else mean(tmle_contrasts[[t]]$Qstar_gcomp[[x]], na.rm=TRUE)
         })
       } else {
         sapply(1:n.rules, function(x) {
-          if(t < t.end) {
-            mean(tmle_contrasts[[t]][,x]$Qstar[[x]], na.rm=TRUE)
-          } else {
-            mean(tmle_contrasts[[t]]$Qstar[[x]], na.rm=TRUE)
-          }
+          if(t < t.end) mean(tmle_contrasts[[t]][,x]$Qstar[[x]], na.rm=TRUE)
+          else mean(tmle_contrasts[[t]]$Qstar[[x]], na.rm=TRUE)
         })
       }
     })
@@ -100,7 +164,6 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
         rep(NA, n.rules)
       }
     } else {
-      # Original version logic
       if(t == t.end) {
         y_vals <- initial_model_for_Y[[t]]$data$Y
       } else {
@@ -122,19 +185,21 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
   
   # Calculate influence curves
   infcurv <- if(estimator=="tmle-lstm") {
-    calc_ic_lstm(tmle_contrasts, tmle_final, Y_uncensored, t.end, n.rules, 
-                 time.censored, iptw, gcomp)
+    calc_ic_lstm(tmle_contrasts, tmle_final, Y_uncensored, t.end, n.rules, time.censored, iptw, gcomp)
   } else {
-    calc_ic_original(tmle_contrasts, tmle_final, Y_uncensored, t.end, n.rules, 
-                     time.censored, iptw, gcomp)
+    calc_ic_original(tmle_contrasts, tmle_final, Y_uncensored, t.end, n.rules, time.censored, iptw, gcomp)
   }
   
+  # Initialize CIs and vars first
+  CIs <- vector("list", t.end - 1)  # For time points 2:t.end
+  vars <- vector("list", t.end - 1)  # For time points 2:t.end
+  
   # Calculate CIs for time points 2:t.end
-  CIs <- lapply(2:t.end, function(t) {
+  for(t in 2:t.end) {
     if(is.null(infcurv[[t]]) || is.null(tmle_final[[t]])) {
-      matrix(NA, nrow=2, ncol=n.rules)
+      CIs[[t-1]] <- matrix(NA, nrow=2, ncol=n.rules)
     } else {
-      sapply(1:n.rules, function(x) {
+      CIs[[t-1]] <- sapply(1:n.rules, function(x) {
         if(ncol(infcurv[[t]]) < x || length(tmle_final[[t]]) < x) {
           c(NA, NA)
         } else {
@@ -142,15 +207,12 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
         }
       })
     }
-  })
-  names(CIs) <- paste0("t=", 2:t.end)
-  
-  # Calculate variances
-  vars <- lapply(2:t.end, function(t) {
+    
+    # Calculate variance
     if(is.null(infcurv[[t]])) {
-      rep(NA, n.rules)
+      vars[[t-1]] <- rep(NA, n.rules)
     } else {
-      sapply(1:n.rules, function(x) {
+      vars[[t-1]] <- sapply(1:n.rules, function(x) {
         if(ncol(infcurv[[t]]) < x) {
           NA
         } else {
@@ -158,26 +220,32 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
         }
       })
     }
-  })
-  names(vars) <- paste0("t=", 2:t.end)
-  
-  # Add column names
-  for(t in 2:(t.end-1)) {
-    if(!is.null(CIs[[t-1]])) {
-      colnames(CIs[[t-1]]) <- if(estimator=="tmle-lstm") {
-        c("static", "dynamic", "stochastic")
-      } else {
+    
+    # Add column names
+    colnames(CIs[[t-1]]) <- if(estimator=="tmle-lstm") {
+      c("static", "dynamic", "stochastic")
+    } else {
+      if(!is.null(tmle_contrasts[[t.end]]$weights)) {
         colnames(tmle_contrasts[[t.end]]$weights)
+      } else {
+        paste0("rule", 1:n.rules)
       }
     }
-    if(!is.null(vars[[t-1]])) {
-      names(vars[[t-1]]) <- if(estimator=="tmle-lstm") {
-        c("static", "dynamic", "stochastic")
+    
+    names(vars[[t-1]]) <- if(estimator=="tmle-lstm") {
+      c("static", "dynamic", "stochastic")
+    } else {
+      if(!is.null(tmle_contrasts[[t.end]]$weights)) {
+        colnames(tmle_contrasts[[t.end]]$weights)
       } else {
-        colnames(tmle_contrasts[[t.end]]$weights)  
+        paste0("rule", 1:n.rules)
       }
     }
   }
+  
+  # Add CI and var names
+  names(CIs) <- paste0("t=", 2:t.end)
+  names(vars) <- paste0("t=", 2:t.end)
   
   return(list(infcurv=infcurv, CI=CIs, var=vars, est=tmle_final))
 }

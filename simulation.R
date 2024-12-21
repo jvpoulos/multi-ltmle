@@ -1263,25 +1263,24 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       chunk_size = 12500
     )
 
-    tmle_contrasts_bin <- tmle_contrasts # for debugging
     # Similar update for binary case
-    # tmle_contrasts_bin <- process_time_points(
-    #   initial_model_for_Y = initial_model_for_Y$preds,
-    #   initial_model_for_Y_data = initial_model_for_Y$data,
-    #   tmle_rules = tmle_rules,
-    #   tmle_covars_Y = tmle_covars_Y,
-    #   g_preds_processed = g_preds_bin_processed,
-    #   C_preds_processed = C_preds_processed,
-    #   treatments = treatments,
-    #   obs.rules = obs.rules,
-    #   gbound = gbound,
-    #   ybound = ybound,
-    #   t_end = t.end,
-    #   window_size = window_size,
-      # cores = 1,  # Sequential processing
-      # debug = debug,
-      # chunk_size = 12500
-    # )
+    tmle_contrasts_bin <- process_time_points(
+      initial_model_for_Y = initial_model_for_Y$preds,
+      initial_model_for_Y_data = initial_model_for_Y$data,
+      tmle_rules = tmle_rules,
+      tmle_covars_Y = tmle_covars_Y,
+      g_preds_processed = g_preds_bin_processed,
+      C_preds_processed = C_preds_processed,
+      treatments = treatments,
+      obs.rules = obs.rules,
+      gbound = gbound,
+      ybound = ybound,
+      t_end = t.end,
+      window_size = window_size,
+    cores = 1,  # Sequential processing
+    debug = debug,
+    chunk_size = 12500
+    )
   }
   
   if(estimator=='tmle-lstm'){
@@ -1530,18 +1529,18 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   if(estimator=="tmle-lstm"){
     tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle-lstm")
-    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, estimator="tmle-lstm")
+    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, estimator="tmle-lstm")
     
     iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle-lstm")
-    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE, estimator="tmle-lstm")
+    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle-lstm")
     
     gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle-lstm")
   }else{
     tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle")
-    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, estimator="tmle")
+    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, estimator="tmle")
     
     iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle")
-    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y_bin, time.censored, iptw=TRUE, estimator="tmle")
+    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle")
     
     gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle")
   }
