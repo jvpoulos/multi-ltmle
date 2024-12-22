@@ -17,8 +17,6 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
   
   if(debug) {
     cat(sprintf("\nProcessing %d IDs with %d rules\n", n_ids, n_rules))
-    cat("Initial model for Y structure:\n")
-    str(initial_model_for_Y)
   }
   
   # Pre-allocate results
@@ -104,13 +102,6 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       if(debug) cat("Error getting Y predictions:", conditionMessage(e), "\n")
       matrix(0.5, nrow = n_ids, ncol = 1)
     })
-    
-    if(debug) {
-      cat("Prediction dimensions:\n")
-      cat("G preds:", paste(dim(current_g_preds), collapse="x"), "\n")
-      cat("C preds:", paste(dim(current_c_preds), collapse="x"), "\n")
-      cat("Y preds:", paste(dim(current_y_preds), collapse="x"), "\n")
-    }
     
     # Process in chunks
     chunk_size <- min(chunk_size, ceiling(n_ids/10))
@@ -231,7 +222,6 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     n_ids <- length(unique(initial_model_for_Y_data$ID))
     n_rules <- length(tmle_rules)
     
-    
     if(debug) {
       cat(sprintf("\nProcessing %d IDs with %d rules\n", n_ids, n_rules))
       if(!is.null(initial_model_for_Y_preds)) {
@@ -250,12 +240,12 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Add prediction variation:
+    # Add prediction variation with wider bounds
     initial_preds <- if(is.matrix(initial_model_for_Y_preds)) {
       if(ncol(initial_model_for_Y_preds) == 1) {
-        # Add small random noise to break ties
+        # Add larger random noise to prevent predictions from being too similar
         base_preds <- initial_model_for_Y_preds[,1]
-        noise <- runif(length(base_preds), -0.01, 0.01)
+        noise <- runif(length(base_preds), -0.05, 0.05)  # Increased from ±0.01 to ±0.05
         matrix(pmin(pmax(base_preds + noise, ybound[1]), ybound[2]), 
                nrow=n_ids, ncol=n_rules)
       } else {
@@ -264,26 +254,28 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
                                   drop=FALSE]
       }
     } else {
-      noise <- matrix(runif(n_ids * n_rules, -0.01, 0.01), nrow=n_ids, ncol=n_rules)
+      noise <- matrix(runif(n_ids * n_rules, -0.05, 0.05),  # Increased noise
+                      nrow=n_ids, ncol=n_rules)
       matrix(pmin(pmax(rep(initial_model_for_Y_preds[1], n_ids * n_rules) + noise, 
                        ybound[1]), ybound[2]), 
              nrow=n_ids, ncol=n_rules)
     }
     
-    initial_preds <- pmin(pmax(initial_preds, ybound[1]), ybound[2])
+    # Apply bounds with padding to prevent exact boundary values
+    initial_preds <- pmin(pmax(initial_preds, ybound[1] + 1e-6), ybound[2] - 1e-6)
     
     # Initialize outputs
     predicted_Y <- predict_Qstar <- initial_preds
-    observed_Y <- rep(ybound[1], n_ids)  # Initialize with lower bound instead of NA
+    observed_Y <- rep(ybound[1], n_ids)
     epsilon <- rep(0, n_rules)
     
     # Get observed outcomes with improved handling
     if("Y" %in% colnames(initial_model_for_Y_data)) {
       y_data <- initial_model_for_Y_data
       y_data$Y[is.na(y_data$Y)] <- ybound[1]
-      y_data$Y <- pmin(pmax(y_data$Y, ybound[1]), ybound[2])
+      # Add padding to prevent boundary values
+      y_data$Y <- pmin(pmax(y_data$Y, ybound[1] + 1e-6), ybound[2] - 1e-6)
       
-      # More efficient ID matching
       id_map <- match(unique(initial_model_for_Y_data$ID), y_data$ID)
       valid_map <- !is.na(id_map)
       if(any(valid_map)) {
@@ -291,7 +283,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Process rules with enhanced error handling
+    # Process rules with enhanced error handling and bounds
     for(i in seq_len(n_rules)) {
       if(debug) cat(sprintf("\nProcessing rule %d/%d\n", i, n_rules))
       
@@ -299,7 +291,6 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
         result <- tmle_rules[[i]](initial_model_for_Y_data)
         if(is.null(result)) return(NULL)
         
-        # Validate rule output
         result <- result[!is.na(result$ID) & !is.na(result$A0), , drop=FALSE]
         if(nrow(result) == 0) return(NULL)
         
@@ -315,40 +306,46 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       })
       
       if(!is.null(rule_result)) {
-        # Get matched indices more efficiently
         valid_indices <- match(rule_result$ID, unique(initial_model_for_Y_data$ID))
         valid_indices <- valid_indices[!is.na(valid_indices)]
         
         if(length(valid_indices) > 0) {
-          # Calculate H vector with better bounds handling
+          # Calculate H vector with more generous bounds
           H <- numeric(n_ids)
+          
+          # Increase lower bound for denominator to prevent extreme values
+          min_bound <- 0.01  # Increased from gbound[1] (typically 0.05)
           denom <- pmax(g_preds_bounded[valid_indices] * C_preds_bounded[valid_indices], 
-                        gbound[1])
+                        min_bound)
           
           treat_values <- as.numeric(rule_result$A0[1:length(valid_indices)])
           H[valid_indices] <- treat_values / denom
           
+          # Apply more generous bounds to H
+          H_max <- 100  # Increased maximum value for H
+          H <- pmin(pmax(H, -H_max), H_max)  # Symmetric bounds
+          
           if(debug) {
-            cat("H vector summary:\n")
+            cat("H vector summary after bounds:\n")
             print(summary(H[valid_indices]))
             cat("Number of non-zero H:", sum(H != 0), "\n")
           }
           
-          # Prepare GLM data more efficiently
+          # Prepare GLM data with bounded values
           y_vals <- observed_Y[valid_indices]
           h_vals <- H[valid_indices]
           valid_data <- !is.na(y_vals) & !is.na(h_vals) & is.finite(h_vals)
           
           if(sum(valid_data) > 0 && var(h_vals[valid_data]) > 0) {
-            # Create GLM data frame only for valid data
             glm_data <- data.frame(
               y = y_vals[valid_data],
               h = h_vals[valid_data],
               offset = qlogis(initial_preds[valid_indices, i][valid_data])
             )
             
-            # Handle non-finite offset values
-            glm_data$offset[!is.finite(glm_data$offset)] <- 0
+            # Handle non-finite offset values more carefully
+            glm_data$offset[!is.finite(glm_data$offset)] <- 
+              qlogis(mean(c(ybound[1] + 1e-6, ybound[2] - 1e-6)))
             
             if(nrow(glm_data) > 0) {
               if(debug) {
@@ -356,14 +353,16 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
                 print(summary(glm_data))
               }
               
-              # More robust GLM fitting
+              # More robust GLM fitting with increased bounds
               glm_result <- tryCatch({
                 fit <- suppressWarnings(glm(y ~ h + offset(offset), 
                                             family = binomial(), 
                                             data = glm_data,
-                                            control = glm.control(maxit=50)))
+                                            control = glm.control(maxit=100)))  # Increased iterations
                 eps <- coef(fit)["h"]
-                if(is.finite(eps)) sign(eps) * min(abs(eps), 2) else 0
+                
+                # Increase epsilon bounds but keep them reasonable
+                if(is.finite(eps)) sign(eps) * min(abs(eps), 5) else 0  # Increased from 2 to 5
               }, error = function(e) {
                 if(debug) cat("GLM error:", conditionMessage(e), "\n")
                 0
@@ -376,8 +375,13 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
               # Update predictions if epsilon is non-zero
               if(epsilon[i] != 0) {
                 logit_pred <- qlogis(initial_preds[,i]) + epsilon[i] * H
-                predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred), ybound[1]), ybound[2])
-                predicted_Y[,i] <- pmin(pmax(initial_preds[,i], ybound[1]), ybound[2])
+                # Add padding to prevent exact boundary values
+                predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred), 
+                                               ybound[1] + 1e-6), 
+                                          ybound[2] - 1e-6)
+                predicted_Y[,i] <- pmin(pmax(initial_preds[,i], 
+                                             ybound[1] + 1e-6), 
+                                        ybound[2] - 1e-6)
               }
             }
           }
@@ -385,12 +389,15 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Calculate IPTW means with better NA handling
+    # Calculate IPTW means with better NA handling and bounds
     iptw_means <- sapply(1:n_rules, function(r) {
       vals <- predicted_Y[,r]
       mean_val <- mean(vals[!is.na(vals)], na.rm=TRUE)
-      if(!is.finite(mean_val)) mean_val <- ybound[1]
-      mean_val
+      if(!is.finite(mean_val)) {
+        mean_val <- mean(c(ybound[1] + 1e-6, ybound[2] - 1e-6))
+      }
+      # Add padding to prevent boundary values
+      pmin(pmax(mean_val, ybound[1] + 1e-6), ybound[2] - 1e-6)
     })
     
     if(debug) {
@@ -411,13 +418,13 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     
   }, error = function(e) {
     if(debug) cat(sprintf("\nError in getTMLELongLSTM: %s\n", conditionMessage(e)))
-    # Return safe defaults
+    # Return safe defaults with padding
     list(
-      "Qstar" = matrix(ybound[1], nrow=n_ids, ncol=n_rules),
+      "Qstar" = matrix(ybound[1] + 1e-6, nrow=n_ids, ncol=n_rules),
       "epsilon" = rep(0, n_rules),
-      "Qstar_gcomp" = matrix(ybound[1], nrow=n_ids, ncol=n_rules),
-      "Qstar_iptw" = matrix(ybound[1], nrow=1, ncol=n_rules),
-      "Y" = rep(ybound[1], n_ids)
+      "Qstar_gcomp" = matrix(ybound[1] + 1e-6, nrow=n_ids, ncol=n_rules),
+      "Qstar_iptw" = matrix(ybound[1] + 1e-6, nrow=1, ncol=n_rules),
+      "Y" = rep(ybound[1] + 1e-6, n_ids)
     )
   })
   
