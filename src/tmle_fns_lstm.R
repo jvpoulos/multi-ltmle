@@ -10,7 +10,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
                                 gbound, ybound, t_end, window_size,
                                 cores = 1, debug = FALSE, chunk_size = NULL) {
   
-  # Initialize results
+  # Initialize results (keep existing initialization code)
   n_ids <- length(unique(initial_model_for_Y_data$ID))
   n_rules <- length(tmle_rules)
   tmle_contrasts <- vector("list", t_end)
@@ -19,7 +19,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
     cat(sprintf("\nProcessing %d IDs with %d rules\n", n_ids, n_rules))
   }
   
-  # Pre-allocate results
+  # Pre-allocate results (keep existing pre-allocation code)
   for(t in 1:t_end) {
     tmle_contrasts[[t]] <- list(
       "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
@@ -35,23 +35,33 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
     if(debug) cat(sprintf("\nProcessing time point %d/%d\n", t, t_end))
     time_start <- Sys.time()
     
-    # Get treatment predictions
     current_g_preds <- if(!is.null(g_preds_processed) && t <= length(g_preds_processed)) {
       preds <- g_preds_processed[[t]]
       if(is.null(preds)) {
         matrix(1/n_rules, nrow=n_ids, ncol=n_rules)
       } else {
-        # Ensure matrix format and normalize
+        # Enhanced normalization with better stability
         preds_mat <- as.matrix(preds)
         preds_mat <- t(apply(preds_mat, 1, function(row) {
-          row[is.na(row) | !is.finite(row)] <- 1/n_rules
-          bounded <- pmax(row, gbound[1])
-          bounded / sum(bounded)
+          # Add larger constant for more stability
+          row_smooth <- row + 1e-4
+          # Handle invalid values 
+          row_smooth[is.na(row_smooth) | !is.finite(row_smooth)] <- 1e-4
+          # Apply bounds before normalization
+          row_smooth <- pmax(row_smooth, gbound[1])
+          row_smooth <- pmin(row_smooth, gbound[2])
+          # Normalize ensuring sum to 1
+          normalized <- row_smooth/sum(row_smooth)
+          # Add small noise to break ties
+          normalized + rnorm(length(normalized), 0, 1e-5)
         }))
-        preds_mat
+        # Final bounds check
+        preds_mat <- pmin(pmax(preds_mat, gbound[1]), gbound[2])
+        # Renormalize
+        t(apply(preds_mat, 1, function(row) row/sum(row)))
       }
     } else {
-      matrix(1/n_rules, nrow=n_ids, ncol=n_rules)
+      matrix(1/n_rules, nrow=n_ids, ncol=n_rules) 
     }
     
     # Get censoring predictions
@@ -139,17 +149,66 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       tmle_contrasts[[t]]$Y[] <- ybound[1]
     })
     
-    # Calculate IPTW means
+    # Calculate IPTW weights and means
     tryCatch({
+      # Get observed treatments for current time point
+      current_treatments <- treatments[[min(t + 1, length(treatments))]]
+      current_rules <- obs.rules[[min(t, length(obs.rules))]]
+      
+      # Initialize weights matrix
+      iptw_weights <- matrix(0, nrow=n_ids, ncol=n_rules)
+      
+      # Calculate stabilized weights for each rule
+      for(rule_idx in 1:n_rules) {
+        # Get rule-specific probabilities
+        rule_preds <- current_g_preds[,rule_idx]
+        rule_indicators <- current_rules[,rule_idx]
+        
+        # Calculate numerator (marginal probability of treatment)
+        numerator <- mean(rule_preds)
+        
+        # Calculate weights
+        weights <- rep(0, n_ids)
+        valid_idx <- !is.na(rule_indicators) & rule_indicators == 1
+        if(any(valid_idx)) {
+          # Stabilized weights
+          weights[valid_idx] <- numerator / pmax(rule_preds[valid_idx], gbound[1])
+          
+          # Bound extreme weights
+          weights <- pmin(weights, 10)  # Cap at 10
+          
+          # Additional stability check
+          weights[!is.finite(weights)] <- median(weights[is.finite(weights)])
+        }
+        
+        iptw_weights[,rule_idx] <- weights
+      }
+      
+      # Calculate IPTW means
       qstar_gcomp <- tmle_contrasts[[t]]$Qstar_gcomp
-      iptw_means <- colMeans(qstar_gcomp, na.rm=TRUE)
+      iptw_means <- colSums(iptw_weights * qstar_gcomp, na.rm=TRUE) / 
+        colSums(iptw_weights, na.rm=TRUE)
+      
+      # Handle any remaining invalid values
+      iptw_means[!is.finite(iptw_means)] <- colMeans(qstar_gcomp, na.rm=TRUE)[!is.finite(iptw_means)]
+      
       tmle_contrasts[[t]]$Qstar_iptw <- matrix(iptw_means, nrow=1)
+      
+      if(debug) {
+        cat("\nIPTW weight summary:\n")
+        cat("Weight range:", paste(range(iptw_weights, na.rm=TRUE), collapse="-"), "\n")
+        cat("Mean weights:", paste(colMeans(iptw_weights, na.rm=TRUE), collapse=", "), "\n")
+      }
+      
     }, error = function(e) {
-      if(debug) cat("Error calculating IPTW means:", conditionMessage(e), "\n")
+      if(debug) {
+        cat("Error calculating IPTW:\n")
+        cat(conditionMessage(e), "\n")
+      }
       tmle_contrasts[[t]]$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
     })
     
-    # Clean up
+    # Clean up and logging (keep existing code)
     rm(current_g_preds, current_c_preds, current_y_preds)
     gc()
     
@@ -222,26 +281,27 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       stop("Invalid dimensions: n_ids=", n_ids, ", n_rules=", n_rules)
     }
     
-    if(debug) {
-      cat(sprintf("\nProcessing %d IDs with %d rules\n", n_ids, n_rules))
-      cat(sprintf("Treatment categories (J): %d\n", J))
-      if(!is.null(initial_model_for_Y_preds)) {
-        cat("Initial predictions range:", 
-            paste(range(initial_model_for_Y_preds, na.rm=TRUE), collapse="-"), "\n")
+    if(!is.null(g_preds_bounded)) {
+      # Ensure matrix format 
+      if(!is.matrix(g_preds_bounded)) {
+        g_preds_bounded <- matrix(g_preds_bounded, ncol=J)
       }
-      if(!is.null(g_preds_bounded)) {
-        if(is.matrix(g_preds_bounded)) {
-          cat("G predictions shape:", paste(dim(g_preds_bounded), collapse=" x "), "\n")
-        }
-        cat("G predictions range:", paste(range(g_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
-        cat("\nChecking G predictions:\n")
-        cat("G mean:", mean(g_preds_bounded), "\n")
-        cat("G min:", min(g_preds_bounded), "\n") 
-        cat("G max:", max(g_preds_bounded), "\n")
+      
+      # Add small constant for numerical stability
+      g_preds_smoothed <- t(apply(g_preds_bounded, 1, function(row) {
+        row_smooth <- row + 1e-6
+        row_smooth / sum(row_smooth)
+      }))
+      
+      # Log summary stats
+      if(debug) {
+        cat("G predictions after smoothing:\n")
+        cat("Mean:", mean(g_preds_smoothed), "\n")
+        cat("SD:", sd(g_preds_smoothed), "\n")
+        cat("Range:", paste(range(g_preds_smoothed), collapse="-"), "\n")
       }
-      if(!is.null(C_preds_bounded)) {
-        cat("C predictions range:", paste(range(C_preds_bounded, na.rm=TRUE), collapse="-"), "\n")
-      }
+      
+      g_preds_bounded <- g_preds_smoothed
     }
     
     # Initialize storage matrices

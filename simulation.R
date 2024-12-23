@@ -1163,7 +1163,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
     
     # Safe prediction getter function
-    safe_get_preds <- function(preds_list, t, n_ids = 12500) {
+    safe_get_preds <- function(preds_list, t, n_ids = n) {
       print(paste("Getting predictions for time", t))
       
       # Handle NULL or empty list
@@ -1204,7 +1204,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
     
     # Safe cumulative prediction handler
-    safe_get_cuml_preds <- function(preds, n_ids = 12500) {
+    safe_get_cuml_preds <- function(preds, n_ids = n) {
       print("Processing cumulative predictions")
       print(paste("Input predictions length:", length(preds)))
       
@@ -1502,15 +1502,61 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   if(estimator == "tmle-lstm") {
     prob_share <- vector("list", t.end + 1)
     prob_share_bin <- vector("list", t.end + 1)
+    
+    for(t in 1:(t.end+1)) {
+      # Get predictions and ensure matrix format
+      g_preds_t <- g_preds_processed[[t]]
+      g_preds_bin_t <- g_preds_bin_processed[[t]]
+      
+      # Force matrix format with proper dimensions
+      if(!is.matrix(g_preds_t)) {
+        g_preds_t <- matrix(g_preds_t, ncol=6)  # J=6 treatments
+      }
+      if(!is.matrix(g_preds_bin_t)) {
+        g_preds_bin_t <- matrix(g_preds_bin_t, ncol=6)
+      }
+      
+      # Get current rules and ensure matrix format
+      current_rules <- obs.rules[[t]]
+      if(!is.matrix(current_rules)) {
+        current_rules <- matrix(current_rules, ncol=3)  # 3 rules: static, dynamic, stochastic
+      }
+      
+      # Calculate shares with proper dimension handling
+      prob_share[[t]] <- matrix(0, nrow=ncol(g_preds_t), ncol=ncol(current_rules))
+      for(i in seq_len(ncol(current_rules))) {
+        rule_indices <- which(current_rules[,i] == 1)
+        if(length(rule_indices) > 0) {
+          g_preds_subset <- g_preds_t[rule_indices,, drop=FALSE]
+          prob_share[[t]][,i] <- colMeans(g_preds_subset < 0.025, na.rm=TRUE)
+        }
+      }
+      colnames(prob_share[[t]]) <- c("static", "dynamic", "stochastic")
+      
+      # Same for binary predictions
+      prob_share_bin[[t]] <- matrix(0, nrow=ncol(g_preds_bin_t), ncol=ncol(current_rules))
+      for(i in seq_len(ncol(current_rules))) {
+        rule_indices <- which(current_rules[,i] == 1)
+        if(length(rule_indices) > 0) {
+          g_preds_subset <- g_preds_bin_t[rule_indices,, drop=FALSE]
+          prob_share_bin[[t]][,i] <- colMeans(g_preds_subset < 0.025, na.rm=TRUE)
+        }
+      }
+      colnames(prob_share_bin[[t]]) <- c("static", "dynamic", "stochastic")
+    }
+    
+    # Add names to list elements
+    names(prob_share) <- paste0("t=", seq(0, t.end))
+    names(prob_share_bin) <- paste0("t=", seq(0, t.end))
   }else{
-    prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
+    prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_processed[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
     for(t in 1:(t.end+1)){
       colnames(prob_share[[t]]) <- colnames(obs.rules[[(t.end)]])
     }
     
     names(prob_share) <- paste0("t=",seq(0,t.end))
     
-    prob_share_bin <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_bin_cuml_bounded[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
+    prob_share_bin <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_bin_processed[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
     for(t in 1:(t.end+1)){
       colnames(prob_share_bin[[t]]) <- colnames(obs.rules[[(t.end)]])
     }
@@ -1540,8 +1586,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
 
   print("Storing results")
   
-  Ahat_tmle  <- g_preds_cuml_bounded
-  Ahat_tmle_bin  <- g_preds_bin_cuml_bounded
+  Ahat_tmle  <- g_preds_processed
+  Ahat_tmle_bin  <- g_preds_bin_processed
   
   Chat_tmle  <- C_preds_cuml_bounded
   
