@@ -1259,8 +1259,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       t_end = t.end,
       window_size = window_size,
       cores = 1,  # Sequential processing
-      debug = debug,
-      chunk_size = 12500
+      debug = debug
     )
 
     # Similar update for binary case
@@ -1277,9 +1276,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       ybound = ybound,
       t_end = t.end,
       window_size = window_size,
-    cores = 1,  # Sequential processing
-    debug = debug,
-    chunk_size = 12500
+      cores = 1,  # Sequential processing
+      debug = debug
     )
   }
   
@@ -1458,7 +1456,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "TMLE (ours, multinomial) estimated counterfactuals",
                 xlab = "Month",
-                ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
@@ -1468,7 +1465,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "TMLE (ours, binomial) estimated counterfactuals",
                 xlab = "Month",
-                ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
@@ -1478,7 +1474,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "IPTW (ours, multinomial) estimated counterfactuals",
                 xlab = "Month",
-                ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
@@ -1488,7 +1483,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "IPTW (ours, binomial) estimated counterfactuals",
                 xlab = "Month",
-                ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
@@ -1498,7 +1492,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 ylab = "Estimated share of patients without diabetes diagnosis", 
                 main = "G-comp. (ours) estimated counterfactuals",
                 xlab = "Month",
-                ylim = c(0.5,1),
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()

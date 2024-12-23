@@ -38,7 +38,7 @@ from tensorflow.keras.initializers import GlorotNormal, GlorotUniform
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 
-from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, FilterPatterns, CustomNanCallback
+from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, CustomNanCallback
 
 import sys
 import traceback
@@ -131,18 +131,32 @@ def main():
 
     # Modify the y_data preparation section:
     if loss_fn == "binary_crossentropy":
-        # For binary case, ensure we have one-hot encoded targets
+        # For binary case, ensure proper one-hot encoding and class balance
         if 'A' in y_data.columns:
-            # Get unique treatments and verify range
-            unique_treatments = np.unique(y_data['A'].values)
-            logger.info(f"Unique treatments: {unique_treatments}")
+            # Get class distribution
+            treatment_dist = y_data['A'].value_counts(normalize=True)
+            logger.info(f"Original treatment distribution:\n{treatment_dist}")
             
-            # Create one-hot encoded columns
+            # Create one-hot encoded columns with proper handling
+            onehot_cols = []
             for i in range(J):
-                y_data[f'A{i}'] = (y_data['A'].values == i).astype(int)
-            
+                col_name = f'A{i}'
+                y_data[col_name] = (y_data['A'].values == i).astype(float)
+                # Add small noise to prevent perfect separation
+                if len(y_data[y_data[col_name] == 1]) > 0:
+                    noise = np.random.normal(0, 0.1, size=len(y_data))
+                    y_data[col_name] = y_data[col_name] + noise * y_data[col_name]
+                    y_data[col_name] = np.clip(y_data[col_name], 0.05, 0.95)
+                onehot_cols.append(col_name)
+                
             # Keep only ID and one-hot columns
-            y_data = y_data[['ID'] + [f'A{i}' for i in range(J)]]
+            y_data = y_data[['ID'] + onehot_cols]
+            
+            # Log class balance after processing
+            logger.info("Treatment distribution after processing:")
+            for col in onehot_cols:
+                mean_val = y_data[col].mean()
+                logger.info(f"{col}: {mean_val:.4f}")
     else:
         # For categorical case, keep existing A column
         if 'A' not in y_data.columns and 'target' not in y_data.columns:
@@ -283,18 +297,100 @@ def main():
     callbacks.append(CustomCallback(train_dataset))
     callbacks.append(CustomNanCallback())
 
-    # Train model with class weights for binary classification
+    if not is_censoring:
+        if loss_fn == "binary_crossentropy":
+            # For binary classification (Y model or single treatment)
+            if output_dim == 1:
+                if 'target' in y_data.columns:
+                    counts = y_data['target'].value_counts(normalize=True)
+                    # Calculate weights with smoothing
+                    pos_weight = 1.0 / (counts.get(1, 0.5) + 1e-6)
+                    neg_weight = 1.0 / (counts.get(0, 0.5) + 1e-6)
+                    # Normalize
+                    total = pos_weight + neg_weight
+                    class_weight = {
+                        0: neg_weight / total,
+                        1: pos_weight / total
+                    }
+                    logger.info(f"Binary classification weights - Neg: {class_weight[0]:.4f}, Pos: {class_weight[1]:.4f}")
+                else:
+                    class_weight = {0: 0.5, 1: 0.5}
+                    logger.info("Using default equal weights for binary classification")
+            
+            # For multi-class with binary crossentropy (one-hot)
+            else:
+                onehot_cols = [f'A{i}' for i in range(J)]
+                if all(col in y_data.columns for col in onehot_cols):
+                    # Calculate weights from one-hot columns with smoothing
+                    class_sums = [y_data[col].sum() for col in onehot_cols]
+                    total_samples = sum(class_sums)
+                    
+                    # Calculate balanced weights
+                    class_weight = {
+                        i: total_samples / (max(sum, 1) * J)
+                        for i, sum in enumerate(class_sums)
+                    }
+                    
+                    logger.info("One-hot encoded class weights:")
+                    for i, w in class_weight.items():
+                        logger.info(f"Class {i}: {w:.4f} (samples: {class_sums[i]})")
+                
+                elif 'target' in y_data.columns:
+                    # Calculate from target column
+                    counts = y_data['target'].value_counts()
+                    total_samples = len(y_data)
+                    
+                    # Initialize weights for all classes
+                    class_weight = {i: 1.0 for i in range(J)}
+                    
+                    # Update weights for observed classes
+                    for class_idx, count in counts.items():
+                        if 0 <= class_idx < J:  # Ensure valid class index
+                            class_weight[class_idx] = total_samples / (count * J)
+                    
+                    logger.info("Target-based class weights:")
+                    for i, w in sorted(class_weight.items()):
+                        count = counts.get(i, 0)
+                        logger.info(f"Class {i}: {w:.4f} (samples: {count})")
+                
+                else:
+                    # Fallback to uniform weights
+                    class_weight = {i: 1.0 for i in range(J)}
+                    logger.info("Using uniform weights for all classes")
+        
+        else:
+            # Categorical crossentropy case
+            if 'target' in y_data.columns:
+                counts = y_data['target'].value_counts()
+                total_samples = len(y_data)
+                
+                # Calculate balanced weights for all classes
+                class_weight = {}
+                for i in range(J):
+                    count = counts.get(i, 0)
+                    # Add smoothing factor to prevent division by zero
+                    class_weight[i] = total_samples / (max(count, 1) * J)
+                
+                logger.info("Categorical class weights:")
+                for i, w in sorted(class_weight.items()):
+                    count = counts.get(i, 0)
+                    logger.info(f"Class {i}: {w:.4f} (samples: {count})")
+            else:
+                # Fallback to uniform weights
+                class_weight = {i: 1.0 for i in range(J)}
+                logger.info("Using uniform weights for categorical classes")
 
-    # Add class weights for censoring model
-    if is_censoring:
-        # Calculate class weights to handle imbalance
-        class_weight = {
-            0: 1.0,
-            1: 2.0  # Assign higher weight to censored class
-        }
     else:
-        class_weight = None
+        # Censoring model case
+        class_weight = {0: 1.0, 1: 2.0}  # More weight to censored class
+        logger.info("Using fixed weights for censoring model: {0: 1.0, 1: 2.0}")
 
+    # Validate class weights
+    class_weight = {k: float(v) for k, v in class_weight.items()}  # Ensure float type
+    logger.info("\nFinal class weights:")
+    for k, v in sorted(class_weight.items()):
+        logger.info(f"Class {k}: {v:.4f}")
+    
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,

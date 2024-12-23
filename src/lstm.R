@@ -276,91 +276,151 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     }
     
     if(file.exists(preds_file)) {
-      # Load predictions
+      # Load and validate predictions
       preds <- np$load(preds_file)
       preds_r <- as.array(preds)
       
-      # Get prediction dimensions and samples per time step
-      pred_dims <- dim(preds_r)
-      n_total_samples <- pred_dims[1]
+      # Determine prediction type
+      is_Y_pred <- any(grepl("^Y", outcome_cols))
       
-      # Ensure proper division for time steps
+      if(debug) {
+        cat("\nPrediction file loaded:", preds_file, "\n")
+        cat("Raw dimensions:", paste(dim(preds_r), collapse=" x "), "\n")
+        cat("Prediction type:", if(is_Y_pred) "Y" else if(is_censoring) "C" else "A", "\n")
+      }
+      
+      # Calculate samples per time period
+      n_total_samples <- nrow(preds_r)
       samples_per_time <- n_total_samples %/% (t_end + 1)
       
-      # Pre-calculate time indices
-      time_indices <- lapply(1:(t_end + 1), function(t) {
+      # Function to extract time slice
+      get_time_slice <- function(t) {
         start_idx <- ((t-1) * samples_per_time) + 1
         end_idx <- t * samples_per_time
-        start_idx:end_idx
-      })
-      
-      # Initialize prediction list for each time step
-      preds_list <- vector("list", t_end + 1)
-      
-      if(is_censoring) {
-        # Handle binary censoring case
-        if(length(pred_dims) == 1) {
-          preds_r <- matrix(preds_r, ncol=1)
+        slice <- preds_r[start_idx:end_idx, , drop=FALSE]
+        if(debug) {
+          cat(sprintf("\nTime %d slice: %d to %d", t-1, start_idx, end_idx))
+          cat("\nSlice dimensions:", paste(dim(slice), collapse=" x "), "\n")
         }
-        
-        # Process predictions for each time step
-        preds_list <- lapply(time_indices, function(idx) {
-          # Extract and reshape slice, then add column name
-          mat <- matrix(preds_r[idx], ncol=1)
-          colnames(mat) <- "C"
-          mat
+        return(slice)
+      }
+      
+      # Process based on prediction type
+      preds_list <- if(is_Y_pred) {
+        # Process Y predictions
+        cat("\nProcessing Y predictions...\n")
+        lapply(1:(t_end + 1), function(t) {
+          y_preds <- get_time_slice(t)
+          if(!is.matrix(y_preds)) y_preds <- matrix(y_preds, ncol=1)
+          
+          # Ensure proper dimensions and bounds
+          bounded_preds <- pmin(pmax(y_preds, ybound[1]), ybound[2])
+          colnames(bounded_preds) <- "Y"
+          
+          if(debug) {
+            cat(sprintf("\nTime %d Y predictions:\n", t-1))
+            cat("Range:", paste(range(bounded_preds), collapse=" - "), "\n")
+          }
+          bounded_preds
         })
         
-      } else if(loss_fn == "binary_crossentropy") {
-        print("Processing multi-class predictions")
-        print(paste("Number of classes:", J))
-        
-        # Ensure predictions are properly shaped
-        if(length(pred_dims) == 1) {
-          preds_r <- matrix(preds_r, ncol=J)
-        } else if(length(pred_dims) == 3) {
-          preds_r <- matrix(preds_r, ncol=J)
-        }
-        
-        # Process predictions for each time step
-        preds_list <- lapply(time_indices, function(idx) {
-          # Extract time slice and reshape
-          mat <- matrix(preds_r[idx, ], ncol=J)
-          colnames(mat) <- paste0("A", 0:(J-1))
-          mat
+      } else if(is_censoring) {
+        # Process censoring predictions
+        cat("\nProcessing censoring predictions...\n")
+        lapply(1:(t_end + 1), function(t) {
+          c_preds <- get_time_slice(t)
+          if(!is.matrix(c_preds)) c_preds <- matrix(c_preds, ncol=1)
+          
+          # Bound censoring probabilities
+          bounded_preds <- pmin(pmax(c_preds, gbound[1]), gbound[2])
+          colnames(bounded_preds) <- "C"
+          
+          if(debug) {
+            cat(sprintf("\nTime %d censoring predictions:\n", t-1))
+            cat("Range:", paste(range(bounded_preds), collapse=" - "), "\n")
+          }
+          bounded_preds
         })
-        
-        # Print shapes for verification
-        for(t in 1:(t_end + 1)) {
-          print(paste0("Time ", t-1, " prediction shape: ", 
-                       paste(dim(preds_list[[t]]), collapse=" x ")))
-        }
         
       } else {
-        # Handle categorical treatment case
-        if(length(pred_dims) == 1) {
-          preds_r <- matrix(preds_r, ncol=J)
-        }
-        
-        # Process predictions for each time step
-        preds_list <- lapply(time_indices, function(idx) {
-          # Extract time slice and reshape
-          mat <- matrix(preds_r[idx, ], ncol=J)
-          colnames(mat) <- paste0("class", 1:J)
-          mat
+        # Process treatment predictions
+        cat("\nProcessing treatment predictions...\n")
+        lapply(1:(t_end + 1), function(t) {
+          a_preds <- get_time_slice(t)
+          
+          # Ensure matrix format with J columns
+          if(!is.matrix(a_preds)) {
+            a_preds <- matrix(a_preds, ncol=if(loss_fn == "sparse_categorical_crossentropy") J else J)
+          }
+          
+          # Process each row to ensure valid probabilities
+          processed_preds <- t(apply(a_preds, 1, function(row) {
+            # Handle invalid values
+            row[is.na(row) | !is.finite(row)] <- 1/J
+            
+            # Apply softmax for numerical stability
+            exp_row <- exp(row - max(row))
+            probs <- exp_row / sum(exp_row)
+            
+            # Apply bounds while maintaining sum to 1
+            bounded <- pmax(probs, gbound[1])
+            bounded / sum(bounded)
+          }))
+          
+          # Set column names based on prediction type
+          colnames(processed_preds) <- if(loss_fn == "sparse_categorical_crossentropy") {
+            paste0("class", 1:J)
+          } else {
+            paste0("A", 1:J)
+          }
+          
+          if(debug) {
+            cat(sprintf("\nTime %d treatment predictions:\n", t-1))
+            cat("Row sums range:", paste(range(rowSums(processed_preds)), collapse=" - "), "\n")
+            cat("Value range:", paste(range(processed_preds), collapse=" - "), "\n")
+          }
+          
+          processed_preds
         })
       }
       
-      # Add names to the time steps
+      # Add names to time points
       names(preds_list) <- paste0("t", 0:t.end)
       
-      # Clean up predictions
-      preds_list <- lapply(preds_list, function(mat) {
-        mat[is.nan(mat) | is.infinite(mat)] <- NA
-        mat
+      # Final validation across all predictions
+      validated_preds <- lapply(preds_list, function(mat) {
+        # Handle any remaining invalid values
+        mat[is.na(mat) | !is.finite(mat)] <- if(is_Y_pred) {
+          mean(c(ybound[1], ybound[2]))
+        } else if(is_censoring) {
+          gbound[1]
+        } else {
+          1/J
+        }
+        
+        # Final bounds check
+        if(is_Y_pred) {
+          pmin(pmax(mat, ybound[1]), ybound[2])
+        } else if(is_censoring) {
+          pmin(pmax(mat, gbound[1]), gbound[2])
+        } else {
+          # For treatment predictions, ensure proper probabilities
+          t(apply(mat, 1, function(row) {
+            bounded <- pmax(row, gbound[1])
+            bounded / sum(bounded)
+          }))
+        }
       })
       
-      return(preds_list)
+      if(debug) {
+        cat("\nFinal validation summary:\n")
+        cat("Number of time points:", length(validated_preds), "\n")
+        cat("Dimensions at each time:", paste(dim(validated_preds[[1]]), collapse=" x "), "\n")
+        ranges <- range(do.call(rbind, validated_preds))
+        cat("Overall range:", paste(ranges, collapse=" - "), "\n")
+      }
+      
+      return(validated_preds)
       
     } else {
       warning(paste("Predictions file not found:", preds_file))
