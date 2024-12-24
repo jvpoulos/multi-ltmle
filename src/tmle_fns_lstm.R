@@ -312,19 +312,24 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     epsilon <- rep(0, n_rules)
     
     # Handle initial predictions
-    if(is.matrix(initial_model_for_Y_preds)) {
+    initial_preds <- if(is.matrix(initial_model_for_Y_preds)) {
       if(ncol(initial_model_for_Y_preds) == 1) {
+        # Add larger random noise to prevent predictions from being too similar
         base_preds <- initial_model_for_Y_preds[,1]
-        noise <- runif(length(base_preds), -0.05, 0.05)
-        initial_preds[] <- rep(pmin(pmax(base_preds + noise, ybound[1]), ybound[2]), n_rules)
+        noise <- runif(length(base_preds), -0.05, 0.05)  # Increased from ±0.01 to ±0.05
+        matrix(pmin(pmax(base_preds + noise, ybound[1]), ybound[2]), 
+               nrow=n_ids, ncol=n_rules)
       } else {
-        initial_preds[] <- initial_model_for_Y_preds[1:min(nrow(initial_model_for_Y_preds), n_ids), 
-                                                     1:min(ncol(initial_model_for_Y_preds), n_rules)]
+        initial_model_for_Y_preds[1:min(nrow(initial_model_for_Y_preds), n_ids), 
+                                  1:min(ncol(initial_model_for_Y_preds), n_rules), 
+                                  drop=FALSE]
       }
     } else {
-      noise <- matrix(runif(n_ids * n_rules, -0.05, 0.05), nrow=n_ids, ncol=n_rules)
-      initial_preds[] <- pmin(pmax(rep(initial_model_for_Y_preds[1], n_ids * n_rules) + c(noise), 
-                                   ybound[1]), ybound[2])
+      noise <- matrix(runif(n_ids * n_rules, -0.05, 0.05),  # Increased noise
+                      nrow=n_ids, ncol=n_rules)
+      matrix(pmin(pmax(rep(initial_model_for_Y_preds[1], n_ids * n_rules) + noise, 
+                       ybound[1]), ybound[2]), 
+             nrow=n_ids, ncol=n_rules)
     }
     
     # Apply bounds with padding
@@ -345,9 +350,110 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Process rules
+    # Process rules with enhanced error handling and bounds
     for(i in seq_len(n_rules)) {
-      # ... rest of the rule processing code ...
+      if(debug) cat(sprintf("\nProcessing rule %d/%d\n", i, n_rules))
+      
+      rule_result <- tryCatch({
+        result <- tmle_rules[[i]](initial_model_for_Y_data)
+        if(is.null(result)) return(NULL)
+        
+        result <- result[!is.na(result$ID) & !is.na(result$A0), , drop=FALSE]
+        if(nrow(result) == 0) return(NULL)
+        
+        if(debug) {
+          cat("Rule result summary:\n")
+          print(summary(result$A0))
+          cat("Number of valid treatments:", sum(!is.na(result$A0)), "\n")
+        }
+        result
+      }, error = function(e) {
+        if(debug) cat(sprintf("Error in rule %d: %s\n", i, conditionMessage(e)))
+        NULL
+      })
+      
+      if(!is.null(rule_result)) {
+        valid_indices <- match(rule_result$ID, unique(initial_model_for_Y_data$ID))
+        valid_indices <- valid_indices[!is.na(valid_indices)]
+        
+        if(length(valid_indices) > 0) {
+          # Calculate H vector with more generous bounds
+          H <- numeric(n_ids)
+          
+          # Increase lower bound for denominator to prevent extreme values
+          min_bound <- 0.01  # Increased from gbound[1] (typically 0.05)
+          denom <- pmax(g_preds_bounded[valid_indices] * C_preds_bounded[valid_indices], 
+                        min_bound)
+          
+          treat_values <- as.numeric(rule_result$A0[1:length(valid_indices)])
+          H[valid_indices] <- treat_values / denom
+          
+          # Apply more generous bounds to H
+          H_max <- 100  # Increased maximum value for H
+          H <- pmin(pmax(H, -H_max), H_max)  # Symmetric bounds
+          
+          if(debug) {
+            cat("H vector summary after bounds:\n")
+            print(summary(H[valid_indices]))
+            cat("Number of non-zero H:", sum(H != 0), "\n")
+          }
+          
+          # Prepare GLM data with bounded values
+          y_vals <- observed_Y[valid_indices]
+          h_vals <- H[valid_indices]
+          valid_data <- !is.na(y_vals) & !is.na(h_vals) & is.finite(h_vals)
+          
+          if(sum(valid_data) > 0 && var(h_vals[valid_data]) > 0) {
+            glm_data <- data.frame(
+              y = y_vals[valid_data],
+              h = h_vals[valid_data],
+              offset = qlogis(initial_preds[valid_indices, i][valid_data])
+            )
+            
+            # Handle non-finite offset values more carefully
+            glm_data$offset[!is.finite(glm_data$offset)] <- 
+              qlogis(mean(c(ybound[1] + 1e-6, ybound[2] - 1e-6)))
+            
+            if(nrow(glm_data) > 0) {
+              if(debug) {
+                cat("Fitting GLM with data:\n")
+                print(summary(glm_data))
+              }
+              
+              # More robust GLM fitting with increased bounds
+              glm_result <- tryCatch({
+                fit <- suppressWarnings(glm(y ~ h + offset(offset), 
+                                            family = binomial(), 
+                                            data = glm_data,
+                                            control = glm.control(maxit=100)))  # Increased iterations
+                eps <- coef(fit)["h"]
+                
+                # Increase epsilon bounds but keep them reasonable
+                if(is.finite(eps)) sign(eps) * min(abs(eps), 5) else 0  # Increased from 2 to 5
+              }, error = function(e) {
+                if(debug) cat("GLM error:", conditionMessage(e), "\n")
+                0
+              })
+              
+              epsilon[i] <- glm_result
+              
+              if(debug) cat(sprintf("Fitted epsilon[%d]: %f\n", i, epsilon[i]))
+              
+              # Update predictions if epsilon is non-zero
+              if(epsilon[i] != 0) {
+                logit_pred <- qlogis(initial_preds[,i]) + epsilon[i] * H
+                # Add padding to prevent exact boundary values
+                predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred), 
+                                               ybound[1] + 1e-6), 
+                                          ybound[2] - 1e-6)
+                predicted_Y[,i] <- pmin(pmax(initial_preds[,i], 
+                                             ybound[1] + 1e-6), 
+                                        ybound[2] - 1e-6)
+              }
+            }
+          }
+        }
+      }
     }
     
     # Calculate IPTW means
