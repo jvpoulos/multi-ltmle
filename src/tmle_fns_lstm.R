@@ -35,18 +35,29 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
     if(debug) cat(sprintf("\nProcessing time point %d/%d\n", t, t_end))
     time_start <- Sys.time()
     
+    # Ensure treatment probabilities maintain individual variation
     current_g_preds <- if(!is.null(g_preds_processed) && t <= length(g_preds_processed)) {
       preds <- g_preds_processed[[t]]
       if(is.null(preds)) {
         matrix(1/n_rules, nrow=n_ids, ncol=n_rules)
       } else {
-        # Preserve original predictions while ensuring bounds
-        preds_mat <- as.matrix(preds)
-        preds_mat <- pmin(pmax(preds_mat, gbound[1]), gbound[2])
-        preds_mat
+        # Convert to matrix while preserving individual-level variation
+        if(!is.matrix(preds)) {
+          preds <- matrix(preds, ncol=1)
+        }
+        if(ncol(preds) == 1) {
+          preds_mat <- matrix(0, nrow=nrow(preds), ncol=n_rules)
+          for(i in 1:n_rules) {
+            # Use individual-specific probabilities
+            preds_mat[,i] <- preds[,1]
+          }
+          preds_mat
+        } else {
+          preds
+        }
       }
     } else {
-      matrix(1/n_rules, nrow=n_ids, ncol=n_rules) 
+      matrix(1/n_rules, nrow=n_ids, ncol=n_rules)
     }
     
     # Get censoring predictions
@@ -135,81 +146,53 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
     })
     
     # Calculate IPTW weights and means
+    # Calculate IPTW weights and means
     tryCatch({
       # Get observed treatments for current time point
-      current_treatments <- treatments[[min(t + 1, length(treatments))]]
       current_rules <- obs.rules[[min(t, length(obs.rules))]]
+      qstar_gcomp <- tmle_contrasts[[t]]$Qstar_gcomp # Get this from result
       
-      # Initialize weights matrix - ensure proper dimensions
+      # Improve IPTW calculation
       iptw_weights <- matrix(0, nrow=nrow(current_g_preds), ncol=n_rules)
+      iptw_means <- numeric(n_rules)
       
-      # Calculate stabilized weights for each rule
       for(rule_idx in 1:n_rules) {
-        # Get rule-specific probabilities 
-        if(ncol(current_g_preds) == 1) {
-          # Expand single column to match rules
-          rule_preds <- rep(current_g_preds[,1], n_rules)
-          rule_preds <- matrix(rule_preds, ncol=n_rules)
-        } else {
-          rule_preds <- current_g_preds[,rule_idx]
-        }
-        
-        # Get current rule indicators
-        if(ncol(current_rules) < rule_idx) {
-          warning(sprintf("Missing rule column %d in current_rules", rule_idx))
-          next
-        }
-        rule_indicators <- current_rules[,rule_idx]
-        
-        # Calculate numerator (marginal probability of treatment)
-        numerator <- mean(rule_preds, na.rm=TRUE)
-        
-        # Calculate weights
-        weights <- rep(0, nrow(current_g_preds))
-        valid_idx <- !is.na(rule_indicators) & rule_indicators == 1
+        # Calculate stabilized weights
+        valid_idx <- !is.na(current_rules[,rule_idx]) & current_rules[,rule_idx] == 1
         if(any(valid_idx)) {
-          # Stabilized weights
-          denom_probs <- if(ncol(current_g_preds) == 1) {
-            rule_preds[valid_idx,rule_idx] 
-          } else {
-            rule_preds[valid_idx]
-          }
-          weights[valid_idx] <- numerator / pmax(denom_probs, gbound[1])
+          # Get marginal probability of rule
+          marginal_prob <- mean(current_rules[,rule_idx] == 1, na.rm=TRUE)
+          
+          # Calculate stabilized weights with better bounds
+          weights <- rep(0, nrow(current_g_preds))
+          rule_probs <- pmin(pmax(current_g_preds[,rule_idx], gbound[1]), gbound[2])
+          weights[valid_idx] <- marginal_prob / rule_probs[valid_idx]
           
           # Bound extreme weights
-          weights <- pmin(weights, 10)  # Cap at 10
+          weights <- pmin(weights, 10)
           
-          # Additional stability check
-          finite_weights <- weights[is.finite(weights)]
-          if(length(finite_weights) > 0) {
-            weights[!is.finite(weights)] <- median(finite_weights)
-          } else {
-            weights[!is.finite(weights)] <- 1
+          iptw_weights[,rule_idx] <- weights
+          
+          # Calculate mean for this rule using the weights
+          outcomes <- qstar_gcomp[,rule_idx]
+          valid_outcomes <- valid_idx & !is.na(outcomes)
+          if(any(valid_outcomes)) {
+            total_weight <- sum(weights[valid_outcomes])
+            if(total_weight > 0) {
+              iptw_means[rule_idx] <- sum(weights[valid_outcomes] * 
+                                            outcomes[valid_outcomes]) / total_weight
+            }
           }
         }
-        
-        iptw_weights[,rule_idx] <- weights
       }
-      
-      # Calculate IPTW means
-      qstar_gcomp <- tmle_contrasts[[t]]$Qstar_gcomp
-      weights_sum <- colSums(iptw_weights, na.rm=TRUE)
-      
-      # Handle zero weights
-      weights_sum[weights_sum == 0] <- 1
-      
-      iptw_means <- colSums(iptw_weights * qstar_gcomp, na.rm=TRUE) / weights_sum
-      
-      # Handle any remaining invalid values
-      iptw_means[!is.finite(iptw_means)] <- colMeans(qstar_gcomp, na.rm=TRUE)[!is.finite(iptw_means)]
       
       tmle_contrasts[[t]]$Qstar_iptw <- matrix(iptw_means, nrow=1)
       
       if(debug) {
         cat("\nIPTW weight summary:\n")
         cat("Weight range:", paste(range(iptw_weights, na.rm=TRUE), collapse="-"), "\n")
-        cat("Mean weights:", paste(colMeans(iptw_weights, na.rm=TRUE), collapse=", "), "\n")
-        cat("Weight sums:", paste(weights_sum, collapse=", "), "\n")
+        cat("Mean weights per rule:", paste(colMeans(iptw_weights, na.rm=TRUE), collapse=", "), "\n")
+        cat("Number of non-zero weights per rule:", paste(colSums(iptw_weights > 0, na.rm=TRUE), collapse=", "), "\n")
       }
       
     }, error = function(e) {
@@ -217,7 +200,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
         cat("Error calculating IPTW:\n")
         cat(conditionMessage(e), "\n")
         cat("Dimensions:\n")
-        cat("current_g_preds:", paste(dim(current_g_preds), collapse=" x "), "\n")
+        cat("current_g_preds:", paste(dim(current_g_preds), collapse=" x "), "\n") 
         cat("current_rules:", paste(dim(current_rules), collapse=" x "), "\n")
         cat("qstar_gcomp:", paste(dim(qstar_gcomp), collapse=" x "), "\n")
       }
@@ -240,55 +223,17 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
   return(tmle_contrasts)
 }
 
-# Modified get_treatment_probabilities function
-get_treatment_probabilities <- function(g_preds_bounded, valid_indices, treat_values, J) {
-  # Add smoothing constant
-  epsilon_smooth <- 1e-3
-  
-  # Validate and convert to matrix if needed
-  if(!is.matrix(g_preds_bounded)) {
-    if(length(g_preds_bounded) == 1) {
-      g_preds_bounded <- matrix(g_preds_bounded + epsilon_smooth, 
-                                nrow=length(valid_indices), 
-                                ncol=J)
-    } else {
-      g_preds_bounded <- matrix(g_preds_bounded, ncol=J)
-    }
-  }
-  
-  # Add smoothing and normalize probabilities
-  g_preds_smoothed <- t(apply(g_preds_bounded, 1, function(row) {
-    row_smooth <- row + epsilon_smooth
-    row_smooth / sum(row_smooth)
-  }))
-  
-  # Ensure valid treatment indices
-  treat_idx <- pmin(pmax(treat_values, 1), J)
-  
-  # Extract probabilities
-  treatment_probs <- sapply(seq_along(valid_indices), function(i) {
-    if(i <= nrow(g_preds_smoothed) && treat_idx[i] <= ncol(g_preds_smoothed)) {
-      g_preds_smoothed[i, treat_idx[i]]
-    } else {
-      1/J
-    }
-  })
-  
-  return(treatment_probs)
-}
-
 getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
                             tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, 
                             obs.treatment, obs.rules, gbound, ybound, t_end, window_size = 7,
                             debug = FALSE) {
   
   final_result <- tryCatch({
-    # Initialize dimensions first before any processing
+    # Initialize dimensions
     if(is.null(initial_model_for_Y_data) || is.null(tmle_rules)) {
       stop("Missing required data or rules")
     }
     
-    # Get dimensions
     n_ids <- length(unique(initial_model_for_Y_data$ID))
     n_rules <- length(tmle_rules)
     J <- if(is.matrix(g_preds_bounded)) ncol(g_preds_bounded) else length(g_preds_bounded)
@@ -297,54 +242,17 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       stop("Invalid dimensions: n_ids=", n_ids, ", n_rules=", n_rules)
     }
     
-    if(!is.null(g_preds_bounded)) {
-      # Ensure matrix format 
-      if(!is.matrix(g_preds_bounded)) {
-        g_preds_bounded <- matrix(g_preds_bounded, ncol=J)
-      }
-      
-      # Just apply bounds, don't renormalize
-      g_preds_bounded <- pmin(pmax(g_preds_bounded, gbound[1]), gbound[2])
-    }
-    
     # Initialize storage matrices
-    initial_preds <- matrix(0, nrow=n_ids, ncol=n_rules)
-    predicted_Y <- matrix(ybound[1], nrow=n_ids, ncol=n_rules)
     predict_Qstar <- matrix(ybound[1], nrow=n_ids, ncol=n_rules)
-    observed_Y <- rep(ybound[1], n_ids)
+    predicted_Y <- matrix(ybound[1], nrow=n_ids, ncol=n_rules)
     epsilon <- rep(0, n_rules)
     
-    # Handle initial predictions
-    initial_preds <- if(is.matrix(initial_model_for_Y_preds)) {
-      if(ncol(initial_model_for_Y_preds) == 1) {
-        # Add larger random noise to prevent predictions from being too similar
-        base_preds <- initial_model_for_Y_preds[,1]
-        noise <- runif(length(base_preds), -0.05, 0.05)  # Increased from ±0.01 to ±0.05
-        matrix(pmin(pmax(base_preds + noise, ybound[1]), ybound[2]), 
-               nrow=n_ids, ncol=n_rules)
-      } else {
-        initial_model_for_Y_preds[1:min(nrow(initial_model_for_Y_preds), n_ids), 
-                                  1:min(ncol(initial_model_for_Y_preds), n_rules), 
-                                  drop=FALSE]
-      }
-    } else {
-      noise <- matrix(runif(n_ids * n_rules, -0.05, 0.05),  # Increased noise
-                      nrow=n_ids, ncol=n_rules)
-      matrix(pmin(pmax(rep(initial_model_for_Y_preds[1], n_ids * n_rules) + noise, 
-                       ybound[1]), ybound[2]), 
-             nrow=n_ids, ncol=n_rules)
-    }
-    
-    # Apply bounds with padding
-    initial_preds[] <- pmin(pmax(initial_preds, ybound[1] + 1e-6), ybound[2] - 1e-6)
-    predicted_Y[] <- initial_preds
-    predict_Qstar[] <- initial_preds
-    
-    # Get observed outcomes
+    # Calculate observed outcomes
+    observed_Y <- rep(ybound[1], n_ids)
     if("Y" %in% colnames(initial_model_for_Y_data)) {
-      y_data <- initial_model_for_Y_data
+      y_data <- initial_model_for_Y_data 
       y_data$Y[is.na(y_data$Y)] <- ybound[1]
-      y_data$Y <- pmin(pmax(y_data$Y, ybound[1] + 1e-6), ybound[2] - 1e-6)
+      y_data$Y <- pmin(pmax(y_data$Y, ybound[1]), ybound[2])
       
       id_map <- match(unique(initial_model_for_Y_data$ID), y_data$ID)
       valid_map <- !is.na(id_map)
@@ -353,105 +261,93 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Process rules with enhanced error handling and bounds
+    # Process each rule
     for(i in seq_len(n_rules)) {
-      if(debug) cat(sprintf("\nProcessing rule %d/%d\n", i, n_rules))
+      rule_result <- tmle_rules[[i]](initial_model_for_Y_data)
+      valid_indices <- match(rule_result$ID, unique(initial_model_for_Y_data$ID))
+      valid_indices <- valid_indices[!is.na(valid_indices)]
       
-      rule_result <- tryCatch({
-        result <- tmle_rules[[i]](initial_model_for_Y_data)
-        if(is.null(result)) return(NULL)
-        
-        result <- result[!is.na(result$ID) & !is.na(result$A0), , drop=FALSE]
-        if(nrow(result) == 0) return(NULL)
-        
-        if(debug) {
-          cat("Rule result summary:\n")
-          print(summary(result$A0))
-          cat("Number of valid treatments:", sum(!is.na(result$A0)), "\n")
+      if(length(valid_indices) > 0) {
+        # Get rule-specific probabilities
+        rule_preds <- if(ncol(g_preds_bounded) == 1) {
+          g_preds_bounded[valid_indices, 1]
+        } else {
+          g_preds_bounded[valid_indices, i]
         }
-        result
-      }, error = function(e) {
-        if(debug) cat(sprintf("Error in rule %d: %s\n", i, conditionMessage(e)))
-        NULL
-      })
-      
-      if(!is.null(rule_result)) {
-        valid_indices <- match(rule_result$ID, unique(initial_model_for_Y_data$ID))
-        valid_indices <- valid_indices[!is.na(valid_indices)]
         
-        if(length(valid_indices) > 0) {
-          # Calculate H vector with more generous bounds
-          H <- numeric(n_ids)
+        # Get rule indicators from obs.rules
+        rule_indicators <- obs.rules[, i]
+        rule_indicators <- rule_indicators[valid_indices]
+        
+        # Calculate H (clever covariate)
+        H <- numeric(n_ids)
+        H[valid_indices] <- rule_indicators / 
+          pmax(rule_preds * C_preds_bounded[valid_indices], gbound[1])
+        
+        # Get initial predictions
+        if(is.matrix(initial_model_for_Y_preds)) {
+          predicted_Y[valid_indices, i] <- initial_model_for_Y_preds[valid_indices,
+                                                                     min(i, ncol(initial_model_for_Y_preds))]
+        } else {
+          predicted_Y[valid_indices, i] <- initial_model_for_Y_preds[valid_indices]
+        }
+        
+        # Calculate valid data indicators BEFORE using them
+        valid_data <- H != 0 & is.finite(H) & !is.na(observed_Y[valid_indices])
+        
+        # Fix GLM fitting to avoid NAs and extreme values
+        if(sum(valid_data) > 0) {
+          # Calculate bounded Y values 
+          y_bounded <- pmin(pmax(observed_Y[valid_indices][valid_data], 0.001), 0.999)
           
-          # Increase lower bound for denominator to prevent extreme values
-          min_bound <- 0.01  # Increased from gbound[1] (typically 0.05)
-          denom <- pmax(g_preds_bounded[valid_indices] * C_preds_bounded[valid_indices], 
-                        min_bound)
+          # Initial predictions bounded
+          initial_bounded <- pmin(pmax(predicted_Y[valid_indices, i][valid_data], 0.001), 0.999)
           
-          treat_values <- as.numeric(rule_result$A0[1:length(valid_indices)])
-          H[valid_indices] <- treat_values / denom
+          # Clever covariate
+          h_valid <- H[valid_indices][valid_data]
           
-          # Apply more generous bounds to H
-          H_max <- 100  # Increased maximum value for H
-          H <- pmin(pmax(H, -H_max), H_max)  # Symmetric bounds
-          
-          if(debug) {
-            cat("H vector summary after bounds:\n")
-            print(summary(H[valid_indices]))
-            cat("Number of non-zero H:", sum(H != 0), "\n")
-          }
-          
-          # Prepare GLM data with bounded values
-          y_vals <- observed_Y[valid_indices]
-          h_vals <- H[valid_indices]
-          valid_data <- !is.na(y_vals) & !is.na(h_vals) & is.finite(h_vals)
-          
-          if(sum(valid_data) > 0 && var(h_vals[valid_data]) > 0) {
+          # Only proceed if we have variation in Y
+          if(var(y_bounded) > 0) {
             glm_data <- data.frame(
-              y = y_vals[valid_data],
-              h = h_vals[valid_data],
-              offset = qlogis(initial_preds[valid_indices, i][valid_data])
+              y = y_bounded,
+              h = h_valid,
+              offset = qlogis(initial_bounded)
             )
             
-            # Handle non-finite offset values more carefully
-            glm_data$offset[!is.finite(glm_data$offset)] <- 
-              qlogis(mean(c(ybound[1] + 1e-6, ybound[2] - 1e-6)))
+            # Remove any infinite/NA values 
+            glm_data <- glm_data[is.finite(glm_data$y) & 
+                                   is.finite(glm_data$h) & 
+                                   is.finite(glm_data$offset),]
             
             if(nrow(glm_data) > 0) {
-              if(debug) {
-                cat("Fitting GLM with data:\n")
-                print(summary(glm_data))
-              }
+              fit <- try({
+                glm(y ~ h + offset(offset), 
+                    family = binomial(),
+                    data = glm_data,
+                    control = list(maxit = 100))
+              }, silent = TRUE)
               
-              # More robust GLM fitting with increased bounds
-              glm_result <- tryCatch({
-                fit <- suppressWarnings(glm(y ~ h + offset(offset), 
-                                            family = binomial(), 
-                                            data = glm_data,
-                                            control = glm.control(maxit=100)))  # Increased iterations
-                eps <- coef(fit)["h"]
+              if(!inherits(fit, "try-error")) {
+                epsilon[i] <- coef(fit)["h"]
                 
-                # Increase epsilon bounds but keep them reasonable
-                if(is.finite(eps)) sign(eps) * min(abs(eps), 5) else 0  # Increased from 2 to 5
-              }, error = function(e) {
-                if(debug) cat("GLM error:", conditionMessage(e), "\n")
-                0
-              })
-              
-              epsilon[i] <- glm_result
-              
-              if(debug) cat(sprintf("Fitted epsilon[%d]: %f\n", i, epsilon[i]))
-              
-              # Update predictions if epsilon is non-zero
-              if(epsilon[i] != 0) {
-                logit_pred <- qlogis(initial_preds[,i]) + epsilon[i] * H
-                # Add padding to prevent exact boundary values
-                predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred), 
-                                               ybound[1] + 1e-6), 
-                                          ybound[2] - 1e-6)
-                predicted_Y[,i] <- pmin(pmax(initial_preds[,i], 
-                                             ybound[1] + 1e-6), 
-                                        ybound[2] - 1e-6)
+                # Bound epsilon
+                epsilon[i] <- sign(epsilon[i]) * min(abs(epsilon[i]), 2)
+                
+                if(!is.na(epsilon[i])) {
+                  # Calculate updated predictions on logit scale
+                  logit_pred <- qlogis(pmin(pmax(predicted_Y[,i], 0.001), 0.999))
+                  logit_update <- epsilon[i] * H[valid_indices]
+                  
+                  # Bound updates
+                  logit_update <- pmin(pmax(logit_update, -4), 4)
+                  
+                  # Update predictions 
+                  updated_logit <- logit_pred
+                  updated_logit[valid_indices] <- updated_logit[valid_indices] + logit_update
+                  
+                  # Transform back maintaining bounds
+                  predict_Qstar[,i] <- pmin(pmax(plogis(updated_logit), 0.001), 0.999)
+                }
               }
             }
           }
@@ -459,39 +355,43 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Calculate IPTW means
-    iptw_means <- colMeans(predicted_Y, na.rm=TRUE)
-    iptw_means[!is.finite(iptw_means)] <- mean(c(ybound[1] + 1e-6, ybound[2] - 1e-6))
-    iptw_means <- pmin(pmax(iptw_means, ybound[1] + 1e-6), ybound[2] - 1e-6)
+    # Calculate IPTW means with proper handling
+    iptw_means <- colMeans(predict_Qstar, na.rm=TRUE)
+    iptw_means[!is.finite(iptw_means)] <- mean(c(ybound[1], ybound[2]))
+    iptw_means <- pmin(pmax(iptw_means, ybound[1]), ybound[2])
     
     if(debug) {
       cat("\nFinal summary:\n")
       cat("Qstar range:", paste(range(predict_Qstar, na.rm=TRUE), collapse="-"), "\n")
       cat("Qstar_gcomp range:", paste(range(predicted_Y, na.rm=TRUE), collapse="-"), "\n")
-      cat("Epsilon values:", paste(epsilon, collapse=", "), "\n")
+      cat("Epsilon values:", paste(epsilon, collapse=", "), "\n")  
       cat("IPTW means:", paste(iptw_means, collapse=", "), "\n")
     }
     
-    list(
+    return(list(
       "Qstar" = predict_Qstar,
       "epsilon" = epsilon,
       "Qstar_gcomp" = predicted_Y,
       "Qstar_iptw" = matrix(iptw_means, nrow=1),
       "Y" = observed_Y
-    )
+    ))
     
   }, error = function(e) {
     if(debug) cat(sprintf("\nError in getTMLELongLSTM: %s\n", conditionMessage(e)))
-    # Return safe defaults with proper dimensions
-    n_ids_safe <- if(!is.null(initial_model_for_Y_data)) length(unique(initial_model_for_Y_data$ID)) else 1
+    
+    n_ids_safe <- if(!is.null(initial_model_for_Y_data)) {
+      length(unique(initial_model_for_Y_data$ID))
+    } else {
+      1 
+    }
     n_rules_safe <- if(!is.null(tmle_rules)) length(tmle_rules) else 1
     
     list(
-      "Qstar" = matrix(ybound[1] + 1e-6, nrow=n_ids_safe, ncol=n_rules_safe),
+      "Qstar" = matrix(ybound[1], nrow=n_ids_safe, ncol=n_rules_safe),
       "epsilon" = rep(0, n_rules_safe),
-      "Qstar_gcomp" = matrix(ybound[1] + 1e-6, nrow=n_ids_safe, ncol=n_rules_safe),
-      "Qstar_iptw" = matrix(ybound[1] + 1e-6, nrow=1, ncol=n_rules_safe),
-      "Y" = rep(ybound[1] + 1e-6, n_ids_safe)
+      "Qstar_gcomp" = matrix(ybound[1], nrow=n_ids_safe, ncol=n_rules_safe),
+      "Qstar_iptw" = matrix(ybound[1], nrow=1, ncol=n_rules_safe),
+      "Y" = rep(ybound[1], n_ids_safe)
     )
   })
   
