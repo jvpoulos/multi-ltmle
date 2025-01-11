@@ -1,4 +1,5 @@
 import os
+import math
 
 # Set critical environment variables before any TensorFlow imports
 cuda_base = "/n/app/cuda/12.1-gcc-9.2.0"
@@ -219,9 +220,9 @@ def main():
             is_censoring=is_censoring
         )
 
-    # Calculate steps
-    steps_per_epoch = max(1, (train_samples - n_pre + 1) // batch_size)
-    validation_steps = max(1, (val_samples - n_pre + 1) // batch_size)
+    # Calculate steps directly based on samples
+    steps_per_epoch = math.ceil(train_samples / batch_size)
+    validation_steps = math.ceil(val_samples / batch_size)
 
     logger.info(f"Training steps per epoch: {steps_per_epoch}")
     logger.info(f"Validation steps: {validation_steps}")
@@ -380,16 +381,44 @@ def main():
                 class_weight = {i: 1.0 for i in range(J)}
                 logger.info("Using uniform weights for categorical classes")
 
-    else:
-        # Censoring model case
-        class_weight = {0: 1.0, 1: 2.0}  # More weight to censored class
-        logger.info("Using fixed weights for censoring model: {0: 1.0, 1: 2.0}")
+    if is_censoring:
+        # Calculate class weights based on observed frequencies in y_data
+        if 'target' in y_data.columns:
+            target_vals = y_data['target'].values
+            # Convert negative values to 0 and ensure binary classes
+            target_vals = np.where(target_vals < 0, 0, target_vals)
+            target_vals = np.where(target_vals > 0, 1, target_vals)
+            
+            c_counts = np.bincount(target_vals.astype(int))
+            total = len(target_vals)
+            
+            # Calculate balanced weights
+            class_weight = {
+                0: total/(2 * max(c_counts[0], 1)),  # Add max to prevent div by 0
+                1: total/(2 * max(c_counts[1], 1) if len(c_counts) > 1 else 1)
+            }
+            
+            # Log censoring distribution
+            logger.info("Censoring class distribution:")
+            for i in [0, 1]:
+                count = c_counts[i] if i < len(c_counts) else 0 
+                pct = (count/total) * 100
+                logger.info(f"Class {i}: {count} ({pct:.2f}%)")
+        else:
+            # Fallback to balanced weights if no target column
+            class_weight = {0: 1.0, 1: 1.0}
+            logger.info("Using balanced weights for censoring")
+            
+        # Adjust weights based on class imbalance
+        min_class_weight = min(class_weight.values())
+        if min_class_weight < 0.1:  # If severe imbalance
+            # Scale up minority class but keep majority reasonable
+            scale = 0.1 / min_class_weight
+            class_weight = {k: min(v * scale, 10.0) for k,v in class_weight.items()}
 
-    # Validate class weights
-    class_weight = {k: float(v) for k, v in class_weight.items()}  # Ensure float type
-    logger.info("\nFinal class weights:")
-    for k, v in sorted(class_weight.items()):
-        logger.info(f"Class {k}: {v:.4f}")
+        logger.info("Censoring model class weights:")
+        for k,v in sorted(class_weight.items()):
+            logger.info(f"Class {k}: {v:.4f}")
     
     history = model.fit(
         train_dataset,

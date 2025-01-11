@@ -252,26 +252,18 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
     callbacks = [
         # Early stopping
         tf.keras.callbacks.EarlyStopping(
-            monitor='val_accuracy',
+            monitor='val_loss',
             patience=patience,
             restore_best_weights=True,
-            mode='max'
+            mode='min'
         ),
         
         # Best model checkpoint
         tf.keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(checkpoint_dir, 'best_model.keras'),
-            monitor='val_accuracy',
+            monitor='val_loss',
             save_best_only=True,
-            mode='max'
-        ),
-        
-        tf.keras.callbacks.ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=2,
-        min_lr=1e-6,
-        verbose=1
+            mode='min'
         ),
 
         # Regular checkpoints (keep last 3)
@@ -279,8 +271,8 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
             filepath=os.path.join(checkpoint_dir, 'model_epoch_{epoch:02d}.keras'),
             keep_n=3,
             save_weights_only=False,
-            monitor='val_accuracy',
-            mode='max'
+            monitor='val_loss',
+            mode='min'
         ),
         
         # Terminate on NaN
@@ -293,9 +285,24 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
     return callbacks
 
 def load_data_from_csv(input_file, output_file):
+    """
+    Load and preprocess input and output data from CSV files with improved column type detection.
+    
+    Args:
+        input_file (str): Path to input CSV file
+        output_file (str): Path to output CSV file
+        
+    Returns:
+        tuple: Processed input and output data as pandas DataFrames
+    """
     try:
         # Load input data
         x_data = pd.read_csv(input_file)
+
+        # Drop sequence column if it exists
+        if 'sequence' in x_data.columns:
+            x_data = x_data.drop('sequence', axis=1)
+            
         logger.info(f"Successfully loaded input data from {input_file}")
         logger.info(f"Input data shape: {x_data.shape}")
         
@@ -304,89 +311,132 @@ def load_data_from_csv(input_file, output_file):
         logger.info(f"Successfully loaded output data from {output_file}")
         logger.info(f"Output data shape: {y_data.shape}")
         
-        # Ensure 'ID' column exists in x_data
-        if 'ID' not in x_data.columns:
-            if 'id' in x_data.columns:
-                x_data['ID'] = x_data['id'].astype(int)
-                x_data = x_data.drop('id', axis=1)
-            else:
-                x_data['ID'] = range(len(x_data))
-        
-        # Handle target column based on type (Y, C, or A)
-        if 'target' in y_data.columns:
-            # Keep the target column and ID
-            y_data = y_data[['ID', 'target']]
-            
-            # Analyze target distribution before processing
-            target_dist = y_data['target'].value_counts(dropna=True)
-            logger.info(f"Raw target distribution:\n{target_dist}")
-            
-            # Check if target is binary (Y or C)
-            is_binary = len(target_dist.unique()) <= 2
-            if is_binary:
-                # For Y and C models: Don't fill NAs with -1
-                # Instead, fill with minority class to help address class imbalance
-                minority_class = target_dist.idxmin()
-                y_data['target'] = y_data['target'].fillna(minority_class)
-                
-                # Add noise to training data to prevent perfect predictions
-                noise = np.random.normal(0, 0.1, size=len(y_data))
-                y_data['target'] = y_data['target'].astype(np.float32) + noise
-                # Clip values to maintain binary nature while keeping some uncertainty
-                y_data['target'] = np.clip(y_data['target'], 0.0, 1.0)
-                
-                # Log processed distribution
-                logger.info("Processed target distribution (after adding noise):")
-                logger.info(f"Mean: {y_data['target'].mean():.4f}")
-                logger.info(f"Std: {y_data['target'].std():.4f}")
-                logger.info(f"Min: {y_data['target'].min():.4f}")
-                logger.info(f"Max: {y_data['target'].max():.4f}")
-            else:
-                # For treatment (A) model: Keep original processing
-                y_data['target'] = y_data['target'].fillna(-1).astype(np.int32)
-        else:
-            # Handle treatment columns if no direct target column
-            treatment_cols = [col for col in y_data.columns if col.startswith('A')]
-            if not treatment_cols:
-                raise ValueError("Neither target nor treatment columns found")
-            
-            # Convert one-hot encoded treatments to target
-            y_data['target'] = np.argmax(y_data[treatment_cols].values, axis=1)
-            y_data = y_data[['ID', 'target']]
-            y_data['target'] = y_data['target'].fillna(-1).astype(np.int32)
-        
-        # Process input features
-        # Identify binary and continuous columns
+        # Initialize column type lists
         binary_cols = []
         cont_cols = []
-        
+
+        # Function to determine if a column is binary
+        def is_binary_column(series):
+            unique_vals = series.dropna().unique()
+            if len(unique_vals) <= 2:
+                # Check if values are 0/1 or boolean
+                vals = set(unique_vals)
+                return vals.issubset({0, 1, True, False, "0", "1"})
+            return False
+
+        # Function to determine if a column is continuous
+        def is_continuous_column(col_name, series):
+            try:
+                # Convert to numeric, handle errors
+                numeric_series = pd.to_numeric(series, errors='coerce')
+                unique_vals = numeric_series.dropna().unique()
+                
+                # If too few unique values, probably not continuous
+                if len(unique_vals) < 3:
+                    return False
+                    
+                # Check if values have decimals
+                has_decimals = any(float(x) % 1 != 0 for x in unique_vals if not pd.isna(x))
+                
+                # If has decimals or many unique values, likely continuous
+                return has_decimals or len(unique_vals) > 10
+            except:
+                return False
+
+        # First pass: identify sequences and check their content
         for col in x_data.columns:
-            if col != 'ID':
-                unique_vals = x_data[col].nunique()
-                if unique_vals <= 2:
+            if col != 'ID' and isinstance(x_data[col].iloc[0], str) and ',' in str(x_data[col].iloc[0]):
+                try:
+                    # Get first row values
+                    first_vals = [float(x.strip()) for x in x_data[col].iloc[0].split(',') if x.strip() and x.strip() != 'NA']
+                    unique_vals = set(first_vals)
+                    # If only contains -1, 0, 1, treat as binary
+                    if unique_vals.issubset({-1, 0, 1}):
+                        binary_cols.append(col)
+                        logger.info(f"Column {col} identified as binary sequence")
+                except (ValueError, AttributeError):
+                    cont_cols.append(col)
+                    logger.info(f"Column {col} defaulted to continuous (invalid sequence)")
+
+        # Second pass: handle non-sequence columns
+        for col in x_data.columns:
+            if col != 'ID' and col not in binary_cols and col not in cont_cols:
+                if is_binary_column(x_data[col]):
                     binary_cols.append(col)
+                    logger.info(f"Column {col} identified as binary")
+                elif is_continuous_column(col, x_data[col]):
+                    cont_cols.append(col)
+                    logger.info(f"Column {col} identified as continuous")
                 else:
                     cont_cols.append(col)
-        
+                    logger.info(f"Column {col} defaulted to continuous")
+
         logger.info(f"Binary columns: {binary_cols}")
         logger.info(f"Continuous columns: {cont_cols}")
         
         # Handle binary columns
         for col in binary_cols:
-            x_data[col] = x_data[col].fillna(x_data[col].mode()[0])
+            try:
+                if isinstance(x_data[col].iloc[0], str) and ',' in str(x_data[col].iloc[0]):
+                    # Process binary sequences
+                    def process_binary_seq(seq_str):
+                        try:
+                            values = [float(x.strip()) for x in str(seq_str).split(',') if x.strip() != 'NA']
+                            if not values:
+                                return 0
+                            # Take the mode of the sequence
+                            return max(set(values), key=values.count)
+                        except (ValueError, AttributeError):
+                            return 0
+
+                    x_data[col] = x_data[col].apply(process_binary_seq).fillna(0)
+                else:
+                    x_data[col] = pd.to_numeric(x_data[col], errors='coerce')
+                    mode_val = x_data[col].mode().iloc[0] if not x_data[col].empty else 0
+                    x_data[col] = x_data[col].fillna(mode_val)
+                
+                x_data[col] = (x_data[col] > 0).astype(float)
+            except Exception as e:
+                logger.error(f"Error processing binary column {col}: {str(e)}")
+                x_data[col] = 0.0
         
         # Handle continuous columns
         for col in cont_cols:
-            # Fill NAs with median
-            x_data[col] = x_data[col].fillna(x_data[col].median())
-            # Add small random noise to prevent perfect correlations
-            noise = np.random.normal(0, x_data[col].std() * 0.01, size=len(x_data))
-            x_data[col] = x_data[col] + noise
-            # Standardize
-            x_data[col] = (x_data[col] - x_data[col].mean()) / x_data[col].std()
+            try:
+                x_data[col] = pd.to_numeric(x_data[col], errors='coerce')
+                med = x_data[col].median()
+                if pd.isna(med):
+                    med = 0.0
+                x_data[col] = x_data[col].fillna(med)
+                
+                if not x_data[col].isna().all():
+                    std = x_data[col].std()
+                    if pd.isna(std) or std == 0:
+                        std = 1.0
+                    
+                    # Add small noise to prevent perfect separation
+                    noise = np.random.normal(0, std * 0.01, size=len(x_data))
+                    x_data[col] = x_data[col] + noise
+                    
+                    # Standardize
+                    mean = x_data[col].mean()
+                    std = x_data[col].std() or 1.0
+                    x_data[col] = (x_data[col] - mean) / std
+            except Exception as e:
+                logger.error(f"Error processing continuous column {col}: {str(e)}")
+                x_data[col] = 0.0
         
-        # Convert types
-        x_data = x_data.astype(np.float32)
+        # Convert to float32
+        try:
+            x_data = x_data.astype(np.float32)
+        except Exception as e:
+            logger.error(f"Error converting to float32: {str(e)}")
+            # Try converting column by column
+            for col in x_data.columns:
+                try:
+                    x_data[col] = x_data[col].astype(np.float32)
+                except:
+                    x_data[col] = 0.0
         
         # Final verification
         logger.info("\nFinal data summary:")
@@ -578,7 +628,14 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         
         # Process features separately
         x_values = x_data.values.astype(np.float32)
-        
+
+        # Target conversion to ensure int32 for sparse_categorical_crossentropy
+        if 'target' in y_data.columns:
+            if loss_fn == "sparse_categorical_crossentropy":
+                # Convert to int32 and stay int32
+                y_data['target'] = pd.to_numeric(y_data['target'], downcast='integer')
+                y_data['target'] = y_data['target'].astype('int32')
+
         # Only standardize continuous columns
         if cont_cols:
             cont_indices = [x_data.columns.get_loc(col) for col in cont_cols]
@@ -596,21 +653,29 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         if loss_fn == "sparse_categorical_crossentropy":
             # Treatment model (A) 
             if 'target' in y_data.columns:
-                y_values = y_data['target'].values.astype(np.int32)
-                # Handle negative values
-                y_values = np.where(y_values < 0, 0, y_values)
+                # Ensure consistent int32 type and force it to stay int32
+                y_values = tf.cast(y_data['target'].values, tf.int32).numpy()
+                # Simply ensure valid class range
+                y_values = np.clip(y_values, 0, J-1)
             else:
                 if 'A' in y_data.columns:
-                    y_values = y_data['A'].values.astype(np.int32)
+                    # Force int32 type
+                    y_values = tf.cast(y_data['A'].values, tf.int32).numpy()
                 else:
                     treatment_cols = [f'A{i}' for i in range(J)]
                     if all(col in y_data.columns for col in treatment_cols):
-                        y_values = np.argmax(y_data[treatment_cols].values, axis=1).astype(np.int32)
+                        # Ensure consistent int32 type for argmax result
+                        y_values = tf.cast(
+                            np.argmax(y_data[treatment_cols].values, axis=1),
+                            tf.int32
+                        ).numpy()
                     else:
                         raise ValueError("No suitable treatment columns found")
             
-            # Ensure valid class indices
-            y_values = np.clip(y_values, 0, J-1)
+            # Remove unnecessary noise addition
+            if not is_training:
+                # For validation/test, keep exact values
+                y_values = np.clip(y_values, 0, J-1)
             
             # Log class distribution
             unique, counts = np.unique(y_values, return_counts=True)
@@ -664,13 +729,14 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                     logger.info(f"Positive class ratio: {pos_ratio:.4f}")
                     
                     if is_training:
-                        noise = np.random.normal(0, 0.15, size=len(y_raw))
+                        # Reduce noise and maintain better class separation
+                        noise = np.random.normal(0, 0.01, size=len(y_raw))  # Reduced from 0.05
                         y_raw = y_raw + noise
                         y_values = np.where(y_raw > 0.5,
-                                          np.clip(y_raw, 0.6, 0.95),
-                                          np.clip(y_raw, 0.05, 0.4))
+                                          np.clip(y_raw, 0.51, 0.95),  # Reduced lower bound
+                                          np.clip(y_raw, 0.05, 0.45))  # Increased upper bound
                     else:
-                        noise = np.random.normal(0, 0.05, size=len(y_raw))
+                        noise = np.random.normal(0, 0.01, size=len(y_raw))  # Minimal noise for validation
                         y_values = np.clip(y_raw + noise, 0, 1)
                     
                     # Reshape for binary classification
@@ -727,67 +793,96 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         num_samples = len(x_values) - n_pre + 1
         x_sequences = []
         y_sequences = []
-        
+
         for i in range(num_samples):
-            # Handle features
-            x_seq = x_values[i:i + n_pre].copy()
-            
-            # Only standardize continuous features
-            if cont_cols:
-                x_seq[:, cont_indices] = np.clip(
-                    (x_seq[:, cont_indices] - mean[cont_indices]) / std[cont_indices],
-                    -10, 10
-                )
-            
-            # Add noise during training
-            if is_training:
-                # Add more noise to continuous features
+            if i + n_pre <= len(x_values):
+                # Handle features
+                x_seq = x_values[i:i + n_pre].copy()
+                
+                # Only standardize continuous features
                 if cont_cols:
+                    x_seq[:, cont_indices] = np.clip(
+                        (x_seq[:, cont_indices] - mean[cont_indices]) / std[cont_indices],
+                        -2, 2  # Reduce clipping range to prevent extreme values
+                    )
+                
+                # Handle binary features - keep as is without standardization
+                if len(binary_cols) > 0:
+                    binary_indices = [x_data.columns.get_loc(col) for col in binary_cols]
+                    x_seq[:, binary_indices] = x_values[i:i + n_pre, binary_indices].copy()
+                
+                # Only add minimal noise during training if really needed
+                if is_training and cont_cols:
                     noise = np.zeros_like(x_seq)
-                    noise[:, cont_indices] = np.random.normal(0, 0.02, size=(n_pre, len(cont_indices)))
-                    noise[:, cont_indices] = np.clip(noise[:, cont_indices], -0.05, 0.05)
+                    noise[:, cont_indices] = np.random.normal(0, 0.01, size=(n_pre, len(cont_indices)))
                     x_seq += noise
-            
-            y_seq = y_values[i + n_pre - 1].copy()
-            
-            x_sequences.append(x_seq)
-            y_sequences.append(y_seq)
+                
+                # Ensure consistent types
+                y_seq = y_values[i + n_pre - 1].copy()
+                if loss_fn == "sparse_categorical_crossentropy":
+                    # Explicitly force int32 type
+                    y_seq = tf.cast(y_values[i + n_pre - 1], tf.int32).numpy()
+                else:
+                    y_seq = y_values[i + n_pre - 1].astype(np.float32)
+                
+                x_sequences.append(x_seq)
+                y_sequences.append(y_seq)
         
+        # Convert sequences to arrays with consistent types
         x_sequences = np.array(x_sequences, dtype=np.float32)
-        y_sequences = np.array(y_sequences, dtype=np.float32)
-        
-        # Log sequence statistics
-        logger.info(f"\nSequence statistics:")
-        logger.info(f"X shape: {x_sequences.shape}")
-        logger.info(f"Y shape: {y_sequences.shape}")
-        logger.info(f"X range: [{np.min(x_sequences)}, {np.max(x_sequences)}]")
-        logger.info(f"Y mean: {np.mean(y_sequences)}")
-        logger.info(f"Y std: {np.std(y_sequences)}")
-        
-        # Create TensorFlow datasets
+        if loss_fn == "sparse_categorical_crossentropy":
+            # Force int32 type using TensorFlow cast
+            y_sequences = tf.cast(y_sequences, tf.int32).numpy()
+        else:
+            y_sequences = np.array(y_sequences, dtype=np.float32)
+
+        # Calculate steps once
+        num_sequences = len(x_sequences)
+        steps_per_epoch = math.ceil(num_sequences / batch_size)
+        if steps_per_epoch < 10 and is_training:
+            logger.warning(f"Very few steps ({steps_per_epoch}). Consider reducing batch size.")
+
+        # Create dataset once
         dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences))
-
+        
         if is_training:
-            dataset = dataset.shuffle(buffer_size=min(10000, len(x_sequences)), 
+            dataset = dataset.shuffle(buffer_size=min(10000, num_sequences), 
                                     reshuffle_each_iteration=True)
-        dataset = dataset.batch(batch_size)
-        if is_training:
-            dataset = dataset.repeat()
-
-        # Add prefetch
+            dataset = dataset.batch(batch_size)
+            dataset = dataset.repeat()  # Infinite repeats for training
+        else:
+            dataset = dataset.batch(batch_size)
+        
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
         
-        # Calculate steps
-        steps = len(x_sequences) // batch_size
-        if not is_training and len(x_sequences) % batch_size != 0:
-            steps += 1
-            
-        return dataset, steps
+        logger.info(f"Created dataset with {num_sequences} sequences")
+        logger.info(f"Batch size: {batch_size}")
+        logger.info(f"Steps per {'epoch' if is_training else 'validation'}: {steps_per_epoch}")
+        
+        return dataset, steps_per_epoch
         
     except Exception as e:
         logger.error(f"Error creating dataset: {str(e)}")
         logger.error(traceback.format_exc())
         raise
+
+def get_focal_loss(gamma=2.0, alpha=None):
+    """Get focal loss function with optional alpha balancing."""
+    def focal_loss(y_true, y_pred):
+        epsilon = tf.keras.backend.epsilon()
+        y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
+        
+        # Calculate focal loss
+        ce = -y_true * tf.math.log(y_pred)
+        focal_weight = tf.pow(1 - y_pred, gamma) * y_true
+        
+        # Apply class balancing if alpha provided
+        if alpha is not None:
+            alpha_weight = alpha * y_true + (1 - alpha) * (1 - y_true)
+            focal_weight = focal_weight * alpha_weight
+            
+        return tf.reduce_mean(focal_weight * ce)
+    return focal_loss
 
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
                 out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False):
@@ -811,6 +906,9 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
     if strategy is None:
         strategy = get_strategy()
     
+    # Initialize class_weight to None
+    class_weight = None
+
     with strategy.scope():
         # Input layer with fixed name
         inputs = Input(shape=input_shape, dtype=tf.float32, name="input_1")
@@ -882,68 +980,96 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         x = tf.keras.layers.LayerNormalization(name="norm_4")(x)
         x = tf.keras.layers.Dropout(dr, name="drop_4")(x)
         
-        # Output layer configuration based on loss function
+        # Output layer and loss configuration
         if loss_fn == "binary_crossentropy":
-            # Binary case (Y or C model)
             final_activation = 'sigmoid'
             output_units = 1 if is_censoring else J
             
-            # Regular binary case (C model)
-            loss = tf.keras.losses.BinaryCrossentropy(
-                from_logits=False,
-                label_smoothing=0.1,
-                reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE
-            )
-
             if is_censoring:
-                # Special handling for compliance model with class imbalance
-                pos_ratio = tf.constant(0.02, dtype=tf.float32)  # Based on observed data
-
+                # Configure censoring model with focal loss
+                if 'target' in y_data.columns:
+                    pos_ratio = float(np.sum(y_data['target'].values)) / len(y_data['target'])
+                else:
+                    pos_ratio = 0.5
+                
+                pos_ratio = np.clip(pos_ratio, 0.01, 0.99)
+                alpha = max(0.1, min(0.9, pos_ratio))
+                
+                loss = get_focal_loss(gamma=2.0, alpha=alpha)
+                
                 outputs = tf.keras.layers.Dense(
                     units=output_units,
                     activation=final_activation,
                     kernel_initializer='glorot_uniform',
-                    kernel_regularizer=l2(0.001),
-                    bias_initializer=tf.keras.initializers.Constant(np.log(pos_ratio/(1-pos_ratio))),
+                    kernel_regularizer=l2(0.01),
+                    bias_initializer=tf.keras.initializers.Constant(
+                        np.log(max(1e-5, pos_ratio)/(1.0 - min(pos_ratio, 0.99999)))
+                    ),
                     name="output_dense"
                 )(x)
-
-                metrics = [
-                    tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.3),
-                    tf.keras.metrics.AUC(name='auc', curve='PR', from_logits=False),
-                    tf.keras.metrics.Precision(name='precision', thresholds=0.3),
-                    tf.keras.metrics.Recall(name='recall', thresholds=0.3)
-                ]
-                class_weight = {0: 1.0, 1: 1/0.0062}  # Inverse of positive class ratio
-            else:
-                outputs = tf.keras.layers.Dense(
-                    units=output_units,
-                    activation=final_activation,
-                    kernel_initializer='glorot_uniform',
-                    kernel_regularizer=l2(0.001),
-                    name="output_dense"
-                )(x)
-
+                
                 metrics = [
                     tf.keras.metrics.BinaryAccuracy(name='accuracy'),
-                    tf.keras.metrics.AUC(name='auc'),
-                    tf.keras.metrics.Precision(name='precision'),
+                    tf.keras.metrics.AUC(name='auc', from_logits=False),
+                    tf.keras.metrics.Precision(name='precision', thresholds=0.3),
                     tf.keras.metrics.Recall(name='recall')
                 ]
-                class_weight = None
                 
+                # Set censoring class weights
+                neg_weight = 1.0
+                pos_weight = (1.0 - pos_ratio) / (pos_ratio + 1e-7)
+                class_weight = {0: neg_weight, 1: pos_weight}
+                
+            else:
+                # Regular binary classification (Y model)
+                x = tf.keras.layers.Dense(
+                    units=32,
+                    activation='relu',
+                    kernel_regularizer=l2(0.01),
+                    name="pre_output"
+                )(x)
+                
+                outputs = tf.keras.layers.Dense(
+                    units=output_units,
+                    activation=final_activation,
+                    kernel_initializer='glorot_normal',
+                    kernel_regularizer=l2(0.01),
+                    name="output_dense"
+                )(x)
+                
+                loss = tf.keras.losses.BinaryCrossentropy(
+                    from_logits=False,
+                    label_smoothing=0.1,
+                    reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE
+                )
+                
+                metrics = [
+                    tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
+                    tf.keras.metrics.AUC(name='auc', curve='PR'),
+                    tf.keras.metrics.Precision(name='precision'),
+                    tf.keras.metrics.Recall(name='recall'),
+                    tf.keras.metrics.BinaryCrossentropy(name='cross_entropy')
+                ]
+  
         else:
             # Categorical case (A model)
             final_activation = 'softmax'
             output_units = J
             
-            x = tf.keras.layers.Dense(n_hidden//2, activation='relu')(x)
+           # Add intermediate layer to preserve individual variations
+            x = tf.keras.layers.Dense(
+                units=n_hidden//2,
+                activation='relu',
+                kernel_regularizer=l2(0.001),
+                name="pre_output"
+            )(x)
 
             outputs = tf.keras.layers.Dense(
                 units=output_units,
                 activation=final_activation,
                 kernel_initializer='glorot_uniform',
                 kernel_regularizer=l2(0.001),
+                use_bias=True, # Enable bias for better capacity
                 name="output_dense"
             )(x)
             
@@ -951,33 +1077,30 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                 from_logits=False
             )
             
-            # Appropriate metrics for categorical case
             metrics = [
                 tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy'),
                 tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy')
             ]
-            class_weight = None
         
         # Create model
         model = Model(inputs=inputs, outputs=outputs, name='lstm_model')
 
         lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            first_decay_steps=steps_per_epoch * 2,  # Decay over 2 epochs
-            t_mul=2.0,  # Double the decay period after each restart
-            m_mul=0.9,  # Scale learning rate by 0.9 after each restart
-            alpha=0.1   # Minimum learning rate will be 10% of initial
+            first_decay_steps=steps_per_epoch * 2,
+            t_mul=2.0,
+            m_mul=0.9,
+            alpha=0.1
         )
 
-        # Create optimizer with schedule
         optimizer = tf.keras.optimizers.AdamW(
             learning_rate=lr_schedule,
-            weight_decay=0.01,
+            weight_decay=0.001,
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-7,
             clipnorm=1.0,
-            amsgrad=True  # Enable AMSGrad
+            amsgrad=True
         )
         
         # Compile model with appropriate loss and metrics
@@ -990,17 +1113,3 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         )
         
         return model
-
-# Helper function to check if targets are binary
-def is_binary_target(y_data):
-    """Check if the target data is binary (0/1) or categorical."""
-    if 'target' in y_data.columns:
-        unique_values = np.unique(y_data['target'])
-        return set(unique_values).issubset({0, 1})
-    else:
-        # Check treatment columns
-        treatment_cols = [col for col in y_data.columns if col.startswith('A')]
-        if not treatment_cols:
-            return False
-        treatment_values = y_data[treatment_cols].values
-        return np.array_equal(treatment_values, treatment_values.astype(bool).astype(float))

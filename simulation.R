@@ -593,7 +593,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       out_activation = "softmax",
       loss_fn = "sparse_categorical_crossentropy",
       output_dir = output_dir,
-      J = J  # Number of treatment classes (6)
+      J = J,  # Number of treatment classes (6)
+      gbound=gbound,
+      ybound=ybound
     )
     
     lstm_A_preds <- c(replicate((window.size), lstm_A_preds[[window.size+1]], simplify = FALSE), lstm_A_preds[(window.size+1):length(lstm_A_preds)]) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1    
@@ -719,7 +721,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         out_activation = "sigmoid",
         loss_fn = "binary_crossentropy",
         output_dir = output_dir,
-        J = J
+        J = J,
+        gbound=gbound,
+        ybound=ybound
       )
       
       # Handle potential list output
@@ -863,6 +867,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       loss_fn = "binary_crossentropy", 
       output_dir = output_dir,
       J = 1,
+      gbound=gbound,
+      ybound=ybound,
       is_censoring = TRUE
     )
     
@@ -1044,6 +1050,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       loss_fn = "binary_crossentropy", # Always binary crossentropy for Y
       output_dir = output_dir,
       J = 1, # J should be 1 for binary Y
+      gbound=gbound,
+      ybound=ybound,
       is_censoring = FALSE
     )
     
@@ -1245,12 +1253,13 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     C_preds_processed <- safe_get_cuml_preds(C_preds, n_ids)
     print("C predictions processed")
     
-    tmle_contrasts <- process_time_points(
+    results <- process_time_points(
       initial_model_for_Y = initial_model_for_Y$preds,
       initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
       tmle_covars_Y = tmle_covars_Y,
       g_preds_processed = g_preds_processed,
+      g_preds_bin_processed = g_preds_bin_processed,
       C_preds_processed = C_preds_processed,
       treatments = treatments,
       obs.rules = obs.rules,
@@ -1262,23 +1271,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       debug = debug
     )
 
-    # Similar update for binary case
-    tmle_contrasts_bin <- process_time_points(
-      initial_model_for_Y = initial_model_for_Y$preds,
-      initial_model_for_Y_data = initial_model_for_Y$data,
-      tmle_rules = tmle_rules,
-      tmle_covars_Y = tmle_covars_Y,
-      g_preds_processed = g_preds_bin_processed,
-      C_preds_processed = C_preds_processed,
-      treatments = treatments,
-      obs.rules = obs.rules,
-      gbound = gbound,
-      ybound = ybound,
-      t_end = t.end,
-      window_size = window_size,
-      cores = 1,  # Sequential processing
-      debug = debug
-    )
+    tmle_contrasts <- results[["multinomial"]]
+    tmle_contrasts_bin <- results[["binary"]]
   }
   
   if(estimator=='tmle-lstm'){
