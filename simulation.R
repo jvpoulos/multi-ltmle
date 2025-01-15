@@ -1267,7 +1267,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       ybound = ybound,
       t_end = t.end,
       window_size = window_size,
-      cores = 1,  # Sequential processing
+      cores = 1, 
       debug = debug
     )
 

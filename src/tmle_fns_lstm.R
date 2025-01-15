@@ -8,133 +8,325 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
                                 g_preds_processed, g_preds_bin_processed, C_preds_processed,
                                 treatments, obs.rules, 
                                 gbound, ybound, t_end, window_size,
-                                cores = 1, debug = FALSE, chunk_size = NULL) {
+                                cores = 1, debug = FALSE) {
   
   # Initialize results
   n_ids <- length(unique(initial_model_for_Y_data$ID))
   n_rules <- length(tmle_rules)
-  tmle_contrasts <- vector("list", t_end)
-  tmle_contrasts_bin <- vector("list", t_end)
   
   if(debug) {
     cat(sprintf("\nProcessing %d IDs with %d rules\n", n_ids, n_rules))
+    cat(sprintf("Using %d cores\n", cores))
   }
   
-  # Pre-allocate results for both multinomial and binary cases
-  for(t in 1:t_end) {
-    tmle_contrasts[[t]] <- list(
-      "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
-      "epsilon" = rep(0, n_rules),
-      "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
-      "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
-      "Y" = rep(ybound[1], n_ids)
-    )
-    tmle_contrasts_bin[[t]] <- list(
-      "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
-      "epsilon" = rep(0, n_rules),
-      "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
-      "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
-      "Y" = rep(ybound[1], n_ids)
-    )
-  }
+  # Pre-allocate list of time points to process
+  time_points <- 1:t_end
   
-  # Process each time point
-  for(t in 1:t_end) {
-    if(debug) cat(sprintf("\nProcessing time point %d/%d\n", t, t_end))
-    time_start <- Sys.time()
+  # Setup parallel processing
+  if(cores > 1) {
+    cl <- parallel::makeCluster(cores)
     
-    # Process multinomial predictions
-    current_g_preds <- process_g_preds(g_preds_processed, t, n_ids, J, gbound, debug)
-    current_g_preds_list <- lapply(1:J, function(j) matrix(current_g_preds[,j], ncol=1))
-    
-    # Process binary predictions
-    current_g_preds_bin <- process_g_preds(g_preds_bin_processed, t, n_ids, J, gbound, debug)
-    current_g_preds_bin_list <- lapply(1:J, function(j) matrix(current_g_preds_bin[,j], ncol=1))
-    
-    # Get shared components (only need to compute once)
-    current_c_preds <- get_c_preds(C_preds_processed, t, n_ids, gbound)
-    current_y_preds <- get_y_preds(initial_model_for_Y, t, n_ids, ybound, debug)
-    
-    # Process both cases simultaneously
-    tryCatch({
-      # Multinomial case
-      result_multi <- getTMLELongLSTM(
-        initial_model_for_Y_preds = current_y_preds,
-        initial_model_for_Y_data = initial_model_for_Y_data,
-        tmle_rules = tmle_rules,
-        tmle_covars_Y = tmle_covars_Y,
-        g_preds_bounded = current_g_preds_list,
-        C_preds_bounded = current_c_preds,
-        obs.treatment = treatments[[min(t + 1, length(treatments))]],
-        obs.rules = obs.rules[[min(t, length(obs.rules))]],
-        gbound = gbound,
-        ybound = ybound,
-        t_end = t_end,
-        window_size = window_size,
-        debug = debug
-      )
-      
-      # Binary case 
-      result_bin <- getTMLELongLSTM(
-        initial_model_for_Y_preds = current_y_preds,
-        initial_model_for_Y_data = initial_model_for_Y_data,
-        tmle_rules = tmle_rules,
-        tmle_covars_Y = tmle_covars_Y,
-        g_preds_bounded = current_g_preds_bin_list,
-        C_preds_bounded = current_c_preds,
-        obs.treatment = treatments[[min(t + 1, length(treatments))]],
-        obs.rules = obs.rules[[min(t, length(obs.rules))]],
-        gbound = gbound,
-        ybound = ybound,
-        t_end = t_end,
-        window_size = window_size,
-        debug = debug
-      )
-      
-      # Store results for both cases
-      store_results(tmle_contrasts[[t]], result_multi)
-      store_results(tmle_contrasts_bin[[t]], result_bin)
-      
-    }, error = function(e) {
-      if(debug) {
-        cat(sprintf("\nError processing time point %d: %s\n", t, conditionMessage(e)))
-        cat("Using default values\n")
+    # Set up debug output at cluster level first
+    parallel::clusterEvalQ(cl, {
+      debug_output <- function(...) {
+        if(debug) {
+          msg <- paste0(...)
+          cat(msg, "\n", file=stderr())
+          flush(stderr())
+        }
       }
-      # Use default values for both cases
-      use_default_values(tmle_contrasts[[t]], ybound)
-      use_default_values(tmle_contrasts_bin[[t]], ybound)
+      
+      # Define debug_print using debug_output
+      debug_print <- function(...) {
+        debug_output(...)
+      }
     })
     
-    # Calculate IPTW weights and means for both cases
-    tryCatch({
-      current_rules <- obs.rules[[min(t, length(obs.rules))]]
+    # Export debug flag first
+    parallel::clusterExport(cl, "debug")
+    
+    # Export main functions
+    parallel::clusterExport(cl, c("getTMLELongLSTM", "process_g_preds", 
+                                  "get_c_preds", "get_y_preds", "store_results", 
+                                  "use_default_values", "calculate_iptw", 
+                                  "log_iptw_error", "log_completion",
+                                  "static_mtp_lstm", "dynamic_mtp_lstm", 
+                                  "stochastic_mtp_lstm"))
+    
+    # Create and export environment variables
+    cluster_env <- list(
+      debug = debug,
+      J = length(g_preds_processed[[1]][[1]]),
+      n_ids = n_ids,
+      n_rules = n_rules,
+      t_end = t_end,
+      window_size = window_size,
+      initial_model_for_Y = initial_model_for_Y,
+      initial_model_for_Y_data = initial_model_for_Y_data,
+      tmle_rules = tmle_rules,
+      tmle_covars_Y = tmle_covars_Y,
+      g_preds_processed = g_preds_processed,
+      g_preds_bin_processed = g_preds_bin_processed,
+      C_preds_processed = C_preds_processed,
+      treatments = treatments,
+      obs.rules = obs.rules,
+      gbound = gbound,
+      ybound = ybound
+    )
+    
+    # Export variables
+    parallel::clusterExport(cl, names(cluster_env), envir=list2env(cluster_env))
+    
+    # Load required packages
+    parallel::clusterEvalQ(cl, {
+      library(stats)
+    })
+    
+    # Process time points in parallel
+    results <- parallel::parLapply(cl, time_points, function(t) {
+      # Process single time point (same code as before)
+      if(debug) debug_print(sprintf("\nProcessing time point %d/%d\n", t, t_end))
+      time_start <- Sys.time()
       
-      # Multinomial IPTW
-      iptw_result_multi <- calculate_iptw(current_g_preds, current_rules, 
-                                          tmle_contrasts[[t]]$Qstar_gcomp, 
+      # Initialize results for this time point
+      tmle_contrast <- list(
+        "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "epsilon" = rep(0, n_rules),
+        "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
+        "Y" = rep(ybound[1], n_ids)
+      )
+      tmle_contrast_bin <- list(
+        "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "epsilon" = rep(0, n_rules),
+        "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
+        "Y" = rep(ybound[1], n_ids)
+      )
+      
+      # Process multinomial predictions
+      current_g_preds <- process_g_preds(g_preds_processed, t, n_ids, J, gbound, debug)
+      current_g_preds_list <- lapply(1:J, function(j) matrix(current_g_preds[,j], ncol=1))
+      
+      # Process binary predictions
+      current_g_preds_bin <- process_g_preds(g_preds_bin_processed, t, n_ids, J, gbound, debug)
+      current_g_preds_bin_list <- lapply(1:J, function(j) matrix(current_g_preds_bin[,j], ncol=1))
+      
+      # Get shared components
+      current_c_preds <- get_c_preds(C_preds_processed, t, n_ids, gbound)
+      current_y_preds <- get_y_preds(initial_model_for_Y, t, n_ids, ybound, debug)
+      
+      # Process both cases
+      tryCatch({
+        # Multinomial case
+        result_multi <- getTMLELongLSTM(
+          initial_model_for_Y_preds = current_y_preds,
+          initial_model_for_Y_data = initial_model_for_Y_data,
+          tmle_rules = tmle_rules,
+          tmle_covars_Y = tmle_covars_Y,
+          g_preds_bounded = current_g_preds_list,
+          C_preds_bounded = current_c_preds,
+          obs.treatment = treatments[[min(t + 1, length(treatments))]],
+          obs.rules = obs.rules[[min(t, length(obs.rules))]],
+          gbound = gbound,
+          ybound = ybound,
+          t_end = t_end,
+          window_size = window_size,
+          debug = debug
+        )
+        
+        # Binary case 
+        result_bin <- getTMLELongLSTM(
+          initial_model_for_Y_preds = current_y_preds,
+          initial_model_for_Y_data = initial_model_for_Y_data,
+          tmle_rules = tmle_rules,
+          tmle_covars_Y = tmle_covars_Y,
+          g_preds_bounded = current_g_preds_bin_list,
+          C_preds_bounded = current_c_preds,
+          obs.treatment = treatments[[min(t + 1, length(treatments))]],
+          obs.rules = obs.rules[[min(t, length(obs.rules))]],
+          gbound = gbound,
+          ybound = ybound,
+          t_end = t_end,
+          window_size = window_size,
+          debug = debug
+        )
+        
+        # Store results
+        store_results(tmle_contrast, result_multi)
+        store_results(tmle_contrast_bin, result_bin)
+        
+      }, error = function(e) {
+        if(debug) {
+          debug_print(sprintf("\nError processing time point %d: %s\n", t, conditionMessage(e)))
+          debug_print("Using default values\n")
+        }
+        use_default_values(tmle_contrast, ybound)
+        use_default_values(tmle_contrast_bin, ybound)
+      })
+      
+      # Calculate IPTW weights and means
+      tryCatch({
+        current_rules <- obs.rules[[min(t, length(obs.rules))]]
+        
+        # Multinomial IPTW
+        iptw_result_multi <- calculate_iptw(current_g_preds, current_rules, 
+                                            tmle_contrast$Qstar_gcomp, 
+                                            n_rules, gbound, debug)
+        tmle_contrast$Qstar_iptw <- iptw_result_multi
+        
+        # Binary IPTW
+        iptw_result_bin <- calculate_iptw(current_g_preds_bin, current_rules,
+                                          tmle_contrast_bin$Qstar_gcomp,
                                           n_rules, gbound, debug)
-      tmle_contrasts[[t]]$Qstar_iptw <- iptw_result_multi
+        tmle_contrast_bin$Qstar_iptw <- iptw_result_bin
+        
+      }, error = function(e) {
+        if(debug) log_iptw_error(e, current_g_preds, current_rules)
+        tmle_contrast$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
+        tmle_contrast_bin$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
+      })
       
-      # Binary IPTW
-      iptw_result_bin <- calculate_iptw(current_g_preds_bin, current_rules,
-                                        tmle_contrasts_bin[[t]]$Qstar_gcomp,
-                                        n_rules, gbound, debug)
-      tmle_contrasts_bin[[t]]$Qstar_iptw <- iptw_result_bin
+      if(debug) {
+        time_end <- Sys.time()
+        debug_print(sprintf("\nTime point %d completed in %.2f s\n", 
+                            t, as.numeric(difftime(time_end, time_start, units="secs"))))
+      }
       
-    }, error = function(e) {
-      if(debug) log_iptw_error(e, current_g_preds, current_rules)
-      tmle_contrasts[[t]]$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
-      tmle_contrasts_bin[[t]]$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
+      # Return results for this time point
+      list(multinomial = tmle_contrast, 
+           binary = tmle_contrast_bin)
     })
     
-    # Clean up
-    rm(current_g_preds, current_g_preds_bin, current_c_preds, current_y_preds)
-    gc()
+    parallel::stopCluster(cl)
     
-    if(debug) log_completion(t, time_start, tmle_contrasts[[t]], tmle_contrasts_bin[[t]])
+  } else {
+    # Sequential processing 
+    results <- lapply(time_points, function(t) {
+      # Process single time point
+      if(debug) cat(sprintf("\nProcessing time point %d/%d\n", t, t_end))
+      time_start <- Sys.time()
+      
+      # Initialize results for this time point
+      tmle_contrast <- list(
+        "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "epsilon" = rep(0, n_rules),
+        "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
+        "Y" = rep(ybound[1], n_ids)
+      )
+      tmle_contrast_bin <- list(
+        "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "epsilon" = rep(0, n_rules),
+        "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+        "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
+        "Y" = rep(ybound[1], n_ids)
+      )
+      
+      # Process multinomial predictions
+      current_g_preds <- process_g_preds(g_preds_processed, t, n_ids, J, gbound, debug)
+      current_g_preds_list <- lapply(1:J, function(j) matrix(current_g_preds[,j], ncol=1))
+      
+      # Process binary predictions  
+      current_g_preds_bin <- process_g_preds(g_preds_bin_processed, t, n_ids, J, gbound, debug)
+      current_g_preds_bin_list <- lapply(1:J, function(j) matrix(current_g_preds_bin[,j], ncol=1))
+      
+      # Get shared components
+      current_c_preds <- get_c_preds(C_preds_processed, t, n_ids, gbound)
+      current_y_preds <- get_y_preds(initial_model_for_Y, t, n_ids, ybound, debug)
+      
+      # Process both cases
+      tryCatch({
+        # Multinomial case
+        result_multi <- getTMLELongLSTM(
+          initial_model_for_Y_preds = current_y_preds,
+          initial_model_for_Y_data = initial_model_for_Y_data,
+          tmle_rules = tmle_rules,
+          tmle_covars_Y = tmle_covars_Y,
+          g_preds_bounded = current_g_preds_list,
+          C_preds_bounded = current_c_preds,
+          obs.treatment = treatments[[min(t + 1, length(treatments))]],
+          obs.rules = obs.rules[[min(t, length(obs.rules))]],
+          gbound = gbound,
+          ybound = ybound,
+          t_end = t_end,
+          window_size = window_size,
+          debug = debug
+        )
+        
+        # Binary case 
+        result_bin <- getTMLELongLSTM(
+          initial_model_for_Y_preds = current_y_preds,
+          initial_model_for_Y_data = initial_model_for_Y_data,
+          tmle_rules = tmle_rules,
+          tmle_covars_Y = tmle_covars_Y,
+          g_preds_bounded = current_g_preds_bin_list,
+          C_preds_bounded = current_c_preds,
+          obs.treatment = treatments[[min(t + 1, length(treatments))]],
+          obs.rules = obs.rules[[min(t, length(obs.rules))]],
+          gbound = gbound,
+          ybound = ybound,
+          t_end = t_end,
+          window_size = window_size,
+          debug = debug
+        )
+        
+        # Store results
+        store_results(tmle_contrast, result_multi)
+        store_results(tmle_contrast_bin, result_bin)
+        
+      }, error = function(e) {
+        if(debug) {
+          cat(sprintf("\nError processing time point %d: %s\n", t, conditionMessage(e)))
+          cat("Using default values\n")
+        }
+        use_default_values(tmle_contrast, ybound)
+        use_default_values(tmle_contrast_bin, ybound)
+      })
+      
+      # Calculate IPTW weights and means
+      tryCatch({
+        current_rules <- obs.rules[[min(t, length(obs.rules))]]
+        
+        # Multinomial IPTW
+        iptw_result_multi <- calculate_iptw(current_g_preds, current_rules, 
+                                            tmle_contrast$Qstar_gcomp, 
+                                            n_rules, gbound, debug)
+        tmle_contrast$Qstar_iptw <- iptw_result_multi
+        
+        # Binary IPTW
+        iptw_result_bin <- calculate_iptw(current_g_preds_bin, current_rules,
+                                          tmle_contrast_bin$Qstar_gcomp,
+                                          n_rules, gbound, debug)
+        tmle_contrast_bin$Qstar_iptw <- iptw_result_bin
+        
+      }, error = function(e) {
+        if(debug) log_iptw_error(e, current_g_preds, current_rules)
+        tmle_contrast$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
+        tmle_contrast_bin$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
+      })
+      
+      if(debug) {
+        time_end <- Sys.time()
+        cat(sprintf("\nTime point %d completed in %.2f s\n", 
+                    t, as.numeric(difftime(time_end, time_start, units="secs"))))
+      }
+      
+      # Return results for this time point
+      list(multinomial = tmle_contrast,
+           binary = tmle_contrast_bin)
+    })
   }
   
-  # Return both sets of results
+  # Restructure results into final format
+  tmle_contrasts <- vector("list", t_end)
+  tmle_contrasts_bin <- vector("list", t_end) 
+  
+  for(t in 1:t_end) {
+    tmle_contrasts[[t]] <- results[[t]]$multinomial
+    tmle_contrasts_bin[[t]] <- results[[t]]$binary
+  }
+  
   return(list(
     "multinomial" = tmle_contrasts,
     "binary" = tmle_contrasts_bin
@@ -143,31 +335,58 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
 
 # Helper functions
 process_g_preds <- function(preds_processed, t, n_ids, J, gbound, debug) {
-  current_preds <- if(!is.null(preds_processed) && t <= length(preds_processed)) {
+  if(!is.null(preds_processed) && t <= length(preds_processed)) {
     preds <- preds_processed[[t]]
+    
     if(is.null(preds)) {
-      matrix(1/J, nrow=n_ids, ncol=J)
-    } else {
-      if(is.matrix(preds)) {
-        if(ncol(preds) != J) {
-          matrix(rep(preds, J), ncol=J)
-        } else {
-          preds
+      if(debug) cat("No predictions for time", t, "using uniform\n")
+      return(matrix(1/J, nrow=n_ids, ncol=J))
+    }
+    
+    # Convert to matrix with proper dimensions
+    if(!is.matrix(preds)) {
+      if(debug) cat("Converting predictions to matrix\n")
+      # Ensure nrow=n_ids is first dimension
+      preds <- matrix(preds, nrow=n_ids, byrow=FALSE)
+    }
+    
+    # Ensure dimensions are correct
+    if(ncol(preds) != J) {
+      if(debug) cat("Adjusting matrix dimensions\n")
+      if(ncol(preds) == 1 && J > 1) {
+        # Expand to J columns for multinomial case
+        expanded <- matrix(0, nrow=n_ids, ncol=J)
+        treatments <- round(preds[,1])
+        for(i in 1:n_ids) {
+          if(treatments[i] >= 0 && treatments[i] < J) {
+            expanded[i,] <- 0.1/(J-1)
+            expanded[i, treatments[i] + 1] <- 0.9
+          } else {
+            expanded[i,] <- 1/J
+          }
         }
-      } else {
-        matrix(rep(preds, J), ncol=J)
+        preds <- expanded
       }
     }
+    
+    # Normalize probabilities
+    if(debug) cat("Normalizing probabilities\n")
+    preds <- t(apply(preds, 1, function(row) {
+      if(any(!is.finite(row))) return(rep(1/J, J))
+      row <- pmin(pmax(row, gbound[1]), gbound[2])
+      row / sum(row)
+    }))
+    
+    if(debug) {
+      cat("Final prediction matrix dimensions:", paste(dim(preds), collapse=" x "), "\n")
+      cat("Row sums range:", paste(range(rowSums(preds)), collapse="-"), "\n")
+    }
+    
+    return(preds)
   } else {
-    matrix(1/J, nrow=n_ids, ncol=J)
+    if(debug) cat("No predictions available, using uniform\n") 
+    return(matrix(1/J, nrow=n_ids, ncol=J))
   }
-  
-  # Normalize
-  t(apply(current_preds, 1, function(row) {
-    if(any(!is.finite(row))) return(rep(1/J, J))
-    row <- pmin(pmax(row, gbound[1]), gbound[2])
-    row / sum(row)
-  }))
 }
 
 get_c_preds <- function(C_preds_processed, t, n_ids, gbound) {
@@ -193,20 +412,26 @@ get_y_preds <- function(initial_model_for_Y, t, n_ids, ybound, debug) {
           col_idx <- min(t, ncol(preds))
           preds <- preds[,col_idx]
         }
+        # Use much less aggressive bounds
         extreme_idx <- preds < 0.001 | preds > 0.999
-        preds[extreme_idx] <- pmin(pmax(preds[extreme_idx], 0.001), 0.999)
+        preds[extreme_idx] <- pmin(pmax(preds[extreme_idx], 0.1), 0.9)
         matrix(preds, nrow=n_ids)
       } else {
-        matrix(0.5, nrow=n_ids, ncol=1)
+        # Add more variation in defaults
+        matrix(runif(n_ids, 0.3, 0.7), nrow=n_ids, ncol=1)
       }
     } else {
-      matrix(initial_model_for_Y, nrow=n_ids)
+      # Keep more variation
+      vals <- as.numeric(initial_model_for_Y)
+      matrix(pmin(pmax(vals, ybound[1]), ybound[2]), nrow=n_ids)
     }
   }, error = function(e) {
     if(debug) cat("Error getting Y predictions:", conditionMessage(e), "\n")
-    matrix(0.5, nrow=n_ids, ncol=1)
+    # More varied defaults
+    matrix(runif(n_ids, 0.3, 0.7), nrow=n_ids, ncol=1)
   })
-  pmin(pmax(result, ybound[1]), ybound[2])
+  # Less aggressive final bounds
+  pmin(pmax(result, 0.1), 0.9)
 }
 
 store_results <- function(tmle_contrast, result) {
@@ -225,22 +450,29 @@ use_default_values <- function(tmle_contrast, ybound) {
 }
 
 calculate_iptw <- function(g_preds, rules, qstar_gcomp, n_rules, gbound, debug) {
+  if(!is.matrix(g_preds)) {
+    g_preds <- matrix(g_preds, ncol=ncol(rules))
+  }
+  # Ensure dimensions match
+  if(nrow(g_preds) != nrow(rules)) {
+    g_preds <- t(g_preds)
+  }
+  
   iptw_weights <- matrix(0, nrow=nrow(g_preds), ncol=n_rules)
   iptw_means <- numeric(n_rules)
   
   for(rule_idx in 1:n_rules) {
     valid_idx <- !is.na(rules[,rule_idx]) & rules[,rule_idx] == 1
     if(any(valid_idx)) {
-      # Calculate stabilized weights with better bounds
       marginal_prob <- mean(rules[,rule_idx] == 1, na.rm=TRUE)
       weights <- rep(0, nrow(g_preds))
-      rule_probs <- pmin(pmax(g_preds[,rule_idx], gbound[1]), gbound[2])
-      weights[valid_idx] <- marginal_prob / rule_probs[valid_idx]
-      weights <- pmin(weights, 5)  # Less aggressive truncation
+      rule_probs <- pmin(pmax(g_preds[valid_idx,min(rule_idx,ncol(g_preds))], gbound[1]), gbound[2])
+      weights[valid_idx] <- marginal_prob / rule_probs
+      weights <- pmin(weights, 10)  # More conservative bound
       
       iptw_weights[,rule_idx] <- weights
       
-      # Calculate weighted mean with better handling
+      # Compute weighted mean
       outcomes <- qstar_gcomp[,rule_idx]
       valid_outcomes <- valid_idx & !is.na(outcomes)
       if(any(valid_outcomes)) {
@@ -252,10 +484,6 @@ calculate_iptw <- function(g_preds, rules, qstar_gcomp, n_rules, gbound, debug) 
       }
     }
   }
-  
-  # Ensure means are within bounds but not uniform
-  iptw_means[iptw_means < 0.1] <- 0.1
-  iptw_means[is.na(iptw_means)] <- 0.5
   
   return(matrix(iptw_means, nrow=1))
 }
@@ -279,62 +507,59 @@ log_completion <- function(t, time_start, multi_result, bin_result) {
 }
 
 getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
-                            tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded, 
+                            tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded,
                             obs.treatment, obs.rules, gbound, ybound, t_end, window_size = 7,
                             debug = FALSE) {
   
   final_result <- tryCatch({
-    # Initialize dimensions
     if(is.null(initial_model_for_Y_data) || is.null(tmle_rules)) {
       stop("Missing required data or rules")
-    }
- 
-    # Ensure valid_indices is not NULL
-    valid_indices <- !is.na(rule_result$ID)
-    if(length(valid_indices) == 0) {
-      return(list(
-        "Qstar" = matrix(0.5, nrow=n_ids, ncol=n_rules),
-        "epsilon" = rep(0, n_rules),
-        "Qstar_gcomp" = matrix(0.5, nrow=n_ids, ncol=n_rules),
-        "Qstar_iptw" = matrix(0.5, nrow=1, ncol=n_rules),
-        "Y" = rep(0.5, n_ids)
-      ))
     }
     
     n_ids <- length(unique(initial_model_for_Y_data$ID))
     n_rules <- length(tmle_rules)
-    J <- length(g_preds_bounded)  # Length of the list is J
+    J <- length(g_preds_bounded)
+    is_binary_case <- J == 1
     
-    if(n_ids == 0 || n_rules == 0 || J == 0) {
-      stop("Invalid dimensions: n_ids=", n_ids, ", n_rules=", n_rules, ", J=", J)
+    if(debug) {
+      cat("Processing", n_ids, "IDs with", n_rules, "rules\n")
+      cat("J =", J, "\n")
     }
     
-    # Initialize predicted_Y with actual predictions
+    # Initialize matrices
     predicted_Y <- matrix(NA, nrow=n_ids, ncol=n_rules)
-    for(i in seq_len(n_rules)) {
-      if(is.matrix(initial_model_for_Y_preds)) {
-        predicted_Y[,i] <- initial_model_for_Y_preds[,1]
-      } else {
-        predicted_Y[,i] <- initial_model_for_Y_preds
-      }
-    }
-    # Apply bounds to predictions
-    predicted_Y <- pmin(pmax(predicted_Y, 0.1), 0.9)
-    
-    # Initialize predict_Qstar with same predictions
-    predict_Qstar <- predicted_Y
-    
-    # Initialize epsilon
+    predict_Qstar <- matrix(NA, nrow=n_ids, ncol=n_rules)
     epsilon <- rep(0, n_rules)
     
-    # Calculate observed outcomes
-    observed_Y <- if("Y" %in% colnames(initial_model_for_Y_data)) {
-      y_data <- initial_model_for_Y_data 
-      y_values <- y_data$Y
-      y_values[is.na(y_values)] <- 0.5
-      pmin(pmax(y_values[match(unique(initial_model_for_Y_data$ID), y_data$ID)], 0.1), 0.9)
+    # Get observed outcomes
+    observed_Y <- rep(NA, n_ids)
+    if("Y" %in% colnames(initial_model_for_Y_data)) {
+      y_values <- initial_model_for_Y_data$Y
+      y_matched <- match(unique(initial_model_for_Y_data$ID),
+                         initial_model_for_Y_data$ID)
+      observed_Y <- y_values[y_matched]
+    }
+    observed_Y[is.na(observed_Y)] <- 0.5
+    
+    # Construct g_matrix based on case
+    g_matrix <- if(is_binary_case) {
+      # Binary case: construct P(A=1)
+      probs <- g_preds_bounded[[1]]
+      if(is.matrix(probs)) probs <- probs[,1]
+      # Bound probabilities, but allow more extreme values
+      probs <- pmin(pmax(probs, 0.01), 0.99)
+      matrix(probs, ncol=1)
     } else {
-      rep(0.5, n_ids)
+      # Multinomial case
+      g_mat <- matrix(0, nrow=n_ids, ncol=J)
+      for(j in 1:J) {
+        probs <- g_preds_bounded[[j]]
+        if(is.matrix(probs)) probs <- probs[,1]
+        g_mat[,j] <- pmin(pmax(probs, gbound[1]), gbound[2])
+      }
+      # Normalize probabilities
+      g_mat <- t(apply(g_mat, 1, function(row) row/sum(row)))
+      g_mat
     }
     
     # Process each rule
@@ -344,57 +569,101 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       valid_indices <- valid_indices[!is.na(valid_indices)]
       
       if(length(valid_indices) > 0) {
-        # Convert list of treatment probabilities to matrix
-        g_matrix <- do.call(cbind, lapply(g_preds_bounded, function(x) x[valid_indices,1]))
+        # Get initial predictions for this rule
+        initial_preds <- if(is.matrix(initial_model_for_Y_preds)) {
+          if(ncol(initial_model_for_Y_preds) >= i) {
+            initial_model_for_Y_preds[valid_indices, i]
+          } else {
+            initial_model_for_Y_preds[valid_indices, 1]
+          }
+        } else {
+          initial_model_for_Y_preds[valid_indices]
+        }
         
-        # Get rule indicators
+        # Get rule-specific treatments
+        rule_treatments <- as.numeric(rule_result$A0)
+        
+        # Set initial predictions with bounds
+        predicted_Y[valid_indices, i] <- pmin(pmax(initial_preds, ybound[1]), ybound[2])
+        predict_Qstar[valid_indices, i] <- predicted_Y[valid_indices, i]
+        
+        # Process rule indicators
         rule_indicators <- obs.rules[, i]
-        rule_indicators <- rule_indicators[valid_indices]
+        valid_rules <- !is.na(rule_indicators) & rule_indicators == 1
         
-        # Calculate H (clever covariate) without C_preds_bounded
+        # Calculate clever covariate
         H <- numeric(n_ids)
-        H[valid_indices] <- rule_indicators / rowSums(g_matrix)  # Removed C_preds_bounded
-        H <- pmin(pmax(H, -3), 3)  # Less aggressive bounds
+        for(idx in which(valid_rules)) {
+          if(rule_treatments[idx] > 0 && rule_treatments[idx] <= J) {
+            if(is_binary_case) {
+              # Binary case: use logit-based clever covariate
+              p1 <- g_matrix[idx, 1]
+              p0 <- 1 - p1
+              H[idx] <- if(rule_treatments[idx] == 1) 1/p1 else -1/p0
+            } else {
+              # Multinomial case: use treatment-specific probability
+              H[idx] <- 1/g_matrix[idx, rule_treatments[idx]]
+            }
+          }
+        }
         
-        # Less restrictive valid data filtering
-        valid_data_indices <- rule_indicators == 1  # Only require rule indicators
+        # Apply case-specific bounds to clever covariate
+        H <- if(is_binary_case) {
+          pmin(pmax(H, -4), 4)  # Wider bounds for binary
+        } else {
+          pmin(pmax(H, -2), 2)  # Standard bounds for multinomial
+        }
         
-        if(any(valid_data_indices)) {
+        # Targeting step
+        valid_idx <- which(valid_rules)
+        if(length(valid_idx) >= 5) {
+          # Current predictions with more variation
+          current_preds <- predict_Qstar[valid_idx, i]
+          bounded_preds <- if(is_binary_case) {
+            pmin(pmax(current_preds, 0.001), 0.999)  # Binary bounds
+          } else {
+            pmin(pmax(current_preds, 0.01), 0.99)    # Multinomial bounds
+          }
+          
+          # Prepare GLM data
           glm_data <- data.frame(
-            y = observed_Y[valid_indices][valid_data_indices],
-            h = H[valid_indices][valid_data_indices],
-            offset = qlogis(predict_Qstar[valid_indices, i][valid_data_indices])
+            y = observed_Y[valid_idx],
+            h = H[valid_idx],
+            offset = qlogis(bounded_preds)
           )
           
-          # Less restrictive row filtering
-          valid_rows <- !is.na(glm_data$y) & !is.na(glm_data$h) & !is.na(glm_data$offset)
+          # Looser validity checks to allow more updates
+          valid_rows <- complete.cases(glm_data) & 
+            is.finite(glm_data$offset) & 
+            is.finite(glm_data$h) &
+            !is.na(glm_data$y) &
+            abs(glm_data$h) < (if(is_binary_case) 10 else 5) # Looser bounds
           
-          glm_data <- glm_data[valid_rows,]
-          
-          # Less restrictive GLM conditions
-          if(nrow(glm_data) >= 5) {
-            fit <- tryCatch({
-              glm(y ~ h + offset(offset), 
-                  family = binomial(),
-                  data = glm_data,
-                  control = glm.control(maxit = 100))
-            }, error = function(e) NULL)
+          if(sum(valid_rows) >= 5) {
+            glm_data <- glm_data[valid_rows,]
             
-            if(!is.null(fit)) {
+            # GLM with more stable settings
+            fit <- try(glm(y ~ h + offset(offset),
+                           family = binomial(),
+                           data = glm_data,
+                           control = list(maxit = 100, epsilon = 1e-10)))
+            
+            if(!inherits(fit, "try-error")) {
               eps <- coef(fit)["h"]
-              if(!is.na(eps)) {
+              if(!is.na(eps)) {  # Remove abs(eps) < 2 check
                 epsilon[i] <- eps
-              } else {
-                epsilon[i] <- 0  # Default to 0 instead of NA
-              }
-              # Update predictions only if we got valid epsilon
-              if(!is.na(epsilon[i])) {
                 logit_pred <- qlogis(predict_Qstar[,i])
                 logit_update <- epsilon[i] * H
                 valid_update <- !is.na(H) & is.finite(H)
+                
+                # Less restrictive bounds
+                bounds <- if(is_binary_case) c(-5, 5) else c(-3, 3)
                 logit_pred[valid_update] <- logit_pred[valid_update] + 
-                  pmin(pmax(logit_update[valid_update], -2), 2)
-                predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred), 0.1), 0.9)
+                  pmin(pmax(logit_update[valid_update], bounds[1]), bounds[2])
+                
+                predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred),
+                                               if(is_binary_case) 0.001 else 0.01,
+                                               if(is_binary_case) 0.999 else 0.99))
               }
             }
           }
@@ -402,63 +671,73 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       }
     }
     
-    # Calculate IPTW means
+    # Calculate IPTW estimates with improved stability
     iptw_means <- sapply(1:n_rules, function(i) {
-      weights <- rep(0, n_ids)
-      if(i <= ncol(obs.rules)) {
-        valid_idx <- !is.na(obs.rules[,i]) & obs.rules[,i] == 1
-        if(any(valid_idx)) {
-          marginal_prob <- mean(obs.rules[,i] == 1, na.rm=TRUE)
-          g_matrix <- do.call(cbind, g_preds_bounded)
-          rule_probs <- rowSums(g_matrix[valid_idx,])
-          weights[valid_idx] <- marginal_prob / pmax(rule_probs, gbound[1])
-          weights <- pmin(weights, 5)
-        }
-      }
+      rule_result <- tmle_rules[[i]](initial_model_for_Y_data)
+      rule_treatments <- as.numeric(rule_result$A0)
+      valid_idx <- !is.na(obs.rules[,i]) & obs.rules[,i] == 1
       
-      if(any(weights > 0)) {
-        outcomes <- if(!all(predict_Qstar[,i] == 0.5)) {
-          predict_Qstar[,i]
-        } else {
-          predicted_Y[,i]
+      if(any(valid_idx)) {
+        marginal_prob <- mean(obs.rules[,i] == 1, na.rm=TRUE)
+        weights <- rep(0, n_ids)
+        
+        for(idx in which(valid_idx)) {
+          if(rule_treatments[idx] > 0 && rule_treatments[idx] <= J) {
+            if(is_binary_case) {
+              p <- if(rule_treatments[idx] == 1) g_matrix[idx, 1] else 1 - g_matrix[idx, 1]
+            } else {
+              p <- g_matrix[idx, rule_treatments[idx]]
+            }
+            weights[idx] <- marginal_prob / p
+          }
         }
-        weighted.mean(outcomes[weights > 0], w=weights[weights > 0], na.rm=TRUE)
+        
+        # Bound weights for stability
+        weights <- pmin(weights, 10)
+        
+        # Calculate weighted mean
+        valid_outcomes <- valid_idx & !is.na(predict_Qstar[,i])
+        if(any(valid_outcomes)) {
+          weighted.mean(predict_Qstar[valid_outcomes,i], 
+                        weights[valid_outcomes], na.rm=TRUE)
+        } else {
+          mean(predict_Qstar[,i], na.rm=TRUE)
+        }
       } else {
-        mean(predicted_Y[,i], na.rm=TRUE)
+        mean(predict_Qstar[,i], na.rm=TRUE)
       }
     })
     
     if(debug) {
       cat("\nFinal summary:\n")
       cat("Qstar range:", paste(range(predict_Qstar, na.rm=TRUE), collapse="-"), "\n")
-      cat("Qstar_gcomp range:", paste(range(predicted_Y, na.rm=TRUE), collapse="-"), "\n")
       cat("Epsilon values:", paste(epsilon, collapse=", "), "\n")
       cat("IPTW means:", paste(iptw_means, collapse=", "), "\n")
     }
     
-    # Return both matrix and list formats
-    return(list(
+    list(
       "Qstar" = predict_Qstar,
       "epsilon" = epsilon,
       "Qstar_gcomp" = predicted_Y,
       "Qstar_iptw" = matrix(iptw_means, nrow=1),
       "Y" = observed_Y
-    ))
+    )
     
   }, error = function(e) {
-    if(debug) cat(sprintf("\nError in getTMLELongLSTM: %s\n", conditionMessage(e)))
+    if(debug) cat("Error in getTMLELongLSTM:", e$message, "\n")
     
+    # Safe defaults preserving dimensions
     n_ids_safe <- if(!is.null(initial_model_for_Y_data)) {
       length(unique(initial_model_for_Y_data$ID))
     } else {
-      1 
+      1
     }
     n_rules_safe <- if(!is.null(tmle_rules)) length(tmle_rules) else 1
     
     list(
       "Qstar" = matrix(0.5, nrow=n_ids_safe, ncol=n_rules_safe),
-      "epsilon" = rep(0, n_rules_safe), 
-      "Qstar_gcomp" = matrix(0.5, nrow=n_ids_safe, ncol=n_rules_safe),
+      "epsilon" = rep(0, n_rules_safe),
+      "Qstar_gcomp" = matrix(0.5, nrow=n_ids_safe, ncol=n_rules_safe), 
       "Qstar_iptw" = matrix(0.5, nrow=1, ncol=n_rules_safe),
       "Y" = rep(0.5, n_ids_safe)
     )

@@ -284,6 +284,39 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
     
     return callbacks
 
+def is_count_sequence(values):
+    """Helper function to identify count sequences"""
+    try:
+        # Convert values to numeric
+        nums = [float(x.strip()) for x in values if x.strip() and x.strip() != 'NA']
+        if not nums:
+            return False
+            
+        # Check if all values are non-negative integers
+        is_int = all(float(n).is_integer() for n in nums)
+        is_nonneg = all(n >= 0 for n in nums)
+        
+        # Look for values > 1 to distinguish from binary
+        has_larger = any(n > 1 for n in nums)
+        
+        return is_int and is_nonneg and has_larger
+    except:
+        return False
+
+def is_binary_sequence(values):
+    """Helper function to identify binary sequences"""
+    try:
+        # Convert values to numeric, skipping NA/empty
+        nums = [float(x.strip()) for x in values if x.strip() and x.strip() != 'NA']
+        if not nums:
+            return False
+            
+        # Check if only contains -1, 0, 1
+        unique_vals = set(nums)
+        return unique_vals.issubset({-1, 0, 1})
+    except:
+        return False
+
 def load_data_from_csv(input_file, output_file):
     """
     Load and preprocess input and output data from CSV files with improved column type detection.
@@ -347,13 +380,36 @@ def load_data_from_csv(input_file, output_file):
         for col in x_data.columns:
             if col != 'ID' and isinstance(x_data[col].iloc[0], str) and ',' in str(x_data[col].iloc[0]):
                 try:
-                    # Get first row values
-                    first_vals = [float(x.strip()) for x in x_data[col].iloc[0].split(',') if x.strip() and x.strip() != 'NA']
-                    unique_vals = set(first_vals)
-                    # If only contains -1, 0, 1, treat as binary
-                    if unique_vals.issubset({-1, 0, 1}):
+                    # Get more rows for better detection (increase from 5 to 20)
+                    sample_rows = [row for row in x_data[col].iloc[:20] if isinstance(row, str)]
+                    if not sample_rows:
+                        continue
+                        
+                    # Process ALL values in the sampled rows
+                    all_values = []
+                    for row in sample_rows:
+                        values = [float(x.strip()) for x in row.split(',') 
+                                 if x.strip() and x.strip() != 'NA']
+                        all_values.extend(values)
+                        
+                    # Check unique values and their frequency
+                    unique_vals = set(all_values)
+                    
+                    # Special handling for L1 which we know is count data
+                    if col == 'L1':
+                        cont_cols.append(col)
+                        logger.info(f"Column {col} forced to count sequence")
+                    # More thorough sequence type detection
+                    elif len(unique_vals) > 2 and max(unique_vals) > 1:
+                        cont_cols.append(col)
+                        logger.info(f"Column {col} identified as count/continuous sequence")
+                    elif unique_vals.issubset({0, 1}):
                         binary_cols.append(col)
                         logger.info(f"Column {col} identified as binary sequence")
+                    else:
+                        cont_cols.append(col)
+                        logger.info(f"Column {col} defaulted to continuous sequence")
+                        
                 except (ValueError, AttributeError):
                     cont_cols.append(col)
                     logger.info(f"Column {col} defaulted to continuous (invalid sequence)")

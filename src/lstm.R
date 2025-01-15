@@ -394,7 +394,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   py$is_censoring <- is_censoring
   py$J <- as.integer(if(is_censoring) 1 else J)
   py$output_dir <- output_dir
-  py$epochs <- as.integer(100)
+  py$epochs <- as.integer(1)
   py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
