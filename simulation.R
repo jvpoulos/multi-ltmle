@@ -598,29 +598,71 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       ybound=ybound
     )
     
-    lstm_A_preds <- c(replicate((window.size), lstm_A_preds[[window.size+1]], simplify = FALSE), lstm_A_preds[(window.size+1):length(lstm_A_preds)]) # extend to list of 37 matrices by assuming predictions in t=1....window.size is the same as window_size+1    
-    initial_model_for_A <- list("preds"= lstm_A_preds,
-                                "data"=tmle_dat)
+    # Extend predictions to all time points
+    lstm_A_preds <- c(
+      # For first window.size predictions, use the first valid prediction
+      replicate(window.size, 
+                {
+                  # Get first valid prediction matrix
+                  first_valid <- lstm_A_preds[[window.size + 1]]
+                  if(!is.matrix(first_valid)) {
+                    first_valid <- matrix(first_valid, ncol=J+1)
+                  }
+                  first_valid
+                }, 
+                simplify=FALSE),
+      # Add remaining predictions
+      lstm_A_preds[(window.size + 1):length(lstm_A_preds)]
+    )
     
+    # Store in initial model
+    initial_model_for_A <- list(
+      "preds" = lstm_A_preds,
+      "data" = tmle_dat
+    )
+    
+    # Process predictions to get proper treatment probabilities
     g_preds <- lapply(lstm_A_preds, function(prediction_matrix) {
-      # Check if the matrix has the expected dimensions (n by J+1)
-      dims <- dim(prediction_matrix)
-      if (length(dims) == 2 && dims[2] == J + 1) {
-        # Extract the columns corresponding to classes 1 to J
-        reshaped_matrix <- prediction_matrix[, -1, drop = FALSE]
-        
-        # Naming the columns
-        colnames(reshaped_matrix) <- paste0("A", 1:J)
-        
-        return(reshaped_matrix)
-      } else {
-        warning("Incorrect dimensions for prediction matrix")
-        return(NULL)
+      # Convert to matrix if needed
+      if(!is.matrix(prediction_matrix)) {
+        prediction_matrix <- matrix(prediction_matrix, ncol=J+1)
       }
+      
+      # Get dimensions
+      dims <- dim(prediction_matrix)
+      
+      # Handle different cases
+      if(dims[2] == J + 1) {
+        # Already has correct number of columns (including reference)
+        reshaped_matrix <- prediction_matrix[, -1, drop=FALSE]
+      } else if(dims[2] == J) {
+        # Already has correct number of treatment columns
+        reshaped_matrix <- prediction_matrix
+      } else {
+        warning(sprintf("Unexpected dimensions: %d x %d", dims[1], dims[2]))
+        # Create uniform distribution as fallback
+        reshaped_matrix <- matrix(1/J, nrow=dims[1], ncol=J)
+      }
+      
+      # Ensure proper probability distribution
+      reshaped_matrix <- t(apply(reshaped_matrix, 1, function(row) {
+        # Handle invalid values
+        if(any(is.na(row)) || any(!is.finite(row))) {
+          return(rep(1/J, J))
+        }
+        # Bound and normalize
+        bounded <- pmin(pmax(row, gbound[1]), gbound[2])
+        bounded / sum(bounded)
+      }))
+      
+      # Add column names
+      colnames(reshaped_matrix) <- paste0("A", 1:J)
+      
+      # Return processed matrix
+      return(reshaped_matrix)
     })
     
     g_preds_cuml <- vector("list", length(g_preds))
-    
     g_preds_cuml[[1]] <- g_preds[[1]]
     
     for (i in 2:length(g_preds)) {
@@ -1270,7 +1312,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       cores = 1, 
       debug = debug
     )
-
+    
     tmle_contrasts <- results[["multinomial"]]
     tmle_contrasts_bin <- results[["binary"]]
   }
@@ -1480,7 +1522,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
-
+    
     png(paste0(output_dir,paste0("survival_plot_gcomp_estimates_",n,  "_", estimator,".png")))
     plotSurvEst(surv = list("Static"= gcomp_estimates[1,], "Dynamic"= gcomp_estimates[2,], "Stochastic"= gcomp_estimates[3,]),  
                 ylab = "Estimated share of patients without diabetes diagnosis", 
@@ -1557,7 +1599,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     names(prob_share_bin) <- paste0("t=",seq(0,t.end))
   }
-
+  
   print("Calculating CIs") 
   
   if(estimator=="tmle-lstm"){
@@ -1577,7 +1619,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle")
   }
-
+  
   print("Storing results")
   
   Ahat_tmle  <- g_preds_processed
@@ -1678,6 +1720,78 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     names(CIW_iptw_bin[[t]]) <- names(bias_iptw_bin[[t]])
   }
   
+  # Save this iteration's results
+  result_filename <- paste0(output_dir, 
+                            "longitudinal_simulation_results_",
+                            "estimator_", estimator,
+                            "_treatment_rule_", treatment.rule,
+                            "_r_", r,
+                            "_n_", n,
+                            "_J_", J,
+                            "_n_folds_", n.folds,
+                            "_scale_continuous_", scale.continuous,
+                            "_use_SL_", use.SL,
+                            ".rds")
+  
+  # Create a list with metadata and results
+  iteration_results <- list(
+    "iteration" = r,
+    "estimator" = estimator,
+    "treatment_rule" = treatment.rule,
+    "n" = n,
+    "J" = J,
+    "n_folds" = n.folds,
+    "scale_continuous" = scale.continuous,
+    "use_SL" = use.SL,
+    "results" = list(
+      "Ahat_tmle" = Ahat_tmle,
+      "Chat_tmle" = Chat_tmle,
+      "yhat_tmle" = tmle_estimates,
+      "prob_share_tmle" = prob_share,
+      "Ahat_tmle_bin" = Ahat_tmle_bin,
+      "yhat_tmle_bin" = tmle_bin_estimates,
+      "prob_share_tmle_bin" = prob_share_bin,
+      "bias_tmle" = bias_tmle,
+      "CP_tmle" = CP_tmle,
+      "CIW_tmle" = CIW_tmle,
+      "tmle_est_var" = tmle_est_var,
+      "bias_tmle_bin" = bias_tmle_bin,
+      "CP_tmle_bin" = CP_tmle_bin,
+      "CIW_tmle_bin" = CIW_tmle_bin,
+      "tmle_est_var_bin" = tmle_est_var_bin,
+      "yhat_gcomp" = gcomp_estimates,
+      "bias_gcomp" = bias_gcomp,
+      "CP_gcomp" = CP_gcomp,
+      "CIW_gcomp" = CIW_gcomp,
+      "gcomp_est_var" = gcomp_est_var,
+      "yhat_iptw" = iptw_estimates,
+      "bias_iptw" = bias_iptw,
+      "CP_iptw" = CP_iptw,
+      "CIW_iptw" = CIW_iptw,
+      "iptw_est_var" = iptw_est_var,
+      "yhat_iptw_bin" = iptw_bin_estimates,
+      "bias_iptw_bin" = bias_iptw_bin,
+      "CP_iptw_bin" = CP_iptw_bin,
+      "CIW_iptw_bin" = CIW_iptw_bin,
+      "iptw_est_var_bin" = iptw_est_var_bin
+    )
+  )
+  
+  # Ensure output directory exists
+  if(!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  # Save iteration results
+  tryCatch({
+    saveRDS(iteration_results, result_filename)
+    if(debug) {
+      print(paste0("Saved iteration ", r, " results to ", result_filename))
+    }
+  }, error = function(e) {
+    warning(paste0("Failed to save iteration ", r, " results: ", e$message))
+  })
+  
   print("Returning list")
   return(list("Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
@@ -1776,6 +1890,7 @@ if(!dir.exists(output_dir)){
   dir.create(output_dir)
 }
 
+
 filename <- paste0(output_dir, 
                    "longitudinal_simulation_results_",
                    "estimator_",estimator,
@@ -1786,6 +1901,7 @@ filename <- paste0(output_dir,
                    "_n_folds_",n.folds,
                    "_scale_continuous_",scale.continuous,
                    "_use_SL_", use.SL,".rds")
+
 
 #####################
 # Run simulation #
@@ -1815,7 +1931,7 @@ library_vector <- c(
   "parallel"
 )
 
-if(estimator=='tmle-lstm'){ # run sequentially
+if(estimator=='tmle-lstm'){ # run sequentially and save at each iteration
   sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 

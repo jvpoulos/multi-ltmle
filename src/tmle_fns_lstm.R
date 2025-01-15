@@ -343,44 +343,19 @@ process_g_preds <- function(preds_processed, t, n_ids, J, gbound, debug) {
       return(matrix(1/J, nrow=n_ids, ncol=J))
     }
     
-    # Convert to matrix with proper dimensions
+    # Ensure matrix format with J columns
     if(!is.matrix(preds)) {
       if(debug) cat("Converting predictions to matrix\n")
-      # Ensure nrow=n_ids is first dimension
-      preds <- matrix(preds, nrow=n_ids, byrow=FALSE)
-    }
-    
-    # Ensure dimensions are correct
-    if(ncol(preds) != J) {
-      if(debug) cat("Adjusting matrix dimensions\n")
-      if(ncol(preds) == 1 && J > 1) {
-        # Expand to J columns for multinomial case
-        expanded <- matrix(0, nrow=n_ids, ncol=J)
-        treatments <- round(preds[,1])
-        for(i in 1:n_ids) {
-          if(treatments[i] >= 0 && treatments[i] < J) {
-            expanded[i,] <- 0.1/(J-1)
-            expanded[i, treatments[i] + 1] <- 0.9
-          } else {
-            expanded[i,] <- 1/J
-          }
-        }
-        preds <- expanded
-      }
+      preds <- matrix(preds, nrow=n_ids, ncol=J)
     }
     
     # Normalize probabilities
     if(debug) cat("Normalizing probabilities\n")
     preds <- t(apply(preds, 1, function(row) {
       if(any(!is.finite(row))) return(rep(1/J, J))
-      row <- pmin(pmax(row, gbound[1]), gbound[2])
-      row / sum(row)
+      bounded <- pmin(pmax(row, gbound[1]), gbound[2])
+      bounded / sum(bounded)
     }))
-    
-    if(debug) {
-      cat("Final prediction matrix dimensions:", paste(dim(preds), collapse=" x "), "\n")
-      cat("Row sums range:", paste(range(rowSums(preds)), collapse="-"), "\n")
-    }
     
     return(preds)
   } else {
