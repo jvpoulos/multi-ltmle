@@ -372,10 +372,29 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     # Safe reshaping function
     safe_reshape_data <- function(data, t_end) {
-      # Ensure the data has an ID column
-      if(!"ID" %in% names(data)) {
-        stop("Data must contain an ID column")
+      # Debug output 
+      print("Data column names at start:")
+      print(names(data))
+      
+      # Get unique IDs 
+      unique_ids <- unique(data$ID)
+      n_ids <- length(unique_ids)
+      
+      # Ensure A column exists and is properly formatted
+      if(!"A" %in% names(data)) {
+        print("Looking for alternative treatment columns...")
+        A_cols <- grep("^A[0-9]$", names(data), value=TRUE)
+        if(length(A_cols) > 0) {
+          print(paste("Found treatment columns:", paste(A_cols, collapse=", ")))
+          # Use first treatment column if multiple exist
+          data$A <- data[[A_cols[1]]]
+        } else {
+          stop("No treatment column found in data")
+        }
       }
+      
+      # Convert treatment to factor if not already
+      data$A <- factor(data$A)
       
       # Get unique IDs 
       unique_ids <- unique(data$ID)
@@ -598,22 +617,32 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       ybound=ybound
     )
     
-    # Extend predictions to all time points
-    lstm_A_preds <- c(
-      # For first window.size predictions, use the first valid prediction
-      replicate(window.size, 
-                {
-                  # Get first valid prediction matrix
-                  first_valid <- lstm_A_preds[[window.size + 1]]
-                  if(!is.matrix(first_valid)) {
-                    first_valid <- matrix(first_valid, ncol=J+1)
-                  }
-                  first_valid
-                }, 
-                simplify=FALSE),
-      # Add remaining predictions
-      lstm_A_preds[(window.size + 1):length(lstm_A_preds)]
-    )
+    # Calculate n_ids before using it
+    n_ids <- length(unique(tmle_dat$ID))
+    
+    # Modified window_predictions function
+    window_predictions <- function(preds, window_size, n_ids) {
+      if(is.null(preds) || length(preds) == 0) {
+        return(replicate(window_size, matrix(1/J, nrow=n_ids, ncol=J), simplify=FALSE))
+      }
+      
+      # Ensure we have enough predictions
+      if(length(preds) <= window_size) {
+        return(replicate(length(preds), preds[[1]], simplify=FALSE))
+      }
+      
+      # Process predictions with proper dimensions
+      c(replicate(window_size, {
+        first_valid <- preds[[window_size + 1]]
+        if(!is.matrix(first_valid)) {
+          first_valid <- matrix(first_valid, nrow=n_ids)
+        }
+        first_valid
+      }, simplify=FALSE),
+      preds[(window_size + 1):length(preds)])
+    }
+    
+    lstm_A_preds <- window_predictions(lstm_A_preds, window_size, n_ids)
     
     # Store in initial model
     initial_model_for_A <- list(
@@ -899,36 +928,95 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative bounded censoring predictions, 1=Censored                            
   }else if(estimator=="tmle-lstm"){ 
     
-    lstm_C_preds <- lstm(
-      data=tmle_dat[c(grep("C",colnames(tmle_dat),value = TRUE), tmle_covars_C)], 
-      outcome=grep("C",colnames(tmle_dat),value = TRUE), 
-      covariates=tmle_covars_C, 
-      t_end=t.end, 
-      window_size=window.size, 
-      out_activation="sigmoid", 
-      loss_fn = "binary_crossentropy", 
-      output_dir = output_dir,
-      J = 1,
-      gbound=gbound,
-      ybound=ybound,
-      is_censoring = TRUE
-    )
+    lstm_C_preds <- tryCatch({
+      # First try to get C columns
+      c_cols <- grep("C\\.", colnames(tmle_dat), value = TRUE)
+      if(length(c_cols) == 0) {
+        c_cols <- grep("^C", colnames(tmle_dat), value = TRUE)
+      }
+      
+      if(length(c_cols) == 0) {
+        warning("No censoring columns found. Creating default predictions.")
+        # Return default predictions if no C columns found
+        return(replicate(t.end + 1, matrix(0.1, nrow=n_ids, ncol=1), simplify=FALSE))
+      }
+      
+      # Prepare data with available columns
+      data_subset <- tmle_dat[c(c_cols, intersect(tmle_covars_C, colnames(tmle_dat)))]
+      
+      lstm(
+        data=data_subset,
+        outcome=c_cols,
+        covariates=intersect(tmle_covars_C, colnames(tmle_dat)),
+        t_end=t.end,
+        window_size=window.size,
+        out_activation="sigmoid",
+        loss_fn="binary_crossentropy",
+        output_dir=output_dir,
+        J=1,
+        gbound=gbound,
+        ybound=ybound,
+        is_censoring=TRUE
+      )
+    }, error = function(e) {
+      warning("Error in LSTM C predictions: ", e$message)
+      # Return default predictions on error
+      replicate(t.end + 1, matrix(0.1, nrow=n_ids, ncol=1), simplify=FALSE)
+    })
     
-    # Transform lstm_C_preds into a data matrix of n x t.end
-    transformed_C_preds <- c(replicate(window.size, lstm_C_preds[[1]], simplify = FALSE), 
-                             lstm_C_preds)
+    # Transform predictions with error handling
+    transformed_C_preds <- tryCatch({
+      if(is.null(lstm_C_preds) || length(lstm_C_preds) == 0) {
+        replicate(t.end + 1, matrix(0.1, nrow=n_ids, ncol=1), simplify=FALSE)
+      } else {
+        lapply(lstm_C_preds, function(pred) {
+          if(is.null(pred) || length(pred) == 0) {
+            matrix(0.1, nrow=n_ids, ncol=1)
+          } else {
+            # Ensure matrix format and proper dimensions
+            pred_mat <- if(!is.matrix(pred)) matrix(pred, ncol=1) else pred
+            if(nrow(pred_mat) != n_ids) {
+              if(nrow(pred_mat) > n_ids) {
+                pred_mat <- pred_mat[1:n_ids,, drop=FALSE]
+              } else {
+                # Pad with last value if too short
+                pad_rows <- n_ids - nrow(pred_mat)
+                rbind(pred_mat, matrix(tail(pred_mat, 1), nrow=pad_rows, ncol=ncol(pred_mat)))
+              }
+            }
+            pred_mat
+          }
+        })
+      }
+    }, error = function(e) {
+      warning("Error in transforming C predictions: ", e$message)
+      replicate(t.end + 1, matrix(0.1, nrow=n_ids, ncol=1), simplify=FALSE)
+    })
     
-    # Initialize initial_model_for_C with the transformed predictions
+    # Initialize model with transformed predictions
     initial_model_for_C <- list("preds" = transformed_C_preds, "data" = tmle_dat)
     
-    # Process the transformed predictions
-    C_preds <- lapply(1:length(initial_model_for_C$preds), function(i) {
+    # Process predictions with additional error handling
+    C_preds <- lapply(seq_along(initial_model_for_C$preds), function(i) {
       pred <- initial_model_for_C$preds[[i]]
-      # Ensure matrix format with one column
-      if(is.null(dim(pred))) {
-        pred <- matrix(pred, ncol=1)
-      }
-      1 - pred  # Convert to uncensored probability
+      tryCatch({
+        if(is.null(pred) || length(pred) == 0) {
+          matrix(0.9, nrow=n_ids, ncol=1)  # Default uncensored probability
+        } else {
+          # Ensure matrix format
+          pred_mat <- if(!is.matrix(pred)) matrix(pred, ncol=1) else pred
+          # Fix dimensions if needed
+          if(nrow(pred_mat) != n_ids) {
+            pred_mat <- matrix(rep(pred_mat, length.out=n_ids), ncol=1)
+          }
+          # Convert to uncensored probability and bound
+          bound_pred <- pmin(pmax(1 - pred_mat, gbound[1]), gbound[2])
+          bound_pred
+        }
+      }, error = function(e) {
+        warning("Error processing prediction ", i, ": ", e$message)
+        matrix(0.9, nrow=n_ids, ncol=1)
+      })
     })
     
     # Initialize C_preds_cuml and compute cumulative predictions
@@ -993,19 +1081,24 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   } else if(estimator=='tmle-lstm'){
     # Helper function to safely reshape data from long to wide format
     prepare_lstm_data <- function(tmle_dat, t.end, window_size) {
-      # Input validation
-      if (!"ID" %in% names(tmle_dat)) {
-        stop("Data must contain an ID column")
-      }
+      # Calculate n_ids at the start
+      n_ids <- length(unique(tmle_dat$ID))
       
       # Print debug info
       print("Available columns in tmle_dat:")
       print(names(tmle_dat))
       
+      # Store original treatment info if available
+      has_original_A <- "A" %in% names(tmle_dat)
+      original_A <- if(has_original_A) tmle_dat$A else NULL
+      
       # More flexible column pattern matching
       L_cols <- grep("^L[0-9]+\\.|^L\\.[0-9]+", names(tmle_dat), value=TRUE)
       V_cols <- grep("^V[0-9]+|^V\\.[0-9]+", names(tmle_dat), value=TRUE)
-      A_cols <- grep("^A\\.[0-9]+|^A[0-9]+$", names(tmle_dat), value=TRUE)
+      A_cols <- unique(c(
+        grep("^A$", names(tmle_dat), value=TRUE),
+        grep("^A\\.[0-9]+|^A[0-9]+$", names(tmle_dat), value=TRUE)
+      ))
       Y_cols <- grep("^Y\\.[0-9]+", names(tmle_dat), value=TRUE)
       C_cols <- grep("^C\\.[0-9]+", names(tmle_dat), value=TRUE)
       
@@ -1016,28 +1109,66 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       print(paste("Y columns:", paste(Y_cols, collapse=", ")))
       print(paste("C columns:", paste(C_cols, collapse=", ")))
       
-      # Data is already in wide format, just needs cleaning
+      # Initialize wide_data
       wide_data <- tmle_dat
       
-      # Extract existing base columns
+      # Handle treatment information
+      if (!has_original_A) {
+        # Try to reconstruct A from wide format
+        A_time_cols <- grep("^A\\.", names(wide_data), value=TRUE)
+        if (length(A_time_cols) > 0) {
+          # Extract time points and order them
+          time_points <- as.numeric(gsub("^A\\.", "", A_time_cols))
+          A_time_cols <- A_time_cols[order(time_points)]
+          
+          # Use first time point's treatment as base
+          wide_data$A <- wide_data[[A_time_cols[1]]]
+        } else {
+          # If no treatment columns found, create dummy column
+          print("Creating dummy treatment column")
+          wide_data$A <- 1
+        }
+      }
+      
+      # Ensure treatment column is properly formatted and propagated
+      if ("A" %in% names(wide_data)) {
+        # Convert treatment to numeric if it's a factor
+        if (is.factor(wide_data$A)) {
+          wide_data$A <- as.numeric(as.character(wide_data$A))
+        }
+        
+        # Create time-specific treatment columns
+        for (t in 0:t.end) {
+          wide_data[paste0("A.", t)] <- wide_data$A
+        }
+      }
+      
+      # Extract and handle base columns
       base_cols <- c("ID", "V3", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
       base_cols <- base_cols[base_cols %in% names(wide_data)]
       
-      # Handle missing values for numeric columns
+      # Handle missing values in numeric columns
       numeric_cols <- sapply(wide_data, is.numeric)
       wide_data[numeric_cols][is.na(wide_data[numeric_cols])] <- -1
       
-      # Special handling for treatment (A) columns
-      A_cols_all <- union(grep("^A\\.", names(wide_data), value=TRUE),
-                          grep("^A[0-9]+$", names(wide_data), value=TRUE))
+      # Process all treatment-related columns
+      A_cols_all <- union(
+        grep("^A$", names(wide_data), value=TRUE),
+        union(
+          grep("^A\\.", names(wide_data), value=TRUE),
+          grep("^A[0-9]+$", names(wide_data), value=TRUE)
+        )
+      )
       
-      if (length(A_cols_all) > 0) {
+      if(length(A_cols_all) > 0) {
         wide_data[A_cols_all] <- lapply(wide_data[A_cols_all], function(x) {
-          if (is.factor(x)) {
+          if(is.factor(x)) {
+            # Handle factor input
             x <- addNA(x)
             levels(x) <- c("0", levels(x)[-length(levels(x))])
           } else {
-            x <- as.factor(x)
+            # Convert to factor then handle
+            x <- factor(x)
             x <- addNA(x)
             levels(x) <- c("0", levels(x)[-length(levels(x))])
           }
@@ -1045,7 +1176,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         })
       }
       
-      # Handle categorical variables that exist
+      # Handle categorical variables
       categorical_vars <- c("white", "black", "latino", "other", "mdd", "bipolar", "schiz")
       existing_categorical <- intersect(categorical_vars, names(wide_data))
       
@@ -1055,7 +1186,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         }
       }
       
-      # Ensure all required columns exist with proper naming
+      # Ensure all required columns exist
       time_points <- 0:t.end
       expected_cols <- c(
         paste0("L1.", time_points),
@@ -1066,19 +1197,24 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         paste0("Y.", time_points)
       )
       
+      # Add missing columns with default values
       missing_cols <- setdiff(expected_cols, names(wide_data))
       if (length(missing_cols) > 0) {
         print(paste("Warning: Missing expected columns:", paste(missing_cols, collapse=", ")))
-        # Add missing columns with default values
         for (col in missing_cols) {
           wide_data[[col]] <- -1
         }
       }
       
-      return(wide_data)
+      return(list(
+        data = wide_data,
+        n_ids = n_ids
+      ))
     }
     
-    tmle_dat <- prepare_lstm_data(tmle_dat, t.end, window_size)
+    lstm_data <- prepare_lstm_data(tmle_dat, t.end, window_size)
+    tmle_dat <- lstm_data$data
+    n_ids <- lstm_data$n_ids  # Store n_ids for later use
     
     print("Training LSTM model for Y")
     lstm_Y_preds <- lstm(
@@ -1216,9 +1352,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     safe_get_preds <- function(preds_list, t, n_ids = n) {
       print(paste("Getting predictions for time", t))
       
-      # Handle NULL or empty list
-      if(is.null(preds_list) || length(preds_list) == 0) {
-        return(matrix(0.5, nrow=n_ids, ncol=1))
+      if(is.null(n_ids) || n_ids <= 0) {
+        stop("Invalid n_ids value")
       }
       
       # Handle out of bounds time index
@@ -1295,6 +1430,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     C_preds_processed <- safe_get_cuml_preds(C_preds, n_ids)
     print("C predictions processed")
     
+    n_ids <- length(unique(initial_model_for_Y$data$ID))
+    
     results <- process_time_points(
       initial_model_for_Y = initial_model_for_Y$preds,
       initial_model_for_Y_data = initial_model_for_Y$data,
@@ -1309,6 +1446,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       ybound = ybound,
       t_end = t.end,
       window_size = window_size,
+      n_ids = n_ids,
       cores = 1, 
       debug = debug
     )

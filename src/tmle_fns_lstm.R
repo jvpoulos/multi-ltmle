@@ -7,11 +7,10 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
                                 tmle_rules, tmle_covars_Y, 
                                 g_preds_processed, g_preds_bin_processed, C_preds_processed,
                                 treatments, obs.rules, 
-                                gbound, ybound, t_end, window_size,
+                                gbound, ybound, t_end, window_size, n_ids,
                                 cores = 1, debug = FALSE) {
   
   # Initialize results
-  n_ids <- length(unique(initial_model_for_Y_data$ID))
   n_rules <- length(tmle_rules)
   
   if(debug) {
@@ -353,7 +352,9 @@ process_g_preds <- function(preds_processed, t, n_ids, J, gbound, debug) {
     if(debug) cat("Normalizing probabilities\n")
     preds <- t(apply(preds, 1, function(row) {
       if(any(!is.finite(row))) return(rep(1/J, J))
-      bounded <- pmin(pmax(row, gbound[1]), gbound[2])
+      bounded <- pmin(pmax(row, gbound[1]), gbound[2]) 
+      # Add minimum floor to prevent too small values
+      bounded <- pmax(bounded, 1e-4)
       bounded / sum(bounded)
     }))
     
@@ -525,15 +526,18 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       probs <- pmin(pmax(probs, 0.01), 0.99)
       matrix(probs, ncol=1)
     } else {
-      # Multinomial case
+      # Multinomial case - add renormalization per timepoint
       g_mat <- matrix(0, nrow=n_ids, ncol=J)
       for(j in 1:J) {
         probs <- g_preds_bounded[[j]]
         if(is.matrix(probs)) probs <- probs[,1]
         g_mat[,j] <- pmin(pmax(probs, gbound[1]), gbound[2])
       }
-      # Normalize probabilities
-      g_mat <- t(apply(g_mat, 1, function(row) row/sum(row)))
+      # Renormalize at each timepoint
+      g_mat <- t(apply(g_mat, 1, function(row) {
+        bounded <- pmin(pmax(row, gbound[1]), gbound[2])
+        bounded / sum(bounded) 
+      }))
       g_mat
     }
     
