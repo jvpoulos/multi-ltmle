@@ -1456,165 +1456,82 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   }
   
   if(estimator=='tmle-lstm'){
-    # Fix for safe access to obs.rules
-    # Modify the tmle_estimates calculation to handle bounds correctly:
-    
-    tmle_estimates <- cbind(
-      sapply(1:(t.end-1), function(t) {
-        if(debug) cat(sprintf("\nComputing TMLE estimates for time %d\n", t))
-        
-        # Safe access to obs.rules
-        rules_dim <- if(t + 1 <= length(obs.rules)) {
-          ncol(obs.rules[[t + 1]])
-        } else {
-          if(debug) cat(sprintf("Warning: t+1 (%d) exceeds obs.rules length, using last available timepoint\n", t + 1))
-          ncol(obs.rules[[length(obs.rules)]])
+    # Calculate TMLE estimates - fix dimensions and calculations 
+    tmle_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]])) {
+        for(rule in 1:3) {
+          # Calculate 1 minus mean of Qstar for survival probability
+          tmle_estimates[rule,t] <- 1 - mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE)
         }
-        
-        sapply(1:rules_dim, function(x) {
-          if(debug) {
-            cat(sprintf("Computing tmle_estimates for time %d, rule %d\n", t, x))
-            cat("Qstar dimensions:", paste(dim(tmle_contrasts[[t]]$Qstar), collapse="x"), "\n")
-            cat("Accessing column", x, "\n")
-          }
-          # Access Qstar as a matrix, not a list
-          1 - mean(tmle_contrasts[[t]]$Qstar[,x], na.rm = TRUE)
-        })
-      }),
-      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
-        if(debug) {
-          cat(sprintf("Computing tmle_estimates for final time %d, rule %d\n", t.end, x))
-          cat("Qstar dimensions:", paste(dim(tmle_contrasts[[t.end]]$Qstar), collapse="x"), "\n")
-          cat("Accessing column", x, "\n")
-        }
-        # Access Qstar as a matrix, not a list
-        1 - mean(tmle_contrasts[[t.end]]$Qstar[,x], na.rm = TRUE)
-      })
-    )
-    
-    # Add additional debug output for verification
-    if(debug) {
-      cat("\nTMLE estimates dimensions:", paste(dim(tmle_estimates), collapse="x"), "\n")
-      cat("TMLE estimates summary:\n")
-      print(summary(as.vector(tmle_estimates)))
+      }
     }
     
-    tmle_bin_estimates <- cbind(
-      sapply(1:(t.end-1), function(t) {
-        if(debug) cat(sprintf("\nComputing TMLE estimates for time %d\n", t))
-        
-        # Safe access to obs.rules
-        rules_dim <- if(t + 1 <= length(obs.rules)) {
-          ncol(obs.rules[[t + 1]])
-        } else {
-          if(debug) cat(sprintf("Warning: t+1 (%d) exceeds obs.rules length, using last available timepoint\n", t + 1))
-          ncol(obs.rules[[length(obs.rules)]])
+    # Calculate binary TMLE estimates
+    tmle_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts_bin[[t]])) {
+        for(rule in 1:3) {
+          tmle_bin_estimates[rule,t] <- 1 - mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
         }
-        
-        sapply(1:rules_dim, function(x) {
-          if(debug) {
-            cat(sprintf("Computing tmle_estimates for time %d, rule %d\n", t, x))
-            cat("Qstar dimensions:", paste(dim(tmle_contrasts_bin[[t]]$Qstar), collapse="x"), "\n")
-            cat("Accessing column", x, "\n")
-          }
-          # Access Qstar as a matrix, not a list
-          1 - mean(tmle_contrasts_bin[[t]]$Qstar[,x], na.rm = TRUE)
-        })
-      }),
-      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
-        if(debug) {
-          cat(sprintf("Computing tmle_bin_estimates for final time %d, rule %d\n", t.end, x))
-          cat("Qstar dimensions:", paste(dim(tmle_contrasts_bin[[t.end]]$Qstar), collapse="x"), "\n")
-          cat("Accessing column", x, "\n")
-        }
-        # Access Qstar as a matrix, not a list
-        1 - mean(tmle_contrasts_bin[[t.end]]$Qstar[,x], na.rm = TRUE)
-      })
-    )
-    
-    # Add additional debug output for verification
-    if(debug) {
-      cat("\nTMLE binary estimates dimensions:", paste(dim(tmle_bin_estimates), collapse="x"), "\n")
-      cat("TMLE binary estimates summary:\n")
-      print(summary(as.vector(tmle_bin_estimates)))
+      }
     }
     
-    # Similarly update other estimates:
-    iptw_estimates <- cbind(
-      sapply(1:(t.end-1), function(t) {
-        rules_dim <- if(t + 1 <= length(obs.rules)) {
-          ncol(obs.rules[[t + 1]])
-        } else {
-          ncol(obs.rules[[length(obs.rules)]])
+    # Calculate IPTW estimates
+    iptw_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
+        iptw_means <- tmle_contrasts[[t]]$Qstar_iptw[1,]
+        for(rule in 1:3) {
+          iptw_estimates[rule,t] <- 1 - iptw_means[rule]
         }
-        
-        sapply(1:rules_dim, function(x) {
-          if(debug) {
-            cat(sprintf("Computing IPTW estimates for time %d, rule %d\n", t, x))
-            cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts[[t]]$Qstar_iptw), collapse="x"), "\n")
-          }
-          1 - tmle_contrasts[[t]]$Qstar_iptw[1,x]
-        })
-      }),
-      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
-        if(debug) {
-          cat(sprintf("Computing IPTW estimates for final time %d, rule %d\n", t.end, x))
-          cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts[[t.end]]$Qstar_iptw), collapse="x"), "\n")
-        }
-        1 - tmle_contrasts[[t.end]]$Qstar_iptw[1,x]
-      })
-    )
+      }
+    }
     
-    iptw_bin_estimates <- cbind(
-      sapply(1:(t.end-1), function(t) {
-        rules_dim <- if(t + 1 <= length(obs.rules)) {
-          ncol(obs.rules[[t + 1]])
-        } else {
-          ncol(obs.rules[[length(obs.rules)]])
+    # Calculate binary IPTW estimates  
+    iptw_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+        iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
+        for(rule in 1:3) {
+          iptw_bin_estimates[rule,t] <- 1 - iptw_means[rule]
         }
-        
-        sapply(1:rules_dim, function(x) {
-          if(debug) {
-            cat(sprintf("Computing IPTW estimates for time %d, rule %d\n", t, x))
-            cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts_bin[[t]]$Qstar_iptw), collapse="x"), "\n")
-          }
-          1 - tmle_contrasts[[t]]$Qstar_iptw[1,x]
-        })
-      }),
-      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
-        if(debug) {
-          cat(sprintf("Computing IPTW estimates for final time %d, rule %d\n", t.end, x))
-          cat("Qstar_iptw dimensions:", paste(dim(tmle_contrasts_bin[[t.end]]$Qstar_iptw), collapse="x"), "\n")
-        }
-        1 - tmle_contrasts[[t.end]]$Qstar_iptw[1,x]
-      })
-    )
+      }
+    }
     
-    gcomp_estimates <- cbind(
-      sapply(1:(t.end-1), function(t) {
-        rules_dim <- if(t + 1 <= length(obs.rules)) {
-          ncol(obs.rules[[t + 1]])
-        } else {
-          ncol(obs.rules[[length(obs.rules)]])
+    # Calculate G-computation estimates
+    gcomp_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
+        for(rule in 1:3) {
+          gcomp_estimates[rule,t] <- 1 - mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
         }
-        
-        sapply(1:rules_dim, function(x) {
-          if(debug) {
-            cat(sprintf("Computing G-comp estimates for time %d, rule %d\n", t, x))
-            cat("Qstar_gcomp dimensions:", paste(dim(tmle_contrasts[[t]]$Qstar_gcomp), collapse="x"), "\n")
-          }
-          1 - mean(tmle_contrasts[[t]]$Qstar_gcomp[,x], na.rm=TRUE)
-        })
-      }),
-      sapply(1:ncol(obs.rules[[length(obs.rules)]]), function(x) {
-        if(debug) {
-          cat(sprintf("Computing G-comp estimates for final time %d, rule %d\n", t.end, x))
-          cat("Qstar_gcomp dimensions:", paste(dim(tmle_contrasts[[t.end]]$Qstar_gcomp), collapse="x"), "\n")
-        }
-        1 - mean(tmle_contrasts[[t.end]]$Qstar_gcomp[,x], na.rm=TRUE)
-      })
-    )
-  }else{
+      }
+    }
+    
+    # Add validation printing
+    if(debug) {
+      cat("\nRaw Qstar values from first timepoint:\n")
+      if(!is.null(tmle_contrasts[[1]])) {
+        print(head(tmle_contrasts[[1]]$Qstar))
+        cat("\nMeans by rule:\n")
+        print(colMeans(tmle_contrasts[[1]]$Qstar, na.rm=TRUE))
+      }
+      
+      cat("\nQstar_iptw values from first timepoint:\n")
+      if(!is.null(tmle_contrasts[[1]])) {
+        print(tmle_contrasts[[1]]$Qstar_iptw)
+      }
+      
+      cat("\nFirst few rows of final estimates matrices:\n")
+      cat("TMLE estimates:\n")
+      print(head(tmle_estimates))
+      cat("\nIPTW estimates:\n") 
+      print(head(iptw_estimates))
+      cat("\nG-comp estimates:\n")
+      print(head(gcomp_estimates))
+    }
+  } else{
     tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
     tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
     

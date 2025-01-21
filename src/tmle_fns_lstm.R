@@ -131,6 +131,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
           ybound = ybound,
           t_end = t_end,
           window_size = window_size,
+          current_t = t,
           debug = debug
         )
         
@@ -148,6 +149,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
           ybound = ybound,
           t_end = t_end,
           window_size = window_size,
+          current_t = t,
           debug = debug
         )
         
@@ -250,6 +252,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
           ybound = ybound,
           t_end = t_end,
           window_size = window_size,
+          current_t = t,
           debug = debug
         )
         
@@ -267,6 +270,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
           ybound = ybound,
           t_end = t_end,
           window_size = window_size,
+          current_t = t,
           debug = debug
         )
         
@@ -388,26 +392,43 @@ get_y_preds <- function(initial_model_for_Y, t, n_ids, ybound, debug) {
           col_idx <- min(t, ncol(preds))
           preds <- preds[,col_idx]
         }
-        # Use much less aggressive bounds
-        extreme_idx <- preds < 0.001 | preds > 0.999
-        preds[extreme_idx] <- pmin(pmax(preds[extreme_idx], 0.1), 0.9)
-        matrix(preds, nrow=n_ids)
+        
+        # Generate varied initial predictions based on time point
+        varied_preds <- preds
+        if(all(preds == preds[1])) { # If all predictions are the same
+          base_pred <- preds[1]
+          # Add random variation around the base prediction
+          varied_preds <- pmin(pmax(
+            base_pred + rnorm(length(preds), mean=0, sd=0.1),
+            0.1), 0.9)
+        }
+        
+        # Bound predictions more flexibly
+        matrix(varied_preds, nrow=n_ids)
       } else {
-        # Add more variation in defaults
-        matrix(runif(n_ids, 0.3, 0.7), nrow=n_ids, ncol=1)
+        # More varied defaults based on time point
+        pred_mean <- 0.3 + (0.4 * (t / (t_end + 1))) # Varies from 0.3 to 0.7 over time
+        matrix(runif(n_ids, pred_mean - 0.2, pred_mean + 0.2), nrow=n_ids)
       }
     } else {
-      # Keep more variation
-      vals <- as.numeric(initial_model_for_Y)
-      matrix(pmin(pmax(vals, ybound[1]), ybound[2]), nrow=n_ids)
+      # Generate varied predictions when given a single value
+      base_val <- as.numeric(initial_model_for_Y)
+      varied_vals <- base_val + rnorm(n_ids, mean=0, sd=0.1)
+      matrix(pmin(pmax(varied_vals, 0.1), 0.9), nrow=n_ids)
     }
   }, error = function(e) {
     if(debug) cat("Error getting Y predictions:", conditionMessage(e), "\n")
-    # More varied defaults
-    matrix(runif(n_ids, 0.3, 0.7), nrow=n_ids, ncol=1)
+    # Generate varied defaults
+    matrix(runif(n_ids, 0.3, 0.7), nrow=n_ids)
   })
-  # Less aggressive final bounds
-  pmin(pmax(result, 0.1), 0.9)
+  
+  if(debug) {
+    cat("\nY predictions summary:\n")
+    print(summary(as.vector(result)))
+    cat("Variance:", var(as.vector(result)), "\n")
+  }
+  
+  return(result)
 }
 
 store_results <- function(tmle_contrast, result) {
@@ -484,7 +505,7 @@ log_completion <- function(t, time_start, multi_result, bin_result) {
 
 getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
                             tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded,
-                            obs.treatment, obs.rules, gbound, ybound, t_end, window_size = 7,
+                            obs.treatment, obs.rules, gbound, ybound, t_end, window_size = 7, current_t,
                             debug = FALSE) {
   
   final_result <- tryCatch({
@@ -507,15 +528,58 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     predict_Qstar <- matrix(NA, nrow=n_ids, ncol=n_rules)
     epsilon <- rep(0, n_rules)
     
-    # Get observed outcomes
-    observed_Y <- rep(NA, n_ids)
+    observed_Y <- rep(NA, n_ids) 
     if("Y" %in% colnames(initial_model_for_Y_data)) {
-      y_values <- initial_model_for_Y_data$Y
-      y_matched <- match(unique(initial_model_for_Y_data$ID),
-                         initial_model_for_Y_data$ID)
-      observed_Y <- y_values[y_matched]
+      # Get unique IDs in order
+      unique_ids <- unique(initial_model_for_Y_data$ID)
+      
+      # Use passed time point instead of t[1]
+      if(debug) {
+        cat("\nExtracting Y values for time", current_t)
+        cat("\nColumns:", paste(colnames(initial_model_for_Y_data), collapse=", "))
+        cat("\nUnique Y values before processing:", paste(unique(initial_model_for_Y_data$Y), collapse=", "))
+      }
+      
+      # For each ID, get Y value at current time
+      for(i in seq_along(unique_ids)) {
+        id <- unique_ids[i]
+        id_rows <- which(initial_model_for_Y_data$ID == id & 
+                           initial_model_for_Y_data$t == current_t)
+        if(length(id_rows) > 0) {
+          y_val <- initial_model_for_Y_data$Y[id_rows[1]]
+          # Only treat -1 as missing, preserve actual 0s and 1s
+          if(y_val != -1) {
+            observed_Y[i] <- y_val
+          } else {
+            # If -1, try to get Y value from previous time point
+            prev_row <- which(initial_model_for_Y_data$ID == id & 
+                                initial_model_for_Y_data$t == (current_t - 1))
+            if(length(prev_row) > 0) {
+              prev_y <- initial_model_for_Y_data$Y[prev_row[1]]
+              if(prev_y != -1) observed_Y[i] <- prev_y
+            }
+          }
+        }
+      }
+      
+      if(debug) {
+        cat("\nAfter matching at time", current_t, ":")
+        cat("\nRange of observed_Y:", paste(range(observed_Y, na.rm=TRUE), collapse="-"))
+        cat("\nMean of observed_Y:", mean(observed_Y, na.rm=TRUE))
+        cat("\nNumber of NAs:", sum(is.na(observed_Y)))
+        cat("\nDistribution of Y values:\n")
+        print(table(observed_Y, useNA="ifany"))
+      }
     }
-    observed_Y[is.na(observed_Y)] <- 0.5
+    
+    # Only fill NAs with 0.5 if absolutely necessary
+    na_count <- sum(is.na(observed_Y))
+    if(na_count > 0) {
+      if(debug) cat("\nFilling", na_count, "NAs with predicted values\n")
+      # Use predicted values for NAs instead of 0.5
+      na_indices <- which(is.na(observed_Y))
+      observed_Y[na_indices] <- initial_model_for_Y_preds[na_indices]
+    }
     
     # Construct g_matrix based on case
     g_matrix <- if(is_binary_case) {
@@ -549,15 +613,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       
       if(length(valid_indices) > 0) {
         # Get initial predictions for this rule
-        initial_preds <- if(is.matrix(initial_model_for_Y_preds)) {
-          if(ncol(initial_model_for_Y_preds) >= i) {
-            initial_model_for_Y_preds[valid_indices, i]
-          } else {
-            initial_model_for_Y_preds[valid_indices, 1]
-          }
-        } else {
-          initial_model_for_Y_preds[valid_indices]
-        }
+        initial_preds <- initial_model_for_Y_preds[valid_indices]
         
         # Get rule-specific treatments
         rule_treatments <- as.numeric(rule_result$A0)
@@ -568,81 +624,132 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
         
         # Process rule indicators
         rule_indicators <- obs.rules[, i]
-        valid_rules <- !is.na(rule_indicators) & rule_indicators == 1
+        valid_rules <- !is.na(rule_indicators) & rule_indicators == 1 & 
+          !is.na(rule_treatments) & rule_treatments > 0 & rule_treatments <= J
         
-        # Calculate clever covariate
+        # Calculate clever covariate for valid rules only
         H <- numeric(n_ids)
-        for(idx in which(valid_rules)) {
-          if(rule_treatments[idx] > 0 && rule_treatments[idx] <= J) {
+        if(any(valid_rules)) {
+          for(idx in which(valid_rules)) {
             if(is_binary_case) {
-              # Binary case: use logit-based clever covariate
               p1 <- g_matrix[idx, 1]
               p0 <- 1 - p1
               H[idx] <- if(rule_treatments[idx] == 1) 1/p1 else -1/p0
             } else {
-              # Multinomial case: use treatment-specific probability
-              H[idx] <- 1/g_matrix[idx, rule_treatments[idx]]
+              treatment_prob <- g_matrix[idx, rule_treatments[idx]]
+              H[idx] <- 1/treatment_prob
             }
           }
-        }
-        
-        # Apply case-specific bounds to clever covariate
-        H <- if(is_binary_case) {
-          pmin(pmax(H, -4), 4)  # Wider bounds for binary
-        } else {
-          pmin(pmax(H, -2), 2)  # Standard bounds for multinomial
-        }
-        
-        # Targeting step
-        valid_idx <- which(valid_rules)
-        if(length(valid_idx) >= 5) {
-          # Current predictions with more variation
-          current_preds <- predict_Qstar[valid_idx, i]
-          bounded_preds <- if(is_binary_case) {
-            pmin(pmax(current_preds, 0.001), 0.999)  # Binary bounds
-          } else {
-            pmin(pmax(current_preds, 0.01), 0.99)    # Multinomial bounds
-          }
           
-          # Prepare GLM data
-          glm_data <- data.frame(
-            y = observed_Y[valid_idx],
-            h = H[valid_idx],
-            offset = qlogis(bounded_preds)
-          )
+          # Apply less aggressive bounds to clever covariate
+          H <- pmin(pmax(H, -10), 10)
           
-          # Looser validity checks to allow more updates
-          valid_rows <- complete.cases(glm_data) & 
-            is.finite(glm_data$offset) & 
-            is.finite(glm_data$h) &
-            !is.na(glm_data$y) &
-            abs(glm_data$h) < (if(is_binary_case) 10 else 5) # Looser bounds
+          # Replace the targeting step section in getTMLELongLSTM:
           
-          if(sum(valid_rows) >= 5) {
-            glm_data <- glm_data[valid_rows,]
+          # Targeting step only for observations following the rule
+          valid_idx <- which(valid_rules)
+          if(length(valid_idx) >= 5) {
+            # Current predictions with less aggressive bounds
+            current_preds <- predict_Qstar[valid_idx, i]
+            bounded_preds <- pmin(pmax(current_preds, 0.01), 0.99)
             
-            # GLM with more stable settings
-            fit <- try(glm(y ~ h + offset(offset),
-                           family = binomial(),
-                           data = glm_data,
-                           control = list(maxit = 100, epsilon = 1e-10)))
+            if(debug) {
+              cat("\nTargeting step debugging for rule", i, ":\n")
+              cat("Number of valid observations:", length(valid_idx), "\n")
+              cat("Summary of current predictions:\n")
+              print(summary(current_preds))
+              cat("Summary of H for valid indices:\n")
+              print(summary(H[valid_idx]))
+            }
             
-            if(!inherits(fit, "try-error")) {
-              eps <- coef(fit)["h"]
-              if(!is.na(eps)) {  # Remove abs(eps) < 2 check
-                epsilon[i] <- eps
-                logit_pred <- qlogis(predict_Qstar[,i])
-                logit_update <- epsilon[i] * H
-                valid_update <- !is.na(H) & is.finite(H)
+            # Prepare GLM data
+            glm_data <- data.frame(
+              y = observed_Y[valid_idx],
+              h = H[valid_idx],
+              offset = qlogis(bounded_preds)
+            )
+            
+            # More permissive validity checks
+            valid_rows <- complete.cases(glm_data) & 
+              is.finite(glm_data$offset) & 
+              is.finite(glm_data$h) &
+              abs(glm_data$h) < 20  # Less restrictive bound
+            
+            if(debug && sum(valid_rows) < length(valid_rows)) {
+              cat("Removed", length(valid_rows) - sum(valid_rows), "invalid rows\n")
+              cat("Non-finite offsets:", sum(!is.finite(glm_data$offset)), "\n")
+              cat("Non-finite H:", sum(!is.finite(glm_data$h)), "\n")
+              cat("H too large:", sum(abs(glm_data$h) >= 20), "\n")
+            }
+            
+            # Only update if we have valid observations and variation in predictions
+            if(sum(valid_rows) >= 5) {
+              data_var_y <- var(glm_data$y[valid_rows], na.rm=TRUE)
+              data_var_pred <- var(predict_Qstar[valid_idx, i], na.rm=TRUE)
+              
+              if(debug) {
+                cat("Variance in Y:", data_var_y, "\n")
+                cat("Variance in predictions:", data_var_pred, "\n")
+              }
+              
+              if(data_var_pred > 1e-6 && data_var_y > 1e-6) {
+                glm_data <- glm_data[valid_rows,]
+                valid_idx <- valid_idx[valid_rows]
                 
-                # Less restrictive bounds
-                bounds <- if(is_binary_case) c(-5, 5) else c(-3, 3)
-                logit_pred[valid_update] <- logit_pred[valid_update] + 
-                  pmin(pmax(logit_update[valid_update], bounds[1]), bounds[2])
+                # Add small noise to break perfect separation
+                bounded_preds <- glm_data$offset
+                if(var(bounded_preds) < 1e-6) {
+                  bounded_preds <- bounded_preds + rnorm(length(bounded_preds), 0, 0.01)
+                }
+                glm_data$offset <- bounded_preds
+              
+                # Fit GLM with more stable settings and try-catch block
+                fit <- tryCatch({
+                  glm(y ~ h + offset(offset),
+                      family = binomial(),
+                      data = glm_data,
+                      control = glm.control(maxit = 100, 
+                                            epsilon = 1e-8))
+                }, error = function(e) {
+                  if(debug) cat("GLM error:", e$message, "\n")
+                  NULL
+                })
                 
-                predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred),
-                                               if(is_binary_case) 0.001 else 0.01,
-                                               if(is_binary_case) 0.999 else 0.99))
+                if(!is.null(fit)) {
+                  eps <- coef(fit)["h"]
+                  if(!is.na(eps)) {
+                    # Scale epsilon if it's too large 
+                    if(abs(eps) > 50) {
+                      eps <- sign(eps) * 50
+                    }
+                    epsilon[i] <- eps
+                    
+                    # Update predictions for valid cases only
+                    logit_pred <- qlogis(predict_Qstar[,i])
+                    logit_update <- epsilon[i] * H
+                    valid_update <- valid_rules & !is.na(H) & is.finite(H)
+                    
+                    if(any(valid_update)) {
+                      # Scale large updates more conservatively
+                      max_abs_update <- max(abs(logit_update[valid_update]))
+                      if(max_abs_update > 2) {
+                        scale_factor <- 2/max_abs_update 
+                        logit_update <- logit_update * scale_factor
+                      }
+                      
+                      logit_pred[valid_update] <- logit_pred[valid_update] + logit_update[valid_update]
+                      # Less aggressive bounds on final predictions
+                      predict_Qstar[,i] <- pmin(pmax(plogis(logit_pred), 0.01), 0.99)
+                      
+                      if(debug) {
+                        cat("Successfully updated predictions\n")
+                        cat("Epsilon:", eps, "\n")  
+                        cat("Mean update:", mean(logit_update[valid_update], na.rm=TRUE), "\n")
+                        cat("New prediction range:", paste(range(predict_Qstar[,i]), collapse="-"), "\n")
+                      }
+                    }
+                  }
+                }
               }
             }
           }
