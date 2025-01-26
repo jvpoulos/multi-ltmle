@@ -53,8 +53,6 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       "process_g_preds",
       "get_c_preds", 
       "get_y_preds",
-      "store_results",
-      "use_default_values",
       "calculate_iptw",
       "log_iptw_error",
       "log_completion",
@@ -101,20 +99,20 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       if(debug) debug_print(sprintf("\nProcessing time point %d/%d\n", t, t_end))
       time_start <- Sys.time()
       
-      # Initialize with proper matrices
+      # Initialize results for this time point 
       tmle_contrast <- list(
-        "Qstar" = matrix(as.numeric(NA), nrow=n_ids, ncol=n_rules),
-        "epsilon" = rep(as.numeric(NA), n_rules),
-        "Qstar_gcomp" = matrix(as.numeric(NA), nrow=n_ids, ncol=n_rules),
-        "Qstar_iptw" = matrix(as.numeric(NA), nrow=1, ncol=n_rules),
-        "Y" = rep(as.numeric(NA), n_ids)
+        "Qstar" = matrix(NA, nrow = n_ids, ncol = n_rules),
+        "epsilon" = rep(NA, n_rules),
+        "Qstar_gcomp" = matrix(NA, nrow = n_ids, ncol = n_rules), 
+        "Qstar_iptw" = matrix(NA, nrow = 1, ncol = n_rules),
+        "Y" = rep(NA, n_ids)
       )
       tmle_contrast_bin <- list(
-        "Qstar" = matrix(as.numeric(NA), nrow=n_ids, ncol=n_rules),
-        "epsilon" = rep(as.numeric(NA), n_rules), 
-        "Qstar_gcomp" = matrix(as.numeric(NA), nrow=n_ids, ncol=n_rules),
-        "Qstar_iptw" = matrix(as.numeric(NA), nrow=1, ncol=n_rules),
-        "Y" = rep(as.numeric(NA), n_ids)
+        "Qstar" = matrix(NA, nrow = n_ids, ncol = n_rules),
+        "epsilon" = rep(NA, n_rules),
+        "Qstar_gcomp" = matrix(NA, nrow = n_ids, ncol = n_rules),
+        "Qstar_iptw" = matrix(NA, nrow = 1, ncol = n_rules), 
+        "Y" = rep(NA, n_ids)
       )
       
       # Process multinomial predictions
@@ -132,59 +130,55 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       track_initial_data(current_y_preds, debug)
       
       # Process both cases
-      tryCatch({
-        # Multinomial case
-        result_multi <- getTMLELongLSTM(
-          initial_model_for_Y_preds = current_y_preds,
-          initial_model_for_Y_data = initial_model_for_Y_data,
-          tmle_rules = tmle_rules,
-          tmle_covars_Y = tmle_covars_Y,
-          g_preds_bounded = current_g_preds_list,
-          C_preds_bounded = current_c_preds,
-          obs.treatment = treatments[[min(t + 1, length(treatments))]],
-          obs.rules = obs.rules[[min(t, length(obs.rules))]],
-          gbound = gbound,
-          ybound = ybound,
-          t_end = t_end,
-          window_size = window_size,
-          current_t = t,
-          debug = debug
-        )
-        
-        track_tmle_results(result_multi, "pre-storage-multi", debug)
-        
-        # Binary case 
-        result_bin <- getTMLELongLSTM(
-          initial_model_for_Y_preds = current_y_preds,
-          initial_model_for_Y_data = initial_model_for_Y_data,
-          tmle_rules = tmle_rules,
-          tmle_covars_Y = tmle_covars_Y,
-          g_preds_bounded = current_g_preds_bin_list,
-          C_preds_bounded = current_c_preds,
-          obs.treatment = treatments[[min(t + 1, length(treatments))]],
-          obs.rules = obs.rules[[min(t, length(obs.rules))]],
-          gbound = gbound,
-          ybound = ybound,
-          t_end = t_end,
-          window_size = window_size,
-          current_t = t,
-          debug = debug
-        )
-        
-        track_tmle_results(result_bin, "pre-storage-bin", debug)
-        
-        # Store results
-        store_results(tmle_contrast, result_multi, debug=debug)
-        store_results(tmle_contrast_bin, result_bin, debug=debug)
-        
-      }, error = function(e) {
-        if(debug) {
-          debug_print(sprintf("\nError processing time point %d: %s\n", t, conditionMessage(e)))
-          debug_print("Using default values\n")
-        }
-        use_default_values(tmle_contrast, ybound)
-        use_default_values(tmle_contrast_bin, ybound)
-      })
+      # Multinomial case
+      result_multi <- getTMLELongLSTM(
+        initial_model_for_Y_preds = current_y_preds,
+        initial_model_for_Y_data = initial_model_for_Y_data,
+        tmle_rules = tmle_rules,
+        tmle_covars_Y = tmle_covars_Y,
+        g_preds_bounded = current_g_preds_list,
+        C_preds_bounded = current_c_preds,
+        obs.treatment = treatments[[min(t + 1, length(treatments))]],
+        obs.rules = obs.rules[[min(t, length(obs.rules))]],
+        gbound = gbound,
+        ybound = ybound,
+        t_end = t_end,
+        window_size = window_size,
+        current_t = t,
+        debug = debug
+      )
+      
+      track_tmle_results(result_multi, "pre-storage-multi", debug)
+      
+      # Binary case 
+      result_bin <- getTMLELongLSTM(
+        initial_model_for_Y_preds = current_y_preds,
+        initial_model_for_Y_data = initial_model_for_Y_data,
+        tmle_rules = tmle_rules,
+        tmle_covars_Y = tmle_covars_Y,
+        g_preds_bounded = current_g_preds_bin_list,
+        C_preds_bounded = current_c_preds,
+        obs.treatment = treatments[[min(t + 1, length(treatments))]],
+        obs.rules = obs.rules[[min(t, length(obs.rules))]],
+        gbound = gbound,
+        ybound = ybound,
+        t_end = t_end,
+        window_size = window_size,
+        current_t = t,
+        debug = debug
+      )
+      
+      track_tmle_results(result_bin, "pre-storage-bin", debug)
+      
+      # Directly assign results
+      tmle_contrast <- result_multi
+      tmle_contrast_bin <- result_bin
+      
+      if(debug) {
+        cat("\nStored Results:")
+        cat("\nMultinomial Qstar range:", paste(range(tmle_contrast$Qstar, na.rm=TRUE), collapse="-"))
+        cat("\nBinary Qstar range:", paste(range(tmle_contrast_bin$Qstar, na.rm=TRUE), collapse="-"))
+      }
       
       # Calculate IPTW weights and means
       track_stored_results(tmle_contrast, "pre-iptw", debug)
@@ -263,61 +257,58 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       track_initial_data(current_y_preds, debug)
       
       # Process both cases
-      tryCatch({
-        # Multinomial case
-        result_multi <- getTMLELongLSTM(
-          initial_model_for_Y_preds = current_y_preds,
-          initial_model_for_Y_data = initial_model_for_Y_data,
-          tmle_rules = tmle_rules,
-          tmle_covars_Y = tmle_covars_Y,
-          g_preds_bounded = current_g_preds_list,
-          C_preds_bounded = current_c_preds,
-          obs.treatment = treatments[[min(t + 1, length(treatments))]],
-          obs.rules = obs.rules[[min(t, length(obs.rules))]],
-          gbound = gbound,
-          ybound = ybound,
-          t_end = t_end,
-          window_size = window_size,
-          current_t = t,
-          debug = debug
-        )
-        
-        track_tmle_results(result_multi, "pre-storage-multi", debug)
-        
-        # Binary case 
-        result_bin <- getTMLELongLSTM(
-          initial_model_for_Y_preds = current_y_preds,
-          initial_model_for_Y_data = initial_model_for_Y_data,
-          tmle_rules = tmle_rules,
-          tmle_covars_Y = tmle_covars_Y,
-          g_preds_bounded = current_g_preds_bin_list,
-          C_preds_bounded = current_c_preds,
-          obs.treatment = treatments[[min(t + 1, length(treatments))]],
-          obs.rules = obs.rules[[min(t, length(obs.rules))]],
-          gbound = gbound,
-          ybound = ybound,
-          t_end = t_end,
-          window_size = window_size,
-          current_t = t,
-          debug = debug
-        )
-        
-        track_tmle_results(result_bin, "pre-storage-bin", debug)
-        
-        # Store results
-        store_results(tmle_contrast, result_multi)
-        store_results(tmle_contrast_bin, result_bin)
-        
-        process_time_points_tracking(tmle_contrast, tmle_contrast_bin, t, debug=debug)
-        
-      }, error = function(e) {
-        if(debug) {
-          cat(sprintf("\nError processing time point %d: %s\n", t, conditionMessage(e)))
-          cat("Using default values\n")
-        }
-        use_default_values(tmle_contrast, ybound)
-        use_default_values(tmle_contrast_bin, ybound)
-      })
+      # Multinomial case
+      result_multi <- getTMLELongLSTM(
+        initial_model_for_Y_preds = current_y_preds,
+        initial_model_for_Y_data = initial_model_for_Y_data,
+        tmle_rules = tmle_rules,
+        tmle_covars_Y = tmle_covars_Y,
+        g_preds_bounded = current_g_preds_list,
+        C_preds_bounded = current_c_preds,
+        obs.treatment = treatments[[min(t + 1, length(treatments))]],
+        obs.rules = obs.rules[[min(t, length(obs.rules))]],
+        gbound = gbound,
+        ybound = ybound,
+        t_end = t_end,
+        window_size = window_size,
+        current_t = t,
+        debug = debug
+      )
+      
+      track_tmle_results(result_multi, "pre-storage-multi", debug)
+      
+      # Binary case 
+      result_bin <- getTMLELongLSTM(
+        initial_model_for_Y_preds = current_y_preds,
+        initial_model_for_Y_data = initial_model_for_Y_data,
+        tmle_rules = tmle_rules,
+        tmle_covars_Y = tmle_covars_Y,
+        g_preds_bounded = current_g_preds_bin_list,
+        C_preds_bounded = current_c_preds,
+        obs.treatment = treatments[[min(t + 1, length(treatments))]],
+        obs.rules = obs.rules[[min(t, length(obs.rules))]],
+        gbound = gbound,
+        ybound = ybound,
+        t_end = t_end,
+        window_size = window_size,
+        current_t = t,
+        debug = debug
+      )
+      
+      track_tmle_results(result_bin, "pre-storage-bin", debug)
+      
+      # Directly assign results
+      tmle_contrast <- result_multi
+      tmle_contrast_bin <- result_bin
+      
+      if(debug) {
+        cat("\nStored Results:")
+        cat("\nMultinomial Qstar range:", paste(range(tmle_contrast$Qstar, na.rm=TRUE), collapse="-"))
+        cat("\nBinary Qstar range:", paste(range(tmle_contrast_bin$Qstar, na.rm=TRUE), collapse="-"))
+      }
+      
+      process_time_points_tracking(tmle_contrast, tmle_contrast_bin, t, debug=debug)
+      
       
       # Calculate IPTW weights and means
       track_stored_results(tmle_contrast, "pre-iptw", debug)
@@ -536,33 +527,6 @@ track_stored_results <- function(tmle_contrast, stage="post-storage", debug=FALS
       print(summary(as.vector(tmle_contrast$Y)))
     }
   }
-}
-
-store_results <- function(tmle_contrast, result, debug=FALSE) {
-  for(comp in c("Qstar", "Qstar_gcomp", "Qstar_iptw", "Y", "epsilon")) {
-    if(!is.null(result[[comp]])) {
-      if(is.null(tmle_contrast[[comp]])) {
-        # Initialize with result
-        tmle_contrast[[comp]] <- result[[comp]]
-      } else {
-        # Only update invalid values
-        invalid_mask <- is.na(tmle_contrast[[comp]]) | 
-          !is.finite(tmle_contrast[[comp]]) |
-          tmle_contrast[[comp]] < ybound[1] | 
-          tmle_contrast[[comp]] > ybound[2]
-        
-        tmle_contrast[[comp]][invalid_mask] <- result[[comp]][invalid_mask]
-      }
-    }
-  }
-}
-
-use_default_values <- function(tmle_contrast, ybound) {
-  # Use mean value between bounds as default
-  default_val <- mean(ybound)
-  tmle_contrast$Qstar[] <- default_val
-  tmle_contrast$Qstar_gcomp[] <- default_val
-  tmle_contrast$Y[] <- default_val
 }
 
 calculate_iptw <- function(g_preds, rules, predict_Qstar, n_rules, gbound, debug) {
