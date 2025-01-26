@@ -1510,6 +1510,17 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
     
     # Add validation printing
+    
+    if(debug) {
+      cat("\nEstimated means before final processing:\n")
+      cat("TMLE estimates dimensions:", dim(tmle_estimates), "\n")
+      print(head(tmle_estimates))
+      cat("\nIPTW estimates dimensions:", dim(iptw_estimates), "\n")
+      print(head(iptw_estimates))
+      cat("\nG-comp estimates dimensions:", dim(gcomp_estimates), "\n")
+      print(head(gcomp_estimates))
+    }
+    
     if(debug) {
       cat("\nRaw Qstar values from first timepoint:\n")
       if(!is.null(tmle_contrasts[[1]])) {
