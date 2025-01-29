@@ -41,8 +41,35 @@ logger = logging.getLogger(__name__)
 policy = tf.keras.mixed_precision.Policy('mixed_float16')
 tf.keras.mixed_precision.set_policy(policy)
 
+def get_model_filenames(loss_fn, output_dim, is_censoring):
+    """Get appropriate filenames for model and predictions based on model type."""
+    
+    if is_censoring:
+        model_filename = 'lstm_bin_C_model.keras'
+        pred_filename = 'test_bin_C_preds.npy'  # Changed from original to use 'test_' prefix
+        info_filename = 'test_bin_C_preds_info.npz'  # Changed from original to use 'test_' prefix
+    else:
+        # Check if Y model based on dimensions and loss function
+        is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
+        if is_y_model:
+            model_filename = 'lstm_bin_Y_model.keras'
+            pred_filename = 'test_bin_Y_preds.npy'
+            info_filename = 'test_bin_Y_preds_info.npz'
+        else:
+            # Treatment model (A)
+            if loss_fn == "sparse_categorical_crossentropy":
+                model_filename = 'lstm_cat_A_model.keras'
+                pred_filename = 'test_cat_A_preds.npy'
+                info_filename = 'test_cat_A_preds_info.npz'
+            else:
+                model_filename = 'lstm_bin_A_model.keras'
+                pred_filename = 'test_bin_A_preds.npy'
+                info_filename = 'test_bin_A_preds_info.npz'
+    
+    return model_filename, pred_filename, info_filename
+    
 def test_model():
-    global window_size, output_dir, nb_batches, loss_fn, J, is_censoring
+    global window_size, output_dir, nb_batches, loss_fn, J, is_censoring, output_dim
 
     logger.info("Starting model testing...")
     
@@ -51,20 +78,15 @@ def test_model():
         logger.warning("GPU configuration failed, proceeding with default settings")
     
     try:
-        # Determine model filename based on case
-        if is_censoring:
-            model_filename = 'lstm_bin_C_model.keras'
-        else:
-            # Check if Y model based on dimensions and loss function
-            is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
-            if is_y_model:
-                model_filename = 'lstm_bin_Y_model.keras'
-            else:
-                # Treatment model (A)
-                model_filename = 'lstm_cat_A_model.keras' if loss_fn == "sparse_categorical_crossentropy" else 'lstm_bin_A_model.keras'
+        # Get appropriate filenames using the shared function
+        model_filename, pred_filename, info_filename = get_model_filenames(
+            loss_fn, output_dim, is_censoring
+        )
 
-        # Set model path
+        # Set paths
         model_path = os.path.join(output_dir, model_filename)
+        pred_path = os.path.join(output_dir, pred_filename)
+        info_path = os.path.join(output_dir, info_filename)
 
         logger.info(f"Loading model from: {model_path}")
         
@@ -246,7 +268,7 @@ def test_model():
         pred_path = os.path.join(output_dir, pred_filename)
         info_path = os.path.join(output_dir, info_filename)
 
-        # Save predictions
+        # Save predictions using the paths from get_model_filenames
         np.save(pred_path, preds_test)
         logger.info(f"Test predictions saved to: {pred_path}")
 

@@ -72,6 +72,33 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+def get_model_filenames(loss_fn, output_dim, is_censoring):
+    """Get appropriate filenames for model and predictions based on model type."""
+    
+    if is_censoring:
+        model_filename = 'lstm_bin_C_model.keras'
+        pred_filename = 'lstm_bin_C_preds.npy'
+        info_filename = 'lstm_bin_C_preds_info.npz'
+    else:
+        # Check if Y model based on dimensions and loss function
+        is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
+        if is_y_model:
+            model_filename = 'lstm_bin_Y_model.keras'
+            pred_filename = 'lstm_bin_Y_preds.npy'
+            info_filename = 'lstm_bin_Y_preds_info.npz'
+        else:
+            # Treatment model (A)
+            if loss_fn == "sparse_categorical_crossentropy":
+                model_filename = 'lstm_cat_A_model.keras'
+                pred_filename = 'lstm_cat_A_preds.npy'
+                info_filename = 'lstm_cat_A_preds_info.npz'
+            else:
+                model_filename = 'lstm_bin_A_model.keras'
+                pred_filename = 'lstm_bin_A_preds.npy'
+                info_filename = 'lstm_bin_A_preds_info.npz'
+    
+    return model_filename, pred_filename, info_filename
+
 def main():
     global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size, is_censoring
 
@@ -458,9 +485,8 @@ def main():
     artifact.add_file(model_path)
     run.log_artifact(artifact)
     
-    # Generate final predictions
     logger.info("\nGenerating predictions for all data...")
-    
+
     x_data_final = x_data.copy()
     if 'ID' in x_data_final.columns:
         x_data_final = x_data_final.drop(columns=['ID'])
@@ -473,47 +499,34 @@ def main():
         loss_fn,
         J,
         is_training=False,
-        is_censoring=output_dim==1
+        is_censoring=is_censoring
     )
-    
-    total_steps = max(1, (final_samples - n_pre + 1) // batch_size)
+
+    total_steps = math.ceil(final_samples / batch_size)
     predictions = model.predict(
         final_dataset,
         steps=total_steps,
         verbose=1
     )
-        
-    n_valid_predictions = len(x_data_final) - n_pre + 1
-    predictions = predictions[:n_valid_predictions]
-    
-    is_Y_outcome = any(col.startswith('Y') for col in outcome_cols if isinstance(outcome_cols, str))
-    # OR if we need to handle both string and list cases
-    if isinstance(outcome_cols, list):
-        is_Y_outcome = any(col.startswith('Y') for col in outcome_cols)
-    elif isinstance(outcome_cols, str):
-        is_Y_outcome = outcome_cols.startswith('Y')
-    else:
-        is_Y_outcome = False
 
-    # Use this to determine prediction filenames
-    if is_censoring:
-        pred_filename = 'lstm_bin_C_preds.npy'
-        info_filename = 'lstm_bin_C_preds_info.npz'
-    else:
-        if is_Y_outcome and loss_fn == "binary_crossentropy":
-            pred_filename = 'lstm_bin_Y_preds.npy'
-            info_filename = 'lstm_bin_Y_preds_info.npz'
-        else:
-            if loss_fn == "sparse_categorical_crossentropy":
-                pred_filename = 'lstm_cat_A_preds.npy'
-                info_filename = 'lstm_cat_A_preds_info.npz'
-            else:
-                pred_filename = 'lstm_bin_A_preds.npy'
-                info_filename = 'lstm_bin_A_preds_info.npz'
+    # Get appropriate filenames
+    model_filename, pred_filename, info_filename = get_model_filenames(
+        loss_fn, output_dim, is_censoring
+    )
 
-    # Set prediction and info paths
+    # Set paths
+    model_path = os.path.join(output_dir, model_filename)
     pred_path = os.path.join(output_dir, pred_filename)
     info_path = os.path.join(output_dir, info_filename)
+
+    # Save model
+    model.save(model_path)
+    logger.info(f"Model saved to: {model_path}")
+
+    # Log the SavedModel as a WandB Artifact
+    artifact = wandb.Artifact('trained_model', type='model')
+    artifact.add_file(model_path)
+    run.log_artifact(artifact)
 
     # Save predictions
     np.save(pred_path, predictions)
@@ -525,7 +538,7 @@ def main():
         dtype=str(predictions.dtype),
         min_value=np.min(predictions),
         max_value=np.max(predictions),
-        num_samples=n_valid_predictions,
+        num_samples=final_samples,
         num_features=num_features
     )
 

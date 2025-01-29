@@ -32,6 +32,27 @@ logger = logging.getLogger(__name__)
 import wandb
 from datetime import datetime
 
+class CalibrationCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        # Get predictions for a batch
+        x_batch = next(iter(self._train_dataset))[0]
+        preds = self.model.predict(x_batch)
+        
+        # Calculate calibration metrics
+        bins = np.linspace(0, 1, 11)
+        binned_preds = np.digitize(preds, bins) - 1
+        calibration = np.zeros(10)
+        for i in range(10):
+            mask = binned_preds == i
+            if np.any(mask):
+                calibration[i] = np.mean(preds[mask])
+        
+        wandb.log({
+            'calibration_histogram': wandb.Histogram(calibration),
+            'mean_prediction': np.mean(preds),
+            'prediction_std': np.std(preds)
+        }, commit=False)
+
 def log_metrics(history, start_time):
     metrics_to_log = {}
     
@@ -469,11 +490,7 @@ def load_data_from_csv(input_file, output_file):
                     std = x_data[col].std()
                     if pd.isna(std) or std == 0:
                         std = 1.0
-                    
-                    # Add small noise to prevent perfect separation
-                    noise = np.random.normal(0, std * 0.01, size=len(x_data))
-                    x_data[col] = x_data[col] + noise
-                    
+                
                     # Standardize
                     mean = x_data[col].mean()
                     std = x_data[col].std() or 1.0
@@ -662,6 +679,11 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
     """Create dataset with proper sequence handling for CPU TensorFlow."""
     logger.info(f"Creating dataset with parameters:")
     logger.info(f"n_pre: {n_pre}, batch_size: {batch_size}, loss_fn: {loss_fn}, J: {J}")
+
+    logger.info("Input data shapes:")
+    logger.info(f"x_data shape: {x_data.shape}")
+    logger.info(f"y_data shape: {y_data.shape}")
+    logger.info(f"y_data columns: {y_data.columns}")
     
     try:
         # Remove ID if present
@@ -728,7 +750,6 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                     else:
                         raise ValueError("No suitable treatment columns found")
             
-            # Remove unnecessary noise addition
             if not is_training:
                 # For validation/test, keep exact values
                 y_values = np.clip(y_values, 0, J-1)
@@ -751,21 +772,9 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                     # Process valid entries using vectorized operations
                     valid_indices = np.where(valid_mask)[0]
                     class_indices = np.clip(y_raw[valid_mask].astype(int), 0, J-1)
+                    y_values[valid_indices, class_indices] = 1.0  # Fixed: Properly set one-hot values
                     
-                    if is_training:
-                        # Set primary class values with noise
-                        primary_noise = np.random.normal(0, 0.1, size=len(valid_indices))
-                        primary_values = np.clip(1.0 + primary_noise, 0.8, 1.0)
-                        
-                        # Set values for primary classes
-                        for idx, class_idx, value in zip(valid_indices, class_indices, primary_values):
-                            y_values[idx, class_idx] = value
-                            
-                            # Add small random values to other classes
-                            other_classes = np.delete(np.arange(J), class_idx)
-                            other_noise = np.random.normal(0, 0.05, size=len(other_classes))
-                            y_values[idx, other_classes] = np.clip(other_noise, 0.0, 0.2)
-                        
+                    if is_training:                        
                         # Normalize each row to sum to 1
                         row_sums = np.sum(y_values, axis=1)
                         for i in range(len(y_values)):
@@ -773,48 +782,25 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                                 y_values[i] = y_values[i] / row_sums[i]
                             else:
                                 y_values[i] = np.ones(J) / J
-                    else:
-                        # Simple one-hot encoding for validation/test
-                        for idx, class_idx in zip(valid_indices, class_indices):
-                            y_values[idx, class_idx] = 1.0
-                            
+                    
                 elif not is_censoring:  # Y model
-                    # Convert -1s to 0s and add noise
-                    y_raw = np.where(y_raw < 0, 0, y_raw)
+                    # For Y model, keep values as 0/1 and reshape
+                    y_raw = np.where(y_raw < 0, 0, y_raw)  # Convert negative values to 0
+                    y_raw = np.where(y_raw > 1, 1, y_raw)  # Ensure binary values
                     pos_ratio = np.mean(y_raw > 0.5)
                     logger.info(f"Positive class ratio: {pos_ratio:.4f}")
                     
-                    if is_training:
-                        # Reduce noise and maintain better class separation
-                        noise = np.random.normal(0, 0.01, size=len(y_raw))  # Reduced from 0.05
-                        y_raw = y_raw + noise
-                        y_values = np.where(y_raw > 0.5,
-                                          np.clip(y_raw, 0.51, 0.95),  # Reduced lower bound
-                                          np.clip(y_raw, 0.05, 0.45))  # Increased upper bound
-                    else:
-                        noise = np.random.normal(0, 0.01, size=len(y_raw))  # Minimal noise for validation
-                        y_values = np.clip(y_raw + noise, 0, 1)
+                    # Verify distribution
+                    logger.info(f"Y values unique: {np.unique(y_raw, return_counts=True)}")
                     
-                    # Reshape for binary classification
-                    y_values = y_values.reshape(-1, 1)
+                    # Reshape to column vector
+                    y_values = y_raw.reshape(-1, 1)
+                    
+                    logger.info(f"Y values shape after reshape: {y_values.shape}")
                     
                 else:  # C model
                     y_raw = np.where(y_raw < 0, 0, y_raw)
-                    pos_ratio = np.mean(y_raw > 0.5)
-                    logger.info(f"Positive class ratio: {pos_ratio:.4f}")
-                    
-                    if is_training:
-                        noise = np.random.normal(0, 0.1, size=len(y_raw))
-                        y_raw = y_raw + noise
-                        y_values = np.where(y_raw > 0.5,
-                                          np.clip(y_raw, 0.7, 0.9),
-                                          np.clip(y_raw, 0.1, 0.3))
-                    else:
-                        noise = np.random.normal(0, 0.05, size=len(y_raw))
-                        y_values = np.clip(y_raw + noise, 0, 1)
-                    
-                    # Reshape for binary classification
-                    y_values = y_values.reshape(-1, 1)
+                    y_values = y_raw.reshape(-1, 1)
                     
             else:
                 # Handle one-hot encoded treatment inputs
@@ -823,11 +809,6 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                     y_values = y_data[treatment_cols].values.astype(np.float32)
                     
                     if is_training:
-                        # Add noise to one-hot encodings
-                        noise = np.random.normal(0, 0.1, size=y_values.shape)
-                        y_values = y_values + noise
-                        y_values = np.clip(y_values, 0, 1)
-                        
                         # Ensure valid probability distribution
                         row_sums = y_values.sum(axis=1, keepdims=True)
                         y_values = np.where(row_sums > 0, 
@@ -845,7 +826,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
             logger.info(f"Target mean: {np.mean(y_values)}")
             logger.info(f"Target std: {np.std(y_values)}")
                 
-        # Create sequences with improved noise handling
+        # Create sequences
         num_samples = len(x_values) - n_pre + 1
         x_sequences = []
         y_sequences = []
@@ -866,12 +847,6 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                 if len(binary_cols) > 0:
                     binary_indices = [x_data.columns.get_loc(col) for col in binary_cols]
                     x_seq[:, binary_indices] = x_values[i:i + n_pre, binary_indices].copy()
-                
-                # Only add minimal noise during training if really needed
-                if is_training and cont_cols:
-                    noise = np.zeros_like(x_seq)
-                    noise[:, cont_indices] = np.random.normal(0, 0.01, size=(n_pre, len(cont_indices)))
-                    x_seq += noise
                 
                 # Ensure consistent types
                 y_seq = y_values[i + n_pre - 1].copy()
@@ -1044,7 +1019,11 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             if is_censoring:
                 # Configure censoring model with focal loss
                 if 'target' in y_data.columns:
-                    pos_ratio = float(np.sum(y_data['target'].values)) / len(y_data['target'])
+                    pos_ratio = float(np.mean(y_data['target'].values > 0.5))
+                    class_weight = {
+                        0: 1.0,
+                        1: min(10.0, 1.0/pos_ratio)  # Cap weight at 10x to prevent instability
+                    }
                 else:
                     pos_ratio = 0.5
                 
@@ -1085,26 +1064,57 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                     name="pre_output"
                 )(x)
                 
+                # Better initializers 
+                kernel_init = tf.keras.initializers.VarianceScaling(
+                    scale=2.0, mode='fan_avg', distribution='truncated_normal'
+                )
+
+                # For binary Y model - add temperature scaling for better calibration
                 outputs = tf.keras.layers.Dense(
                     units=output_units,
-                    activation=final_activation,
-                    kernel_initializer='glorot_normal',
+                    activation=None,  # No activation initially
+                    kernel_initializer=kernel_init,
                     kernel_regularizer=l2(0.01),
-                    name="output_dense"
+                    bias_initializer=tf.keras.initializers.Constant(0.0),  # Start from 0 bias
+                    name="logits"
                 )(x)
+
+                # Add temperature scaling layer
+                temperature = 2.0  # Higher temperature = softer predictions
+                outputs = outputs / temperature
+
+                # Apply sigmoid after temperature scaling
+                outputs = tf.keras.layers.Activation('sigmoid', name="output_dense")(outputs)
                 
-                loss = tf.keras.losses.BinaryCrossentropy(
-                    from_logits=False,
-                    label_smoothing=0.1,
-                    reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE
-                )
+                # Adjust class weights based on observed rates with better balancing
+                if not is_censoring and 'target' in y_data.columns:
+                    pos_count = np.sum(y_data['target'].values > 0)
+                    total = len(y_data['target'])
+                    pos_ratio = pos_count / total
+                    
+                    # More balanced weighting scheme
+                    neg_weight = 1.0
+                    pos_weight = (1.0 - pos_ratio) / (pos_ratio + 1e-7)
+                    pos_weight = np.clip(pos_weight, 1.0, 3.0)  # Limit maximum weight
+                    
+                    class_weight = {
+                        0: neg_weight,
+                        1: pos_weight
+                    }
+                    
+                    alpha = pos_ratio  # Use actual class ratio
+                    loss = get_focal_loss(gamma=2.0, alpha=alpha)
                 
                 metrics = [
                     tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
-                    tf.keras.metrics.AUC(name='auc', curve='PR'),
+                    tf.keras.metrics.AUC(name='auc', curve='PR'),  # PR curve for imbalanced data
                     tf.keras.metrics.Precision(name='precision'),
                     tf.keras.metrics.Recall(name='recall'),
-                    tf.keras.metrics.BinaryCrossentropy(name='cross_entropy')
+                    tf.keras.metrics.BinaryCrossentropy(name='cross_entropy'),
+                    tf.keras.metrics.TruePositives(name='tp'),
+                    tf.keras.metrics.TrueNegatives(name='tn'),
+                    tf.keras.metrics.FalsePositives(name='fp'), 
+                    tf.keras.metrics.FalseNegatives(name='fn')
                 ]
   
         else:
@@ -1143,19 +1153,19 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
 
         lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            first_decay_steps=steps_per_epoch * 2,
+            first_decay_steps=steps_per_epoch * 3,  # Longer initial period
             t_mul=2.0,
-            m_mul=0.9,
-            alpha=0.1
+            m_mul=0.95,  # Slower decay
+            alpha=0.2  # Higher minimum LR
         )
-
+        
         optimizer = tf.keras.optimizers.AdamW(
             learning_rate=lr_schedule,
             weight_decay=0.001,
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-7,
-            clipnorm=1.0,
+            clipnorm=0.5,  # Clip gradients more aggressively
             amsgrad=True
         )
         
