@@ -96,9 +96,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     plotDAG(Dset, 
             excludeattrs=c("C_0","Y_0"), 
             xjitter=0.95, 
-            yjitter=0.2, 
+            yjitter=0.45, 
             tmax = 3,
-            customvlabs = c("V^1_0", "V^2_0", "V^3_0",
+            customvlabs = c("V^1", "V^2", "V^3",
                             "L^1_0", "L^2_0", "L^3_0",
                             "L^1_1", "L^2_1", "L^3_1",
                             "L^1_2", "L^2_2", "L^3_2",
@@ -1009,8 +1009,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           if(nrow(pred_mat) != n_ids) {
             pred_mat <- matrix(rep(pred_mat, length.out=n_ids), ncol=1)
           }
-          # Convert to uncensored probability and bound
-          bound_pred <- pmin(pmax(1 - pred_mat, gbound[1]), gbound[2])
+          # Bound uncensored probability
+          bound_pred <- pmin(pmax(1-pred_mat, gbound[1]), gbound[2])
           bound_pred
         }
       }, error = function(e) {
@@ -1447,7 +1447,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       t_end = t.end,
       window_size = window_size,
       n_ids = n_ids,
-      cores = 1, 
+      cores = ceiling(cores/2), 
       debug = debug
     )
     
@@ -1462,7 +1462,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(!is.null(tmle_contrasts[[t]])) {
         for(rule in 1:3) {
           # Calculate 1 minus mean of Qstar for survival probability
-          tmle_estimates[rule,t] <- 1 - mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE)
+          tmle_estimates[rule,t] <- 1- mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1472,7 +1472,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts_bin[[t]])) {
         for(rule in 1:3) {
-          tmle_bin_estimates[rule,t] <- 1 - mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
+          tmle_bin_estimates[rule,t] <- 1- mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1483,7 +1483,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
         iptw_means <- tmle_contrasts[[t]]$Qstar_iptw[1,]
         for(rule in 1:3) {
-          iptw_estimates[rule,t] <- 1 - iptw_means[rule]
+          iptw_estimates[rule,t] <- 1- iptw_means[rule]
         }
       }
     }
@@ -1494,7 +1494,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
         iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
         for(rule in 1:3) {
-          iptw_bin_estimates[rule,t] <- 1 - iptw_means[rule]
+          iptw_bin_estimates[rule,t] <- 1- iptw_means[rule]
         }
       }
     }
@@ -1504,7 +1504,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
         for(rule in 1:3) {
-          gcomp_estimates[rule,t] <- 1 - mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
+          gcomp_estimates[rule,t] <- 1- mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1893,7 +1893,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 1#325 # number of simulation runs
+R <- 325 # number of simulation runs
 
 full_vector <- 1:R
 
@@ -1918,7 +1918,7 @@ n.folds <- 5
 
 window_size <- 12
 
-debug <- TRUE
+debug <- FALSE
 
 # Setup parallel processing
 if(doMPI){

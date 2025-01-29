@@ -398,14 +398,22 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       print(colMeans(tmle_contrasts[[t]]$Qstar, na.rm=TRUE))
       cat("IPTW estimates:\n")
       print(tmle_contrasts[[t]]$Qstar_iptw)
+      cat("Observed Y mean:\n")
+      print(mean(tmle_contrasts[[t]]$Y, na.rm=TRUE))
+      cat("Number of valid rules:\n")
+      print(sapply(1:ncol(obs.rules[[t]]), function(i) sum(obs.rules[[t]][,i], na.rm=TRUE)))
     }
-  }
-  
-  if(debug) {
-    cat("\nTMLE Result Dimensions:")
-    cat("\npredict_Qstar:", paste(dim(predict_Qstar), collapse=" x "))
-    cat("\npredicted_Y:", paste(dim(predicted_Y), collapse=" x "))
-    cat("\nQstar_iptw:", paste(dim(matrix(iptw_means, nrow=1)), collapse=" x "))
+    
+    # Add dimension checks for final output
+    cat("\nFinal output dimensions:")
+    cat("\nNumber of time points:", length(tmle_contrasts))
+    for(t in 1:t_end) {
+      cat(sprintf("\nTime point %d:", t))
+      cat("\n  Qstar:", paste(dim(tmle_contrasts[[t]]$Qstar), collapse=" x "))
+      cat("\n  Qstar_gcomp:", paste(dim(tmle_contrasts[[t]]$Qstar_gcomp), collapse=" x "))
+      cat("\n  Qstar_iptw:", paste(dim(tmle_contrasts[[t]]$Qstar_iptw), collapse=" x "))
+      cat("\n  Y:", paste(dim(matrix(tmle_contrasts[[t]]$Y)), collapse=" x "))
+    }
   }
   
   return(list(
