@@ -220,9 +220,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     plotSurvEst(surv = list("Static"=sapply(obs.rules,colMeans, na.rm=TRUE)[1,], "Dynamic"=sapply(obs.rules,colMeans, na.rm=TRUE)[2,], "Stochastic"=sapply(obs.rules,colMeans, na.rm=TRUE)[3,]),
                 ylab = "Share of patients who continued to follow each rule", 
                 xlab = "Month",
-                main = "Treatment rule adherence (simulated data)",
+                main = "Treatment rule adherence",
                 legend.xyloc = "topright", xaxt="n")
-    axis(1, at = seq(1, (t.end+1), by = 3))
+    axis(1, at = seq(1, t.end, by = 5))
     dev.off()
   }
   
@@ -238,7 +238,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     plotSurvEst(surv = list("Static"=1-Y.true[["static"]], "Dynamic"=1-Y.true[["dynamic"]], "Stochastic"=1-Y.true[["stochastic"]]),
                 ylab = "Share of patients without diabetes diagnosis", 
                 xlab = "Month",
-                main = "Counterfactual outcomes (simulated data)",
+                main = "Counterfactual outcomes",
                 legend.xyloc = "bottomleft", xindx = 1:t.end, xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     dev.off()
@@ -247,7 +247,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     plotSurvEst(surv = list("Static"=1-Y.observed[["static"]], "Dynamic"=1-Y.observed[["dynamic"]], "Stochastic"=1-Y.observed[["stochastic"]]),
                 ylab = "Share of patients without diabetes diagnosis", 
                 xlab = "Month",
-                main = "Observed outcomes (simulated data)",
+                main = "Observed outcomes",
                 legend.xyloc = "bottomleft", xaxt="n")
     axis(1, at = seq(1, t.end, by = 5))
     lines(1:t.end, 1-Y.observed[["overall"]], type = "l", lty = 2)
@@ -1461,8 +1461,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts[[t]])) {
         for(rule in 1:3) {
-          # Calculate 1 minus mean of Qstar for survival probability
-          tmle_estimates[rule,t] <- 1- mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE)
+          tmle_estimates[rule,t] <- mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1472,7 +1471,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts_bin[[t]])) {
         for(rule in 1:3) {
-          tmle_bin_estimates[rule,t] <- 1- mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
+          tmle_bin_estimates[rule,t] <- mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1483,7 +1482,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
         iptw_means <- tmle_contrasts[[t]]$Qstar_iptw[1,]
         for(rule in 1:3) {
-          iptw_estimates[rule,t] <- 1- iptw_means[rule]
+          iptw_estimates[rule,t] <- iptw_means[rule]
         }
       }
     }
@@ -1494,7 +1493,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
         iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
         for(rule in 1:3) {
-          iptw_bin_estimates[rule,t] <- 1- iptw_means[rule]
+          iptw_bin_estimates[rule,t] <- iptw_means[rule]
         }
       }
     }
@@ -1504,7 +1503,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
         for(rule in 1:3) {
-          gcomp_estimates[rule,t] <- 1- mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
+          gcomp_estimates[rule,t] <- mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1676,6 +1675,32 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle-lstm")
     
     gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle-lstm")
+    
+    # Convert survival probabilities to event probabilities for all estimates
+    tmle_est_var$est <- lapply(tmle_est_var$est, function(x) 1 - x)
+    tmle_est_var_bin$est <- lapply(tmle_est_var_bin$est, function(x) 1 - x)
+    iptw_est_var$est <- lapply(iptw_est_var$est, function(x) 1 - x)
+    iptw_est_var_bin$est <- lapply(iptw_est_var_bin$est, function(x) 1 - x)
+    gcomp_est_var$est <- lapply(gcomp_est_var$est, function(x) 1 - x)
+    
+    # Convert CIs too - note we need to flip them since we're doing 1-x
+    for(t in 1:(t.end-1)) {
+      if(!is.null(tmle_est_var$CI[[t]])) {
+        tmle_est_var$CI[[t]] <- 1 - tmle_est_var$CI[[t]][c(2,1),]  # Note order swap
+      }
+      if(!is.null(tmle_est_var_bin$CI[[t]])) {
+        tmle_est_var_bin$CI[[t]] <- 1 - tmle_est_var_bin$CI[[t]][c(2,1),]
+      }
+      if(!is.null(iptw_est_var$CI[[t]])) {
+        iptw_est_var$CI[[t]] <- 1 - iptw_est_var$CI[[t]][c(2,1),]
+      }
+      if(!is.null(iptw_est_var_bin$CI[[t]])) {
+        iptw_est_var_bin$CI[[t]] <- 1 - iptw_est_var_bin$CI[[t]][c(2,1),]
+      }
+      if(!is.null(gcomp_est_var$CI[[t]])) {
+        gcomp_est_var$CI[[t]] <- 1 - gcomp_est_var$CI[[t]][c(2,1),]
+      }
+    }
   }else{
     tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle")
     tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, estimator="tmle")
@@ -1698,7 +1723,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   bias_tmle  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - tmle_est_var$est[[t]])
   names(bias_tmle) <- paste0("t=",2:t.end)
   
-  CP_tmle <- lapply(1:(t.end-1), function(t) as.numeric((tmle_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (tmle_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
+  CP_tmle <- lapply(1:(t.end-1), function(t) as.numeric((tmle_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & 
+                                                          (tmle_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
   names(CP_tmle) <- paste0("t=",2:t.end)
   
   for(t in 1:(t.end-1)){

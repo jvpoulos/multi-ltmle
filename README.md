@@ -273,12 +273,12 @@ This section outlines the model weights, intermediate results, and visualization
      - Directed Acyclic Graph (DAG):  
        ![DAG Plot](./ex_outputs/DAG_plot.png)
      - Treatment adherence:  
-       ![Adherence Plot](./ex_outputs/treatment_adherence_10000.png)
+       ![Adherence Plot](./ex_outputs/treatment_adherence_12500.png)
      - Survival plots:
        - Observed:  
-         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_10000.png)
+         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_12500.png)
        - Truth:  
-         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_10000.png)
+         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_12500.png)
        - TMLE estimates:  
          ![TMLE Estimates Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle)
 

@@ -39,7 +39,7 @@ from tensorflow.keras.initializers import GlorotNormal, GlorotUniform
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 
-from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, CustomNanCallback
+from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, CustomNanCallback, get_data_filenames
 
 import sys
 import traceback
@@ -105,6 +105,10 @@ def main():
     # Record start time
     start_time = time.time()
     
+    # Convert output_dir to absolute path
+    output_dir = os.path.abspath(output_dir)
+    logger.info(f"Using absolute output directory: {output_dir}")
+
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
         
@@ -150,8 +154,20 @@ def main():
     n_pre = int(window_size)
     batch_size = int(nb_batches)
 
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    input_file, output_file = get_data_filenames(is_censoring, loss_fn, outcome_cols)
+    
+    # Use absolute paths for data files
+    input_path = os.path.join(output_dir, input_file)
+    output_path = os.path.join(output_dir, output_file)
+
+    logger.info(f"Loading data from input file: {input_path}")
+    logger.info(f"Loading data from output file: {output_path}")
+
     # Load data
-    x_data, y_data = load_data_from_csv(f"{output_dir}input_data.csv", f"{output_dir}output_data.csv")
+    x_data, y_data = load_data_from_csv(input_path, output_path)
 
     logger.info("Data loaded successfully")
     logger.info(f"x_data shape: {x_data.shape}")
@@ -159,34 +175,34 @@ def main():
 
     # Modify the y_data preparation section:
     if loss_fn == "binary_crossentropy":
-        # For binary case, ensure proper one-hot encoding and class balance
-        if 'A' in y_data.columns:
-            # Get class distribution
-            treatment_dist = y_data['A'].value_counts(normalize=True)
+        logger.info("Processing one-hot encoded outputs...")
+        # For binary case, data should already be one-hot encoded 
+        # with column names A0-A5
+        if 'target' in y_data.columns:
+            # Convert target column to one-hot if present
+            treatment_dist = y_data['target'].value_counts(normalize=True)
             logger.info(f"Original treatment distribution:\n{treatment_dist}")
             
-            # Create one-hot encoded columns with proper handling
-            onehot_cols = []
+            # Create one-hot encoded columns
             for i in range(J):
                 col_name = f'A{i}'
-                y_data[col_name] = (y_data['A'].values == i).astype(float)
-                # Add small noise to prevent perfect separation
-                if len(y_data[y_data[col_name] == 1]) > 0:
-                    noise = np.random.normal(0, 0.1, size=len(y_data))
-                    y_data[col_name] = y_data[col_name] + noise * y_data[col_name]
-                    y_data[col_name] = np.clip(y_data[col_name], 0.05, 0.95)
-                onehot_cols.append(col_name)
+                y_data[col_name] = (y_data['target'] == i).astype(float)
                 
-            # Keep only ID and one-hot columns
-            y_data = y_data[['ID'] + onehot_cols]
-            
-            # Log class balance after processing
+            # Remove target column and keep only ID and one-hot columns
+            y_data = y_data[['ID'] + [f'A{i}' for i in range(J)]]
+        else:
+            # Verify one-hot encoded format
+            onehot_cols = [f'A{i}' for i in range(J)]
+            if not all(col in y_data.columns for col in onehot_cols):
+                raise ValueError(f"Missing one-hot columns. Expected {onehot_cols}, got {y_data.columns}")
+                
             logger.info("Treatment distribution after processing:")
             for col in onehot_cols:
                 mean_val = y_data[col].mean()
                 logger.info(f"{col}: {mean_val:.4f}")
+                
     else:
-        # For categorical case, keep existing A column
+        # For categorical case, keep target column
         if 'A' not in y_data.columns and 'target' not in y_data.columns:
             raise ValueError("No target or A column found in y_data")
 
@@ -246,6 +262,7 @@ def main():
             is_training=False,
             is_censoring=is_censoring
         )
+        val_dataset = val_dataset.repeat()  # Add repeat() to prevent end of sequence
 
     # Calculate steps directly based on samples
     steps_per_epoch = math.ceil(train_samples / batch_size)

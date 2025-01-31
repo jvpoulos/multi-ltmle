@@ -3,9 +3,9 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from tensorflow.keras.mixed_precision import LossScaleOptimizer  # Updated import
+from tensorflow.keras.mixed_precision import LossScaleOptimizer
 
-from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy
+from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy, get_data_filenames
 
 import sys
 import traceback
@@ -78,12 +78,15 @@ def test_model():
         logger.warning("GPU configuration failed, proceeding with default settings")
     
     try:
+        output_dir = os.path.abspath(output_dir)
+        logger.info(f"Using absolute output directory: {output_dir}")
+
         # Get appropriate filenames using the shared function
         model_filename, pred_filename, info_filename = get_model_filenames(
             loss_fn, output_dim, is_censoring
         )
 
-        # Set paths
+        # Set paths using absolute directory
         model_path = os.path.join(output_dir, model_filename)
         pred_path = os.path.join(output_dir, pred_filename)
         info_path = os.path.join(output_dir, info_filename)
@@ -91,8 +94,14 @@ def test_model():
         logger.info(f"Loading model from: {model_path}")
         
         logger.info(f"Loading data from {output_dir}")
-        x_data, y_data = load_data_from_csv(f"{output_dir}input_data.csv", f"{output_dir}output_data.csv")
+        input_file, output_file = get_data_filenames(is_censoring, loss_fn, outcome_cols)
         
+        # Use absolute paths
+        input_path = os.path.join(output_dir, input_file)
+        output_path = os.path.join(output_dir, output_file)
+        
+        x_data, y_data = load_data_from_csv(input_path, output_path)
+
         # Load split information
         split_info_path = os.path.join(output_dir, 'split_info.npy')
         logger.info(f"Loading split info from {split_info_path}")

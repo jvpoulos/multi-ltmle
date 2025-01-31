@@ -32,57 +32,68 @@ logger = logging.getLogger(__name__)
 import wandb
 from datetime import datetime
 
-class CalibrationCallback(tf.keras.callbacks.Callback):
-    def on_epoch_end(self, epoch, logs=None):
-        # Get predictions for a batch
-        x_batch = next(iter(self._train_dataset))[0]
-        preds = self.model.predict(x_batch)
-        
-        # Calculate calibration metrics
-        bins = np.linspace(0, 1, 11)
-        binned_preds = np.digitize(preds, bins) - 1
-        calibration = np.zeros(10)
-        for i in range(10):
-            mask = binned_preds == i
-            if np.any(mask):
-                calibration[i] = np.mean(preds[mask])
-        
-        wandb.log({
-            'calibration_histogram': wandb.Histogram(calibration),
-            'mean_prediction': np.mean(preds),
-            'prediction_std': np.std(preds)
-        }, commit=False)
-
+def get_data_filenames(is_censoring, loss_fn, outcome_cols):
+    """Get appropriate input/output filenames based on model type."""
+    if is_censoring:
+        base = "lstm_bin_C"
+    else:
+        # Handle Y model based on outcome cols or model parameters
+        if (isinstance(outcome_cols, list) and any(col.startswith('Y') for col in outcome_cols)) or \
+           (isinstance(outcome_cols, str) and outcome_cols.startswith('Y')):
+            base = "lstm_bin_Y"
+        else:
+            # Treatment models
+            if loss_fn == "sparse_categorical_crossentropy":
+                base = "lstm_cat_A" 
+            else:
+                base = "lstm_bin_A"
+    
+    return f"{base}_input.csv", f"{base}_output.csv"
+    
 def log_metrics(history, start_time):
     metrics_to_log = {}
     
     try:
-        # Handle training metrics
-        if 'loss' in history.history:
+        if 'cross_entropy' in history.history:
             metrics_to_log.update({
-                'final_train_loss': float(history.history['loss'][-1]),
-                'best_train_loss': float(min(history.history['loss']))
-            })
-        
-        # Handle validation metrics
-        if 'val_loss' in history.history:
-            metrics_to_log.update({
-                'final_val_loss': float(history.history['val_loss'][-1]),
-                'best_val_loss': float(min(history.history['val_loss'])),
-                'best_epoch': int(np.argmin(history.history['val_loss']))
+                'final_cross_entropy': float(history.history['cross_entropy'][-1]),
+                'best_cross_entropy': float(min(history.history['cross_entropy'])),
+                'best_epoch': int(np.argmin(history.history['cross_entropy']))
             })
             
-        # Handle accuracy metrics
+        if 'val_cross_entropy' in history.history:
+            metrics_to_log.update({
+                'final_val_cross_entropy': float(history.history['val_cross_entropy'][-1]),
+                'best_val_cross_entropy': float(min(history.history['val_cross_entropy'])),
+                'best_epoch': int(np.argmin(history.history['val_cross_entropy']))
+            })
+
         if 'accuracy' in history.history:
             metrics_to_log.update({
-                'final_train_accuracy': float(history.history['accuracy'][-1]),
-                'best_train_accuracy': float(max(history.history['accuracy']))
+                'final_accuracy': float(history.history['accuracy'][-1]),
+                'best_accuracy': float(min(history.history['accuracy'])),
+                'best_epoch': int(np.argmin(history.history['accuracy']))
             })
             
         if 'val_accuracy' in history.history:
             metrics_to_log.update({
                 'final_val_accuracy': float(history.history['val_accuracy'][-1]),
-                'best_val_accuracy': float(max(history.history['val_accuracy']))
+                'best_val_accuracy': float(min(history.history['val_accuracy'])),
+                'best_epoch': int(np.argmin(history.history['val_accuracy']))
+            })
+
+        if 'loss' in history.history:
+            metrics_to_log.update({
+                'final_loss': float(history.history['loss'][-1]),
+                'best_loss': float(min(history.history['loss'])),
+                'best_epoch': int(np.argmin(history.history['loss']))
+            })
+            
+        if 'val_loss' in history.history:
+            metrics_to_log.update({
+                'final_val_loss': float(history.history['val_loss'][-1]),
+                'best_val_loss': float(min(history.history['val_loss'])),
+                'best_epoch': int(np.argmin(history.history['val_loss']))
             })
 
         metrics_to_log['training_time'] = time.time() - start_time
@@ -148,8 +159,6 @@ class CustomNanCallback(tf.keras.callbacks.Callback):
                 print(f'NaN encountered in {k} at batch {batch}')
                 self.model.stop_training = True
                 break
-
-# In utils.py - Replace the CustomCallback class:
 
 class CustomCallback(tf.keras.callbacks.Callback):
     """Fixed implementation of CustomCallback"""
@@ -287,10 +296,10 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
             mode='min'
         ),
 
-        # Regular checkpoints (keep last 3)
+        # Regular checkpoints (keep last 1)
         CustomModelCheckpoint(
             filepath=os.path.join(checkpoint_dir, 'model_epoch_{epoch:02d}.keras'),
-            keep_n=3,
+            keep_n=1,
             save_weights_only=False,
             monitor='val_loss',
             mode='min'
@@ -304,39 +313,6 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
     ]
     
     return callbacks
-
-def is_count_sequence(values):
-    """Helper function to identify count sequences"""
-    try:
-        # Convert values to numeric
-        nums = [float(x.strip()) for x in values if x.strip() and x.strip() != 'NA']
-        if not nums:
-            return False
-            
-        # Check if all values are non-negative integers
-        is_int = all(float(n).is_integer() for n in nums)
-        is_nonneg = all(n >= 0 for n in nums)
-        
-        # Look for values > 1 to distinguish from binary
-        has_larger = any(n > 1 for n in nums)
-        
-        return is_int and is_nonneg and has_larger
-    except:
-        return False
-
-def is_binary_sequence(values):
-    """Helper function to identify binary sequences"""
-    try:
-        # Convert values to numeric, skipping NA/empty
-        nums = [float(x.strip()) for x in values if x.strip() and x.strip() != 'NA']
-        if not nums:
-            return False
-            
-        # Check if only contains -1, 0, 1
-        unique_vals = set(nums)
-        return unique_vals.issubset({-1, 0, 1})
-    except:
-        return False
 
 def load_data_from_csv(input_file, output_file):
     """
@@ -569,8 +545,6 @@ def configure_gpu(policy=None):
     except Exception as e:
         logger.error(f"GPU configuration failed: {e}")
         return False
-
-# In utils.py - Replace the get_strategy function:
 
 def get_strategy():
     """Get appropriate distribution strategy with improved GPU/CPU handling."""
@@ -838,10 +812,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                 
                 # Only standardize continuous features
                 if cont_cols:
-                    x_seq[:, cont_indices] = np.clip(
-                        (x_seq[:, cont_indices] - mean[cont_indices]) / std[cont_indices],
-                        -2, 2  # Reduce clipping range to prevent extreme values
-                    )
+                    x_seq[:, cont_indices] = (x_seq[:, cont_indices] - mean[cont_indices]) / std[cont_indices]
                 
                 # Handle binary features - keep as is without standardization
                 if len(binary_cols) > 0:
@@ -897,43 +868,25 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         logger.error(traceback.format_exc())
         raise
 
-def get_focal_loss(gamma=2.0, alpha=None):
-    """Get focal loss function with optional alpha balancing."""
-    def focal_loss(y_true, y_pred):
+def weighted_binary_crossentropy(pos_weight, neg_weight):
+    """Custom weighted binary crossentropy that explicitly accepts class weights"""
+    def loss(y_true, y_pred):
+        y_true = tf.cast(y_true, tf.float32)
+        
+        # Clip prediction values to avoid log(0)
         epsilon = tf.keras.backend.epsilon()
         y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
         
-        # Calculate focal loss
-        ce = -y_true * tf.math.log(y_pred)
-        focal_weight = tf.pow(1 - y_pred, gamma) * y_true
+        # Calculate binary crossentropy
+        bce = -(y_true * tf.math.log(y_pred) * pos_weight +
+                (1 - y_true) * tf.math.log(1 - y_pred) * neg_weight)
         
-        # Apply class balancing if alpha provided
-        if alpha is not None:
-            alpha_weight = alpha * y_true + (1 - alpha) * (1 - y_true)
-            focal_weight = focal_weight * alpha_weight
-            
-        return tf.reduce_mean(focal_weight * ce)
-    return focal_loss
+        return tf.reduce_mean(bce)
+    return loss
 
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
                 out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False):
-    """Create model with proper handling of binary and categorical cases.
-    
-    Args:
-        input_shape: Shape of input tensors
-        output_dim: Number of output dimensions
-        lr: Learning rate
-        dr: Dropout rate
-        n_hidden: Number of hidden units
-        hidden_activation: Activation function for hidden layers
-        out_activation: Activation function for output layer
-        loss_fn: Loss function (binary_crossentropy or sparse_categorical_crossentropy)
-        J: Number of treatment categories
-        epochs: Number of training epochs
-        steps_per_epoch: Steps per epoch
-        y_data: Optional target data for reference
-        strategy: Optional distribution strategy
-    """
+    """Create model with proper handling of binary and categorical cases."""
     if strategy is None:
         strategy = get_strategy()
     
@@ -954,12 +907,12 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             'recurrent_activation': 'sigmoid',
             'kernel_initializer': 'glorot_uniform',
             'recurrent_initializer': 'orthogonal',
-            'kernel_regularizer': l2(0.01),
-            'recurrent_regularizer': l2(0.01),
-            'bias_regularizer': l2(0.01),
+            'kernel_regularizer': l2(0.05),
+            'recurrent_regularizer': l2(0.05),
+            'bias_regularizer': l2(0.05),
             'dropout': dr,
-            'recurrent_dropout': 0.0,
-            'unit_forget_bias': True,  # Add this to improve gradient flow
+            'recurrent_dropout': 0,
+            'unit_forget_bias': True,
             'dtype': tf.float32
         }
         
@@ -968,7 +921,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
 
         # First LSTM layer
         x = tf.keras.layers.LSTM(
-            units=n_hidden,  # Using same dimension
+            units=n_hidden,
             return_sequences=True,
             name="lstm_1",
             **lstm_config
@@ -979,8 +932,9 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         # Add skip connection
         skip = x
 
+        # Second LSTM layer
         x = tf.keras.layers.LSTM(
-            units=n_hidden, # Same dimension as previous layer
+            units=n_hidden,
             return_sequences=True,
             name="lstm_2",
             **lstm_config
@@ -991,7 +945,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         # Add skip connection back
         x = tf.keras.layers.Add()([x, skip])
 
-        # Final LSTM layer for feature extraction
+        # Final LSTM layer
         x = tf.keras.layers.LSTM(
             units=max(32, n_hidden // 2),
             return_sequences=False,
@@ -1011,131 +965,93 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         x = tf.keras.layers.LayerNormalization(name="norm_4")(x)
         x = tf.keras.layers.Dropout(dr, name="drop_4")(x)
         
-        # Output layer and loss configuration
+        # Initialize outputs variable
+        outputs = None
+        loss = None
+        metrics = None
+        
+        # Output layer configuration based on loss function
         if loss_fn == "binary_crossentropy":
             final_activation = 'sigmoid'
             output_units = 1 if is_censoring else J
             
             if is_censoring:
-                # Configure censoring model with focal loss
                 if 'target' in y_data.columns:
                     pos_ratio = float(np.mean(y_data['target'].values > 0.5))
-                    class_weight = {
-                        0: 1.0,
-                        1: min(10.0, 1.0/pos_ratio)  # Cap weight at 10x to prevent instability
-                    }
+                    pos_ratio = np.clip(pos_ratio, 0.01, 0.99)
+                    init_bias = np.log(pos_ratio / (1.0 - pos_ratio))
+                    
+                    pos_weight = 1.0 / (pos_ratio + 1e-7)
+                    neg_weight = 1.0 / (1.0 - pos_ratio + 1e-7)
+                    total = pos_weight + neg_weight  
+                    pos_weight = pos_weight / total * 2
+                    neg_weight = neg_weight / total * 2
+                    
+                    class_weight = {0: neg_weight, 1: pos_weight}
+                    
+                    loss = weighted_binary_crossentropy(
+                        pos_weight=pos_weight,
+                        neg_weight=neg_weight
+                    )
+                    
+                    outputs = tf.keras.layers.Dense(
+                        units=output_units,
+                        activation=final_activation,
+                        kernel_initializer='glorot_uniform',
+                        kernel_regularizer=l2(0.001),
+                        bias_initializer=tf.keras.initializers.Constant(init_bias),
+                        name="output_dense"
+                    )(x)
+                    
+                    metrics = [
+                        tf.keras.metrics.BinaryAccuracy(name='accuracy'),
+                        tf.keras.metrics.AUC(name='auc'),
+                        tf.keras.metrics.Precision(name='precision'),
+                        tf.keras.metrics.Recall(name='recall'),
+                        tf.keras.metrics.BinaryCrossentropy(name='cross_entropy')
+                    ]
+            else:
+                if output_units == 1:
+                    # Single binary output
+                    init_bias = 0.0
+                    if 'target' in y_data.columns:
+                        pos_ratio = float(np.mean(y_data['target'].values > 0.5))
+                        init_bias = np.log(pos_ratio / (1.0 - pos_ratio))
                 else:
-                    pos_ratio = 0.5
-                
-                pos_ratio = np.clip(pos_ratio, 0.01, 0.99)
-                alpha = max(0.1, min(0.9, pos_ratio))
-                
-                loss = get_focal_loss(gamma=2.0, alpha=alpha)
-                
+                    # Multiple binary outputs
+                    init_bias = [0.0] * output_units
+                    if y_data is not None:
+                        onehot_cols = [f'A{i}' for i in range(output_units)]
+                        if all(col in y_data.columns for col in onehot_cols):
+                            init_bias = [np.log(np.mean(y_data[col]) / (1 - np.mean(y_data[col]) + 1e-7)) 
+                                       for col in onehot_cols]
+
                 outputs = tf.keras.layers.Dense(
                     units=output_units,
                     activation=final_activation,
                     kernel_initializer='glorot_uniform',
-                    kernel_regularizer=l2(0.01),
-                    bias_initializer=tf.keras.initializers.Constant(
-                        np.log(max(1e-5, pos_ratio)/(1.0 - min(pos_ratio, 0.99999)))
-                    ),
+                    kernel_regularizer=l2(0.001),
+                    bias_initializer=tf.keras.initializers.Constant(init_bias),
                     name="output_dense"
                 )(x)
-                
+
+                loss = tf.keras.losses.BinaryCrossentropy()
                 metrics = [
                     tf.keras.metrics.BinaryAccuracy(name='accuracy'),
-                    tf.keras.metrics.AUC(name='auc', from_logits=False),
-                    tf.keras.metrics.Precision(name='precision', thresholds=0.3),
-                    tf.keras.metrics.Recall(name='recall')
+                    tf.keras.metrics.AUC(name='auc', multi_label=True if output_units > 1 else False),
+                    tf.keras.metrics.BinaryCrossentropy(name='cross_entropy')
                 ]
-                
-                # Set censoring class weights
-                neg_weight = 1.0
-                pos_weight = (1.0 - pos_ratio) / (pos_ratio + 1e-7)
-                class_weight = {0: neg_weight, 1: pos_weight}
-                
-            else:
-                # Regular binary classification (Y model)
-                x = tf.keras.layers.Dense(
-                    units=32,
-                    activation='relu',
-                    kernel_regularizer=l2(0.01),
-                    name="pre_output"
-                )(x)
-                
-                # Better initializers 
-                kernel_init = tf.keras.initializers.VarianceScaling(
-                    scale=2.0, mode='fan_avg', distribution='truncated_normal'
-                )
 
-                # For binary Y model - add temperature scaling for better calibration
-                outputs = tf.keras.layers.Dense(
-                    units=output_units,
-                    activation=None,  # No activation initially
-                    kernel_initializer=kernel_init,
-                    kernel_regularizer=l2(0.01),
-                    bias_initializer=tf.keras.initializers.Constant(0.0),  # Start from 0 bias
-                    name="logits"
-                )(x)
-
-                # Add temperature scaling layer
-                temperature = 2.0  # Higher temperature = softer predictions
-                outputs = outputs / temperature
-
-                # Apply sigmoid after temperature scaling
-                outputs = tf.keras.layers.Activation('sigmoid', name="output_dense")(outputs)
-                
-                # Adjust class weights based on observed rates with better balancing
-                if not is_censoring and 'target' in y_data.columns:
-                    pos_count = np.sum(y_data['target'].values > 0)
-                    total = len(y_data['target'])
-                    pos_ratio = pos_count / total
-                    
-                    # More balanced weighting scheme
-                    neg_weight = 1.0
-                    pos_weight = (1.0 - pos_ratio) / (pos_ratio + 1e-7)
-                    pos_weight = np.clip(pos_weight, 1.0, 3.0)  # Limit maximum weight
-                    
-                    class_weight = {
-                        0: neg_weight,
-                        1: pos_weight
-                    }
-                    
-                    alpha = pos_ratio  # Use actual class ratio
-                    loss = get_focal_loss(gamma=2.0, alpha=alpha)
-                
-                metrics = [
-                    tf.keras.metrics.BinaryAccuracy(name='accuracy', threshold=0.5),
-                    tf.keras.metrics.AUC(name='auc', curve='PR'),  # PR curve for imbalanced data
-                    tf.keras.metrics.Precision(name='precision'),
-                    tf.keras.metrics.Recall(name='recall'),
-                    tf.keras.metrics.BinaryCrossentropy(name='cross_entropy'),
-                    tf.keras.metrics.TruePositives(name='tp'),
-                    tf.keras.metrics.TrueNegatives(name='tn'),
-                    tf.keras.metrics.FalsePositives(name='fp'), 
-                    tf.keras.metrics.FalseNegatives(name='fn')
-                ]
-  
-        else:
-            # Categorical case (A model)
+        else:  # sparse_categorical_crossentropy
             final_activation = 'softmax'
             output_units = J
             
-           # Add intermediate layer to preserve individual variations
-            x = tf.keras.layers.Dense(
-                units=n_hidden//2,
-                activation='relu',
-                kernel_regularizer=l2(0.001),
-                name="pre_output"
-            )(x)
-
             outputs = tf.keras.layers.Dense(
                 units=output_units,
                 activation=final_activation,
                 kernel_initializer='glorot_uniform',
                 kernel_regularizer=l2(0.001),
-                use_bias=True, # Enable bias for better capacity
+                use_bias=True,
                 name="output_dense"
             )(x)
             
@@ -1148,28 +1064,33 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                 tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy')
             ]
         
+        if outputs is None:
+            raise ValueError("Outputs layer was not properly created. Check loss function configuration.")
+
         # Create model
         model = Model(inputs=inputs, outputs=outputs, name='lstm_model')
 
+        # Learning rate schedule
         lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            first_decay_steps=steps_per_epoch * 3,  # Longer initial period
+            first_decay_steps=steps_per_epoch * 10,
             t_mul=2.0,
-            m_mul=0.95,  # Slower decay
-            alpha=0.2  # Higher minimum LR
+            m_mul=0.9,
+            alpha=0.1
         )
         
+        # Optimizer
         optimizer = tf.keras.optimizers.AdamW(
             learning_rate=lr_schedule,
             weight_decay=0.001,
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-7,
-            clipnorm=0.5,  # Clip gradients more aggressively
+            clipnorm=1.0,
             amsgrad=True
         )
         
-        # Compile model with appropriate loss and metrics
+        # Compile model
         model.compile(
             optimizer=optimizer,
             loss=loss,

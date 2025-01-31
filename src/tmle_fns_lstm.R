@@ -56,6 +56,10 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       "calculate_iptw",
       "log_iptw_error",
       "log_completion",
+      "track_initial_data",  # Add tracking functions
+      "track_tmle_results",
+      "track_stored_results",
+      "process_time_points_tracking",
       "static_mtp_lstm",
       "dynamic_mtp_lstm",
       "stochastic_mtp_lstm"
@@ -69,7 +73,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       library(Matrix)  # Add any other required packages
     })
     
-    # Create and export environment variables
+    # Update cluster environment setup with debug functions
     cluster_env <- list(
       debug = debug,
       J = length(g_preds_processed[[1]][[1]]),
@@ -77,7 +81,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       n_rules = n_rules,
       t_end = t_end,
       window_size = window_size,
-      initial_model_for_Y = initial_model_for_Y,
+      initial_model_for_Y = initial_model_for_Y, 
       initial_model_for_Y_data = initial_model_for_Y_data,
       tmle_rules = tmle_rules,
       tmle_covars_Y = tmle_covars_Y,
@@ -87,7 +91,11 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       treatments = treatments,
       obs.rules = obs.rules,
       gbound = gbound,
-      ybound = ybound
+      ybound = ybound,
+      track_initial_data = track_initial_data,
+      track_tmle_results = track_tmle_results,
+      track_stored_results = track_stored_results,
+      process_time_points_tracking = process_time_points_tracking
     )
     
     # Export variables with explicit environment
