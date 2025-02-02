@@ -95,6 +95,9 @@ def test_model():
         
         logger.info(f"Loading data from {output_dir}")
         input_file, output_file = get_data_filenames(is_censoring, loss_fn, outcome_cols)
+
+        logger.info(f"Loading data from input file: {input_file}")
+        logger.info(f"Loading data from output file: {output_file}")
         
         # Use absolute paths
         input_path = os.path.join(output_dir, input_file)

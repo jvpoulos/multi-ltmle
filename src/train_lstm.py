@@ -169,38 +169,46 @@ def main():
     # Load data
     x_data, y_data = load_data_from_csv(input_path, output_path)
 
+    # Force is_censoring=True if we're using C model files
+    is_censoring = "lstm_bin_C" in input_file
+    
+    if is_censoring:
+        logger.info("Training Censoring (C) Model...")
+    else:
+        logger.info("Training Outcome (Y) Model...")
+
     logger.info("Data loaded successfully")
     logger.info(f"x_data shape: {x_data.shape}")
     logger.info(f"y_data shape: {y_data.shape}")
 
+    # Configure model
+
+    output_dim = 1 if is_censoring or (loss_fn == "binary_crossentropy" and not any(col.startswith('A') for col in y_data.columns)) else J
+    logger.info(f"Using {'censoring' if is_censoring else 'treatment'} prediction with output_dim={output_dim}")
+    logger.info(f"Output dimension: {output_dim}")
+
     # Modify the y_data preparation section:
     if loss_fn == "binary_crossentropy":
         logger.info("Processing one-hot encoded outputs...")
-        # For binary case, data should already be one-hot encoded 
-        # with column names A0-A5
         if 'target' in y_data.columns:
-            # Convert target column to one-hot if present
             treatment_dist = y_data['target'].value_counts(normalize=True)
             logger.info(f"Original treatment distribution:\n{treatment_dist}")
             
-            # Create one-hot encoded columns
-            for i in range(J):
-                col_name = f'A{i}'
-                y_data[col_name] = (y_data['target'] == i).astype(float)
+            if is_censoring:
+                # Keep target column for censoring model
+                y_data = y_data[['ID', 'target']]
+            elif output_dim == 1:
+                # Keep target column for Y model 
+                y_data = y_data[['ID', 'target']]
+            else:
+                # Create one-hot encoded columns for treatment (A) model
+                for i in range(J):
+                    col_name = f'A{i}'
+                    y_data[col_name] = (y_data['target'] == i).astype(float)
+                y_data = y_data[['ID'] + [f'A{i}' for i in range(J)]]
                 
-            # Remove target column and keep only ID and one-hot columns
-            y_data = y_data[['ID'] + [f'A{i}' for i in range(J)]]
-        else:
-            # Verify one-hot encoded format
-            onehot_cols = [f'A{i}' for i in range(J)]
-            if not all(col in y_data.columns for col in onehot_cols):
-                raise ValueError(f"Missing one-hot columns. Expected {onehot_cols}, got {y_data.columns}")
-                
-            logger.info("Treatment distribution after processing:")
-            for col in onehot_cols:
-                mean_val = y_data[col].mean()
-                logger.info(f"{col}: {mean_val:.4f}")
-                
+            logger.info("Data after processing:")
+            logger.info(f"Columns: {y_data.columns.tolist()}")    
     else:
         # For categorical case, keep target column
         if 'A' not in y_data.columns and 'target' not in y_data.columns:
@@ -242,105 +250,9 @@ def main():
     logger.info(f"Number of features: {num_features}")
     logger.info(f"Feature columns: {x_data.columns.tolist()}")
 
-    # Create datasets
-    with strategy.scope():
-        train_dataset, train_samples = create_dataset(
-            train_x, train_y,
-            n_pre,
-            batch_size,
-            loss_fn,
-            J,
-            is_training=True,
-            is_censoring=is_censoring
-        )
-        val_dataset, val_samples = create_dataset(
-            val_x, val_y,
-            n_pre,
-            batch_size,
-            loss_fn,
-            J,
-            is_training=False,
-            is_censoring=is_censoring
-        )
-        val_dataset = val_dataset.repeat()  # Add repeat() to prevent end of sequence
-
-    # Calculate steps directly based on samples
-    steps_per_epoch = math.ceil(train_samples / batch_size)
-    validation_steps = math.ceil(val_samples / batch_size)
-
-    logger.info(f"Training steps per epoch: {steps_per_epoch}")
-    logger.info(f"Validation steps: {validation_steps}")
-
-    # Save split information
-    split_info = {
-        'train_size': train_size,
-        'val_size': val_size,
-        'batch_size': batch_size,
-        'n_pre': n_pre,
-        'num_features': num_features,
-        'steps_per_epoch': steps_per_epoch,
-        'validation_steps': validation_steps
-    }
-    np.save(os.path.join(output_dir, 'split_info.npy'), split_info)
-
-    # Configure model
-    input_shape = (n_pre, num_features)
-    output_dim = J  # Use J for both cases now
-    logger.info(f"Using {'censoring' if is_censoring else 'treatment'} prediction with output_dim={output_dim}")
-
-    logger.info(f"\nModel configuration:")
-    logger.info(f"Input shape: {input_shape}")
-    logger.info(f"Output dimension: {output_dim}")
-
-    # Update WandB config
-    wandb_config = {
-        'learning_rate': lr,
-        'epochs': epochs,
-        'batch_size': batch_size,
-        'hidden_units': n_hidden,
-        'dropout_rate': dr,
-        'optimizer': 'Adam',
-        'input_shape': (n_pre, num_features),
-        'output_dim': output_dim,
-        'loss_function': loss_fn,
-        'hidden_activation': hidden_activation,
-        'output_activation': out_activation,
-        'training_samples': num_samples,
-        'validation_samples': val_size,
-        'steps_per_epoch': steps_per_epoch,
-        'validation_steps': validation_steps,
-        'window_size': window_size,
-    }
-
-    # Initialize WandB
-    run, wandb_callback = setup_wandb(
-        config=wandb_config,
-        validation_steps=validation_steps,
-        train_dataset=train_dataset
-    )
-    
-    model = create_model(
-        input_shape=input_shape,
-        output_dim=output_dim,
-        lr=lr,
-        dr=dr,
-        n_hidden=n_hidden,
-        hidden_activation=hidden_activation,
-        out_activation=out_activation,
-        loss_fn=loss_fn,
-        J=J,
-        epochs=epochs,
-        steps_per_epoch=steps_per_epoch,
-        y_data=y_data,
-        strategy=strategy,
-        is_censoring=is_censoring
-    )
-
-    # Get callbacks
-    callbacks = get_optimized_callbacks(patience, output_dir, train_dataset)
-    callbacks.append(wandb_callback)
-    callbacks.append(CustomCallback(train_dataset))
-    callbacks.append(CustomNanCallback())
+    # Initialize weight variables
+    pos_weight = None
+    neg_weight = None
 
     if not is_censoring:
         if loss_fn == "binary_crossentropy":
@@ -428,7 +340,7 @@ def main():
     if is_censoring:
         # Calculate class weights based on observed frequencies in y_data
         if 'target' in y_data.columns:
-            target_vals = y_data['target'].values
+            target_vals = y_data['target'].values 
             # Convert negative values to 0 and ensure binary classes
             target_vals = np.where(target_vals < 0, 0, target_vals)
             target_vals = np.where(target_vals > 0, 1, target_vals)
@@ -436,6 +348,22 @@ def main():
             c_counts = np.bincount(target_vals.astype(int))
             total = len(target_vals)
             
+            # Calculate initial weights
+            pos_ratio = c_counts[1] / total if len(c_counts) > 1 else 0.01
+            pos_ratio = np.clip(pos_ratio, 0.01, 0.99)
+            
+            pos_weight = 1.0 / (pos_ratio + 1e-7)
+            neg_weight = 1.0 / (1.0 - pos_ratio + 1e-7)
+            
+            # Normalize weights
+            total = pos_weight + neg_weight
+            pos_weight = pos_weight / total * 2 
+            neg_weight = neg_weight / total * 2
+
+            logger.info("Censoring weights:")
+            logger.info(f"Positive (censored) weight: {pos_weight:.4f}")
+            logger.info(f"Negative (uncensored) weight: {neg_weight:.4f}")
+                
             # Calculate balanced weights
             class_weight = {
                 0: total/(2 * max(c_counts[0], 1)),  # Add max to prevent div by 0
@@ -464,6 +392,108 @@ def main():
         for k,v in sorted(class_weight.items()):
             logger.info(f"Class {k}: {v:.4f}")
     
+        # Create datasets
+    with strategy.scope():
+        train_dataset, train_samples = create_dataset(
+            train_x, train_y,
+            n_pre,
+            batch_size,
+            loss_fn,
+            J,
+            is_training=True,
+            is_censoring=is_censoring,
+            pos_weight=pos_weight,
+            neg_weight=neg_weight
+        )
+        val_dataset, val_samples = create_dataset(
+            val_x, val_y,
+            n_pre,
+            batch_size,
+            loss_fn,
+            J,
+            is_training=False,
+            is_censoring=is_censoring,
+            pos_weight=pos_weight,
+            neg_weight=neg_weight
+        )
+        val_dataset = val_dataset.repeat()  # Add repeat() to prevent end of sequence
+
+    # Calculate steps directly based on samples
+    steps_per_epoch = math.ceil(train_samples / batch_size)
+    validation_steps = math.ceil(val_samples / batch_size)
+
+    logger.info(f"Training steps per epoch: {steps_per_epoch}")
+    logger.info(f"Validation steps: {validation_steps}")
+
+    # Save split information
+    split_info = {
+        'train_size': train_size,
+        'val_size': val_size,
+        'batch_size': batch_size,
+        'n_pre': n_pre,
+        'num_features': num_features,
+        'steps_per_epoch': steps_per_epoch,
+        'validation_steps': validation_steps
+    }
+    np.save(os.path.join(output_dir, 'split_info.npy'), split_info)
+
+    logger.info(f"\nModel configuration:")
+    input_shape = (n_pre, num_features)
+    logger.info(f"Input shape: {input_shape}")
+    
+    # Update WandB config
+    wandb_config = {
+        'learning_rate': lr,
+        'epochs': epochs,
+        'batch_size': batch_size,
+        'hidden_units': n_hidden,
+        'dropout_rate': dr,
+        'optimizer': 'Adam',
+        'input_shape': (n_pre, num_features),
+        'output_dim': output_dim,
+        'loss_function': loss_fn,
+        'hidden_activation': hidden_activation,
+        'output_activation': out_activation,
+        'training_samples': num_samples,
+        'validation_samples': val_size,
+        'steps_per_epoch': steps_per_epoch,
+        'validation_steps': validation_steps,
+        'window_size': window_size,
+    }
+
+    # Initialize WandB
+    run, wandb_callback = setup_wandb(
+        config=wandb_config,
+        validation_steps=validation_steps,
+        train_dataset=train_dataset
+    )
+    
+    # Get callbacks
+    callbacks = get_optimized_callbacks(patience, output_dir, train_dataset)
+    callbacks.append(wandb_callback)
+    callbacks.append(CustomCallback(train_dataset))
+    callbacks.append(CustomNanCallback())
+
+    # Add a check for sample weights
+    use_sample_weights = not is_censoring and 'target' in y_data.columns
+
+    model = create_model(
+        input_shape=input_shape,
+        output_dim=output_dim,
+        lr=lr,
+        dr=dr,
+        n_hidden=n_hidden,
+        hidden_activation=hidden_activation,
+        out_activation=out_activation,
+        loss_fn=loss_fn,
+        J=J,
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
+        y_data=y_data,
+        strategy=strategy,
+        is_censoring=is_censoring
+    )
+
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,
@@ -471,7 +501,6 @@ def main():
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=callbacks,
-        class_weight=class_weight,  # Add class weights
         verbose=1
     )
 
@@ -516,7 +545,9 @@ def main():
         loss_fn,
         J,
         is_training=False,
-        is_censoring=is_censoring
+        is_censoring=is_censoring,
+        pos_weight=pos_weight,
+        neg_weight=neg_weight
     )
 
     total_steps = math.ceil(final_samples / batch_size)

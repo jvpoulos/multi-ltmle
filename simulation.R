@@ -928,41 +928,20 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative bounded censoring predictions, 1=Censored                            
   }else if(estimator=="tmle-lstm"){ 
     
-    lstm_C_preds <- tryCatch({
-      # First try to get C columns
-      c_cols <- grep("C\\.", colnames(tmle_dat), value = TRUE)
-      if(length(c_cols) == 0) {
-        c_cols <- grep("^C", colnames(tmle_dat), value = TRUE)
-      }
-      
-      if(length(c_cols) == 0) {
-        warning("No censoring columns found. Creating default predictions.")
-        # Return default predictions if no C columns found
-        return(replicate(t.end + 1, matrix(0.1, nrow=n_ids, ncol=1), simplify=FALSE))
-      }
-      
-      # Prepare data with available columns
-      data_subset <- tmle_dat[c(c_cols, intersect(tmle_covars_C, colnames(tmle_dat)))]
-      
-      lstm(
-        data=data_subset,
-        outcome=c_cols,
-        covariates=intersect(tmle_covars_C, colnames(tmle_dat)),
-        t_end=t.end,
-        window_size=window.size,
-        out_activation="sigmoid",
-        loss_fn="binary_crossentropy",
-        output_dir=output_dir,
-        J=1,
-        gbound=gbound,
-        ybound=ybound,
-        is_censoring=TRUE
-      )
-    }, error = function(e) {
-      warning("Error in LSTM C predictions: ", e$message)
-      # Return default predictions on error
-      replicate(t.end + 1, matrix(0.1, nrow=n_ids, ncol=1), simplify=FALSE)
-    })
+    lstm_C_preds <- lstm(
+      data = tmle_dat,
+      outcome = grep("^C\\.", colnames(tmle_dat), value=TRUE),
+      covariates = covariate_cols,
+      t_end = t.end,
+      window_size = window_size,
+      out_activation = "sigmoid",
+      loss_fn = "binary_crossentropy", 
+      output_dir = output_dir,
+      J = 1,
+      gbound = gbound,
+      ybound = ybound,
+      is_censoring = TRUE  # Force censoring model
+    )
     
     # Transform predictions with error handling
     transformed_C_preds <- tryCatch({
@@ -1447,7 +1426,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       t_end = t.end,
       window_size = window_size,
       n_ids = n_ids,
-      cores = ceiling(cores/2), 
+      cores = ceiling(cores/2),
       debug = debug
     )
     
@@ -1675,32 +1654,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle-lstm")
     
     gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle-lstm")
-    
-    # Convert survival probabilities to event probabilities for all estimates
-    tmle_est_var$est <- lapply(tmle_est_var$est, function(x) 1 - x)
-    tmle_est_var_bin$est <- lapply(tmle_est_var_bin$est, function(x) 1 - x)
-    iptw_est_var$est <- lapply(iptw_est_var$est, function(x) 1 - x)
-    iptw_est_var_bin$est <- lapply(iptw_est_var_bin$est, function(x) 1 - x)
-    gcomp_est_var$est <- lapply(gcomp_est_var$est, function(x) 1 - x)
-    
-    # Convert CIs too - note we need to flip them since we're doing 1-x
-    for(t in 1:(t.end-1)) {
-      if(!is.null(tmle_est_var$CI[[t]])) {
-        tmle_est_var$CI[[t]] <- 1 - tmle_est_var$CI[[t]][c(2,1),]  # Note order swap
-      }
-      if(!is.null(tmle_est_var_bin$CI[[t]])) {
-        tmle_est_var_bin$CI[[t]] <- 1 - tmle_est_var_bin$CI[[t]][c(2,1),]
-      }
-      if(!is.null(iptw_est_var$CI[[t]])) {
-        iptw_est_var$CI[[t]] <- 1 - iptw_est_var$CI[[t]][c(2,1),]
-      }
-      if(!is.null(iptw_est_var_bin$CI[[t]])) {
-        iptw_est_var_bin$CI[[t]] <- 1 - iptw_est_var_bin$CI[[t]][c(2,1),]
-      }
-      if(!is.null(gcomp_est_var$CI[[t]])) {
-        gcomp_est_var$CI[[t]] <- 1 - gcomp_est_var$CI[[t]][c(2,1),]
-      }
-    }
   }else{
     tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle")
     tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, estimator="tmle")

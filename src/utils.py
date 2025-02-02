@@ -32,22 +32,37 @@ logger = logging.getLogger(__name__)
 import wandb
 from datetime import datetime
 
-def get_data_filenames(is_censoring, loss_fn, outcome_cols):
+def get_data_filenames(is_censoring, loss_fn, outcome_cols, output_dir=None):
     """Get appropriate input/output filenames based on model type."""
     if is_censoring:
+        logger.info("Using censoring model filenames")
         base = "lstm_bin_C"
+        return f"{base}_input.csv", f"{base}_output.csv"
     else:
-        # Handle Y model based on outcome cols or model parameters
+        # Only proceed to Y model after C model is done
         if (isinstance(outcome_cols, list) and any(col.startswith('Y') for col in outcome_cols)) or \
            (isinstance(outcome_cols, str) and outcome_cols.startswith('Y')):
+            # First check if C model exists and has been trained
+            if output_dir is not None:
+                c_input = os.path.join(output_dir, "lstm_bin_C_input.csv")
+                c_model = os.path.join(output_dir, "lstm_bin_C_model.keras")
+                c_preds = os.path.join(output_dir, "lstm_bin_C_preds.npy")
+                
+                # If C model files don't exist or training not complete, train C first
+                if not all(os.path.exists(f) for f in [c_input, c_model, c_preds]):
+                    logger.info("C model not found or incomplete, training C model first...")
+                    return "lstm_bin_C_input.csv", "lstm_bin_C_output.csv"
+            
+            logger.info("Using Y model filenames") 
             base = "lstm_bin_Y"
         else:
             # Treatment models
             if loss_fn == "sparse_categorical_crossentropy":
-                base = "lstm_cat_A" 
+                base = "lstm_cat_A"
             else:
                 base = "lstm_bin_A"
     
+    logger.info(f"Using base filename: {base}")
     return f"{base}_input.csv", f"{base}_output.csv"
     
 def log_metrics(history, start_time):
@@ -649,7 +664,7 @@ def configure_device():
         logger.warning(f"Device configuration failed: {e}")
         return False
 
-def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False):
+def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False, pos_weight=None, neg_weight=None):
     """Create dataset with proper sequence handling for CPU TensorFlow."""
     logger.info(f"Creating dataset with parameters:")
     logger.info(f"n_pre: {n_pre}, batch_size: {batch_size}, loss_fn: {loss_fn}, J: {J}")
@@ -746,7 +761,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                     # Process valid entries using vectorized operations
                     valid_indices = np.where(valid_mask)[0]
                     class_indices = np.clip(y_raw[valid_mask].astype(int), 0, J-1)
-                    y_values[valid_indices, class_indices] = 1.0  # Fixed: Properly set one-hot values
+                    y_values[valid_indices, class_indices] = 1.0  
                     
                     if is_training:                        
                         # Normalize each row to sum to 1
@@ -756,25 +771,41 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
                                 y_values[i] = y_values[i] / row_sums[i]
                             else:
                                 y_values[i] = np.ones(J) / J
-                    
+                                
                 elif not is_censoring:  # Y model
-                    # For Y model, keep values as 0/1 and reshape
-                    y_raw = np.where(y_raw < 0, 0, y_raw)  # Convert negative values to 0
-                    y_raw = np.where(y_raw > 1, 1, y_raw)  # Ensure binary values
-                    pos_ratio = np.mean(y_raw > 0.5)
-                    logger.info(f"Positive class ratio: {pos_ratio:.4f}")
-                    
-                    # Verify distribution
-                    logger.info(f"Y values unique: {np.unique(y_raw, return_counts=True)}")
-                    
-                    # Reshape to column vector
+                    valid_mask = y_raw > -1
                     y_values = y_raw.reshape(-1, 1)
+                    y_values[~valid_mask] = 0  # Set censored values to 0 for Y model
+                    y_values = np.clip(y_values, 0, 1)
                     
-                    logger.info(f"Y values shape after reshape: {y_values.shape}")
+                    # Calculate stats only on valid values
+                    valid_y = y_values[valid_mask]
+                    logger.info(f"Y model stats:")
+                    logger.info(f"Valid values: {np.sum(valid_mask)}")
+                    logger.info(f"Censored values: {np.sum(~valid_mask)}")
+                    logger.info(f"Mean of valid values: {np.mean(valid_y)}")
+                    logger.info(f"Std of valid values: {np.std(valid_y)}")
                     
-                else:  # C model
-                    y_raw = np.where(y_raw < 0, 0, y_raw)
-                    y_values = y_raw.reshape(-1, 1)
+                elif is_censoring:  # C model
+                    # For censoring model, properly encode censoring indicator
+                    # First check if target is already encoded (0/1)
+                    if set(np.unique(y_raw)) <= {0, 1}:
+                        y_values = y_raw.reshape(-1, 1)
+                    else:
+                        # Otherwise use -1 to indicate censoring
+                        y_values = np.where(y_raw < 0, 1, 0).astype(np.float32).reshape(-1, 1)
+
+                    logger.info(f"C model stats:")
+                    logger.info(f"Censored (target=1): {np.sum(y_values == 1)}")
+                    logger.info(f"Uncensored (target=0): {np.sum(y_values == 0)}")
+                    logger.info(f"Target distribution:")
+                    logger.info(pd.Series(y_values.flatten()).value_counts(normalize=True))
+                    
+                    # Add sample weights for censoring model if weights provided
+                    if pos_weight is not None and neg_weight is not None:
+                        sample_weights = np.ones_like(y_values, dtype=np.float32)
+                        sample_weights[y_values == 1] = pos_weight
+                        sample_weights[y_values == 0] = neg_weight
                     
             else:
                 # Handle one-hot encoded treatment inputs
@@ -844,14 +875,28 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         if steps_per_epoch < 10 and is_training:
             logger.warning(f"Very few steps ({steps_per_epoch}). Consider reducing batch size.")
 
-        # Create dataset once
+        # Create base dataset
         dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences))
-        
+
+        # Add sample weights only for Y model if needed
+        if not is_censoring and 'target' in y_data.columns:
+            # Create sample weights (0 for censored, 1 for valid)
+            sample_weights = (y_sequences >= 0).astype(np.float32)
+            # Add weights to dataset
+            dataset = tf.data.Dataset.zip((
+                dataset,
+                tf.data.Dataset.from_tensor_slices(sample_weights)
+            )).map(lambda xy, w: (xy[0], xy[1], w))
+        elif is_censoring:
+            # For censoring model, all samples have equal weight
+            dataset = dataset.map(lambda x, y: (x, y, tf.ones_like(y, dtype=tf.float32)))
+
+        # Apply remaining transformations
         if is_training:
-            dataset = dataset.shuffle(buffer_size=min(10000, num_sequences), 
+            dataset = dataset.shuffle(buffer_size=min(10000, num_sequences),
                                     reshuffle_each_iteration=True)
             dataset = dataset.batch(batch_size)
-            dataset = dataset.repeat()  # Infinite repeats for training
+            dataset = dataset.repeat()
         else:
             dataset = dataset.batch(batch_size)
         
@@ -977,8 +1022,13 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             
             if is_censoring:
                 if 'target' in y_data.columns:
-                    pos_ratio = float(np.mean(y_data['target'].values > 0.5))
+                    # For censoring model, censored (target=-1) should be mapped to 1, uncensored to 0
+                    valid_mask = y_data['target'].values != -1  # Identify uncensored entries
+                    n_censored = np.sum(~valid_mask)
+                    n_total = len(y_data['target'].values)
+                    pos_ratio = n_censored / n_total  # Ratio of censored entries
                     pos_ratio = np.clip(pos_ratio, 0.01, 0.99)
+                    
                     init_bias = np.log(pos_ratio / (1.0 - pos_ratio))
                     
                     pos_weight = 1.0 / (pos_ratio + 1e-7)
@@ -988,6 +1038,10 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                     neg_weight = neg_weight / total * 2
                     
                     class_weight = {0: neg_weight, 1: pos_weight}
+                    
+                    logger.info(f"Censoring model class weights:")
+                    logger.info(f"Censored (weight={pos_weight:.4f}): {n_censored}")
+                    logger.info(f"Uncensored (weight={neg_weight:.4f}): {n_total - n_censored}")
                     
                     loss = weighted_binary_crossentropy(
                         pos_weight=pos_weight,

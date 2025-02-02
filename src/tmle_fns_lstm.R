@@ -726,9 +726,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       cat("\nPredicted Y (survival probabilities) after initialization:")
       print(summary(as.vector(predicted_Y)))
     }
-    
-    # In getTMLELongLSTM, modify the Y extraction:
-    
+  
     observed_Y <- rep(NA, n_ids)
     if("Y" %in% colnames(initial_model_for_Y_data)) {
       unique_ids <- unique(initial_model_for_Y_data$ID)
@@ -739,7 +737,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
             paste(unique(initial_model_for_Y_data$Y), collapse=", "))
       }
       
-      # Extract and convert Y values to survival probabilities
+      # Extract Y values, keeping as event probabilities
       for(i in seq_along(unique_ids)) {
         id <- unique_ids[i]
         id_rows <- which(initial_model_for_Y_data$ID == id & 
@@ -748,8 +746,8 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
         if(length(id_rows) > 0) {
           y_val <- initial_model_for_Y_data$Y[id_rows[1]]
           if(y_val != -1) {
-            # Convert from event indicator (1=event) to survival probability (1=survived)
-            observed_Y[i] <- 1 - y_val  # 1 becomes 0 (event), 0 becomes 1 (survived)
+            # Keep as event probability (1=event, 0=no event)
+            observed_Y[i] <- y_val
           } else {
             # Look back up to 3 time points for a valid Y value
             for(back_t in 1:3) {
@@ -758,7 +756,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
               if(length(prev_row) > 0) {
                 prev_y <- initial_model_for_Y_data$Y[prev_row[1]]
                 if(prev_y != -1) {
-                  observed_Y[i] <- 1 - prev_y  # Convert to survival probability
+                  observed_Y[i] <- prev_y  # Keep as event probability
                   break
                 }
               }
@@ -769,9 +767,9 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       
       if(debug) {
         cat("\nAfter matching at time", current_t, ":")
-        cat("\nRange of observed_Y (survival probabilities):", 
+        cat("\nRange of observed_Y (event probabilities):", 
             paste(range(observed_Y, na.rm=TRUE), collapse="-"))
-        cat("\nMean survival probability:", mean(observed_Y, na.rm=TRUE))
+        cat("\nMean event probability:", mean(observed_Y, na.rm=TRUE))
         cat("\nNumber of NAs:", sum(is.na(observed_Y)))
       }
     }
@@ -1026,6 +1024,14 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       "Y" = observed_Y
     )
   })
+  
+  if(debug) {
+    cat("\nFinal results after targeting:")
+    cat("\nEvent probability estimates:")
+    print(colMeans(predict_Qstar, na.rm=TRUE))
+    cat("\nObserved event rate:", mean(observed_Y, na.rm=TRUE))
+    cat("\nSample weights range:", paste(range(w[which(valid_rules)], na.rm=TRUE), collapse="-"))
+  }
   
   if(debug) {
     cat("\nFinal results summary:")

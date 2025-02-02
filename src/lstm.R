@@ -7,25 +7,39 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   print(paste("Length of outcome:", length(outcome)))
   print(paste("J:", J))
   
+  print("Preparing data files...")
+  
   # Modify outcome determination logic 
-  is_Y_model <- FALSE  # Default
-  is_treatment_model <- FALSE
-  if(is.character(outcome)) {
-    if(length(outcome) == 1) {
-      # Single column case
-      is_Y_model <- grepl("^Y", outcome)
-      is_treatment_model <- grepl("^A", outcome)
-    } else {
-      # Multiple columns case - check first few characters
-      outcome_prefix <- unique(substr(outcome, 1, 1))
-      print(paste("Outcome column prefixes:", paste(outcome_prefix, collapse=",")))
-      is_Y_model <- "Y" %in% outcome_prefix
-      is_treatment_model <- "A" %in% outcome_prefix
+  is_Y_model <- FALSE # Default
+  is_treatment_model <- FALSE 
+  is_censoring_model <- FALSE
+  
+  # Override based on is_censoring parameter if provided
+  if(is_censoring) {
+    print("Training Censoring (C) Model...")
+    is_censoring_model <- TRUE
+    is_Y_model <- FALSE 
+    is_treatment_model <- FALSE
+    outcome <- grep("^C\\.", colnames(data), value=TRUE) # Force C columns as outcome
+  } else {
+    # Otherwise determine from outcome prefix
+    if(is.character(outcome)) {
+      if(length(outcome) == 1) {
+        is_Y_model <- grepl("^Y", outcome)
+        is_treatment_model <- grepl("^A", outcome) 
+        is_censoring_model <- grepl("^C", outcome)
+      } else {
+        outcome_prefix <- unique(substr(outcome, 1, 1))
+        print(paste("Outcome column prefixes:", paste(outcome_prefix, collapse=",")))
+        is_Y_model <- "Y" %in% outcome_prefix 
+        is_treatment_model <- "A" %in% outcome_prefix
+        is_censoring_model <- "C" %in% outcome_prefix
+      }
     }
   }
   
   # Validate model type and loss function match
-  if(is_censoring && loss_fn != "binary_crossentropy") {
+  if(is_censoring_model && loss_fn != "binary_crossentropy") {
     warning("Forcing binary_crossentropy for censoring model")
     loss_fn <- "binary_crossentropy"
   } else if(is_Y_model && loss_fn != "binary_crossentropy") {
@@ -52,29 +66,29 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     stop("Outcome must be character string")
   }
   
-  # Find appropriate columns based on case (treatment or censoring)
-  if(is_censoring) {
+  # Find appropriate columns based on model type
+  if(is_censoring_model) {
     target_cols <- grep("^C\\.[0-9]+$|^C$", colnames(data), value=TRUE)
     print(paste("Found", length(target_cols), "censoring columns"))
     print("Censoring columns:")
     print(target_cols)
-  } else if(is_treatment_model) {
-    # Treatment column logic - try both patterns
+    outcome_cols <- target_cols
+  } else if(is_Y_model) {
+    target_cols <- grep("^Y\\.[0-9]+$|^Y$", colnames(data), value=TRUE)
+    print(paste("Found", length(target_cols), "outcome columns"))
+    print("Outcome columns:")
+    print(target_cols)
+    outcome_cols <- target_cols
+  } else {
+    # Treatment columns
     A_cols_dot <- grep("^A\\.[0-9]+$", colnames(data), value=TRUE)
     A_cols_plain <- grep("^A[0-9]+$", colnames(data), value=TRUE)
     target_cols <- if(length(A_cols_dot) > 0) A_cols_dot else A_cols_plain
     print(paste("Found", length(target_cols), "treatment columns"))
     print("Treatment columns:")
     print(target_cols)
-  } else {
-    # Y columns for outcome model
-    target_cols <- grep("^Y\\.[0-9]+$|^Y$", colnames(data), value=TRUE)
-    print(paste("Found", length(target_cols), "outcome columns"))
-    print("Outcome columns:")
-    print(target_cols)
+    outcome_cols <- target_cols
   }
-  
-  outcome_cols <- target_cols
   
   # Pre-process feature columns
   base_covariates <- unique(gsub("\\.[0-9]+$", "", covariates))
@@ -124,15 +138,22 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Create base input data frame
   input_data <- data.frame(ID = data_long$ID)
   
-  # Handle target creation based on case
-  if(is_censoring) {
-    target_matrix <- as.matrix(data[target_cols])
+  # Handle target creation based on case  
+  if(is_censoring_model) {
+    # Get censoring data from full matrix
+    target_matrix <- matrix(-1, nrow=nrow(data), ncol=length(target_cols))
+    for(i in 1:length(target_cols)) {
+      target_matrix[,i] <- as.numeric(data[[target_cols[i]]] == -1)
+    }
+    
+    # Map to long format
     data_long$target <- sapply(1:nrow(data_long), function(i) {
       id <- data_long$ID[i]
       t <- data_long$time[i]
+      if(t + window_size > ncol(target_matrix)) return(1)
       val <- target_matrix[id, t + window_size]
-      if(is.na(val)) return(0)  # Default value for NAs
-      as.numeric(val > 0)  # Ensure binary values
+      if(is.na(val)) return(1)  # Treat NA as censored
+      return(val)  # Already 0/1 encoded
     })
   } else if(is_treatment_model) {
     treatment_matrix <- as.matrix(data[target_cols])
@@ -213,13 +234,20 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     )
     output_filename <- file.path(output_dir, "lstm_bin_Y_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_Y_input.csv")
-  } else if(is_censoring) {
+  } else if(is_censoring_model) {
     # Censoring model handling
     output_data <- data.frame(
       ID = data_long$ID,
       target = data_long$target,
       stringsAsFactors = FALSE
     )
+    
+    print("Censoring model summary:")
+    print(paste("Total samples:", nrow(output_data)))
+    print(paste("Censored (target=1):", sum(output_data$target == 1)))
+    print(paste("Uncensored (target=0):", sum(output_data$target == 0)))
+    
+    # Set C model filenames
     output_filename <- file.path(output_dir, "lstm_bin_C_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_C_input.csv")
   }
@@ -248,7 +276,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       time_cols <- grep(paste0("^", base_col, "\\.[0-9]+$"), colnames(data), value=TRUE)
       if(length(time_cols) > 0) {
         time_data <- as.matrix(data[time_cols])
-        time_data[is.na(time_data)] <- -1
+        time_data[is.na(time_data) | time_data == -1] <- -1  # Handle both NA and -1
         
         id_map <- match(data_long$ID, data$ID)
         sequence_matrix <- matrix(-1, nrow=nrow(data_long), ncol=window_size)
@@ -289,6 +317,15 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     }
   }
   
+  # Before writing files, add:
+  if(is_censoring_model) {
+    print("Verifying censoring model data:")
+    print(paste("Input rows:", nrow(input_data)))
+    print(paste("Output rows:", nrow(output_data)))
+    print(paste("Input file:", input_filename))
+    print(paste("Output file:", output_filename))
+  }
+  
   # Write files with error handling
   tryCatch({
     print("Writing input data...")
@@ -310,26 +347,43 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     stop(e)
   })
   
-  
   # Set Python variables
-  py$is_censoring <- is_censoring
-  py$J <- as.integer(if(is_censoring) 1 else J)
+  py$window_size <- as.integer(window_size)
   py$output_dir <- output_dir
   py$epochs <- as.integer(200)
   py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
-  py$loss_fn <- loss_fn
   py$lr <- 0.001
-  py$dr <- 0.3
-  py$nb_batches <- as.integer(64)
+  py$dr <- 0.2
+  py$nb_batches <- as.integer(128)
   py$patience <- as.integer(5)
   py$t_end <- as.integer(t_end + 1)
-  py$window_size <- as.integer(window_size)
   py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")
-  py$outcome_cols <- outcome_cols  # Pass outcome columns
-  py$binary_features <- binary_covs
-  py$continuous_features <- continuous_covs
+  py$outcome_cols <- outcome_cols
+  
+  # Synchronize model type and settings
+  if(is_censoring_model) {
+    print("Setting Censoring (C) Model params...")
+    is_censoring <- TRUE  # Set R variable
+    py$is_censoring <- TRUE  # Set Python variable
+    py$J <- as.integer(1)
+    py$loss_fn <- "binary_crossentropy"
+  } else if(is_Y_model) {
+    print("Training Outcome (Y) Model...")
+    is_censoring <- FALSE  # Set R variable
+    py$is_censoring <- FALSE  # Set Python variable
+    py$J <- as.integer(1) 
+    py$loss_fn <- "binary_crossentropy"
+  } else {
+    print("Training Treatment (A) Model...")
+    is_censoring <- FALSE  # Set R variable
+    py$is_censoring <- FALSE  # Set Python variable
+    py$J <- as.integer(J)
+    py$loss_fn <- loss_fn
+  }
+  
+  print(paste("Model type verification - is_censoring:", is_censoring))
   
   # Import numpy
   np <- reticulate::import("numpy")
