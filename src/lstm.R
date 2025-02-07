@@ -364,7 +364,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Set Python variables
   py$window_size <- as.integer(window_size)
   py$output_dir <- output_dir
-  py$epochs <- as.integer(1)
+  py$epochs <- as.integer(100)
   py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation

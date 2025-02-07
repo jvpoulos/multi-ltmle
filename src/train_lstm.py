@@ -39,7 +39,7 @@ from tensorflow.keras.initializers import GlorotNormal, GlorotUniform
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 
-from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, CustomNanCallback, get_data_filenames
+from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, CustomNanCallback, get_data_filenames, create_temporal_split
 
 import sys
 import traceback
@@ -221,29 +221,17 @@ def main():
     if y_data.empty:
         raise ValueError("y_data is empty after processing")
 
-    # Calculate splits
-    num_samples = len(x_data)
-    train_size = int(0.8 * num_samples)
-    val_size = int(0.1 * num_samples)  # 10% for validation
-    test_size = num_samples - train_size - val_size
-
     # Split data
-    train_x = x_data[:train_size].copy()
-    train_y = y_data[:train_size].copy()
+    train_x, train_y, val_x, val_y, test_x, test_y, train_size, val_size = create_temporal_split(
+        x_data, y_data, n_pre=window_size, train_frac=0.8, val_frac=0.1
+    )
     
-    val_x = x_data[train_size:train_size+val_size].copy()
-    val_y = y_data[train_size:train_size+val_size].copy()
-    
-    test_x = x_data[train_size+val_size:].copy()
-    test_y = y_data[train_size+val_size:].copy()
-
     # Calculate feature dimension
     num_features = len(x_data.columns)
     if 'ID' in x_data.columns:
         num_features -= 1
 
     logger.info(f"\nDataset splits:")
-    logger.info(f"Total samples: {num_samples}")
     logger.info(f"Training samples: {len(train_x)}")
     logger.info(f"Validation samples: {len(val_x)}")
     logger.info(f"Test samples: {len(test_x)}")
@@ -459,8 +447,6 @@ def main():
         'loss_function': loss_fn,
         'hidden_activation': hidden_activation,
         'output_activation': out_activation,
-        'training_samples': num_samples,
-        'validation_samples': val_size,
         'steps_per_epoch': steps_per_epoch,
         'validation_steps': validation_steps,
         'window_size': window_size,
@@ -561,6 +547,15 @@ def main():
         steps=total_steps,
         verbose=1
     )
+
+    # Pad predictions to match original length
+    num_pad = len(x_data) - len(predictions)
+    if num_pad > 0:
+        # Replicate last prediction for remaining samples
+        pad_predictions = np.repeat(predictions[-1:], num_pad, axis=0)
+        predictions = np.vstack([predictions, pad_predictions])
+
+    logger.info(f"Final predictions shape: {predictions.shape}")
 
     # Get appropriate filenames
     model_filename, pred_filename, info_filename = get_model_filenames(

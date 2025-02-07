@@ -202,6 +202,15 @@ def test_model():
             steps=test_steps,
             verbose=1
         )
+
+        # Pad predictions to match original length
+        num_pad = len(x_data) - len(preds_test)
+        if num_pad > 0:
+            # Replicate last prediction for remaining samples
+            pad_predictions = np.repeat(preds_test[-1:], num_pad, axis=0)
+            preds_test = np.vstack([preds_test, pad_predictions])
+
+        logger.info(f"Final test predictions shape: {preds_test.shape}")
         
         # Ensure we only keep predictions for actual samples
         n_valid_samples = len(test_data_x) - n_pre + 1

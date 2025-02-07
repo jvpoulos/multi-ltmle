@@ -32,6 +32,49 @@ logger = logging.getLogger(__name__)
 import wandb
 from datetime import datetime
 
+def create_temporal_split(x_data, y_data, n_pre, train_frac=0.8, val_frac=0.1):
+    """Create temporally-aware train/val/test splits.
+    
+    Args:
+        x_data: Input features DataFrame
+        y_data: Target values DataFrame 
+        n_pre: Sequence window size
+        train_frac: Fraction of sequences for training
+        val_frac: Fraction of sequences for validation
+    """
+    # Calculate number of complete sequences
+    num_sequences = len(x_data) - n_pre + 1
+    
+    # Calculate split points based on sequences
+    train_sequences = int(num_sequences * train_frac)
+    val_sequences = int(num_sequences * val_frac)
+    
+    # Add window_size-1 to keep complete sequences
+    train_idx = train_sequences + n_pre - 1
+    val_idx = train_idx + val_sequences
+    
+    # Create splits preserving temporal order
+    train_x = x_data[:train_idx].copy()
+    train_y = y_data[:train_idx].copy()
+    
+    val_x = x_data[train_sequences:val_idx].copy()
+    val_y = y_data[train_sequences:val_idx].copy()
+    
+    test_x = x_data[val_sequences:].copy()
+    test_y = y_data[val_sequences:].copy()
+    
+    # Get sizes for split_info
+    train_size = len(train_x)
+    val_size = len(val_x)
+    
+    logger.info(f"\nTemporal split details:")
+    logger.info(f"Training period: samples 0 to {train_idx}")
+    logger.info(f"Validation period: samples {train_sequences} to {val_idx}")
+    logger.info(f"Testing period: samples {val_sequences} to end")
+    logger.info(f"Sequence window size: {n_pre}")
+    
+    return train_x, train_y, val_x, val_y, test_x, test_y, train_size, val_size
+    
 def get_data_filenames(is_censoring, loss_fn, outcome_cols, output_dir=None):
     """Get appropriate input/output filenames based on model type."""
     if is_censoring:
@@ -821,18 +864,13 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
         dataset = dataset.map(lambda x, y: (x, y, tf.ones_like(y, dtype=tf.float32)))
 
     # Memory-efficient pipeline
-    
-    if is_training:
-        dataset = dataset.shuffle(
-            buffer_size=min(10000, num_samples),
-            reshuffle_each_iteration=True
-        )
+    # Remove shuffling to preserve temporal order
 
+    dataset = dataset.cache()
     dataset = (dataset
               .batch(batch_size, drop_remainder=is_training)
-              .cache()  # Cache after batching
               .prefetch(tf.data.AUTOTUNE)
-              .repeat())  # Repeat at the end
+              .repeat())
 
     logger.info(f"Dataset created successfully")
     logger.info(f"Features: {n_features}, With time & position: {n_features + 2}")
