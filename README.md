@@ -216,17 +216,7 @@ Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
 ---
 
 ### 3. Plot Simulation Results
-To visualize simulation results, use the following command:
-
-```bash
-Rscript long_sim_plots.R [arg1]
-```
-
-#### Arguments:
-- **`[arg1]`**: Path to the output directory containing the simulation results.
-
-#### Example:
-To plot results from simulations saved in the `outputs/20240215` directory:
+To summarize and plot results from simulations saved in `intermediate_results_lstm.rds`:
 ```bash
 Rscript long_sim_plots.R 'outputs/20240215'
 ```
@@ -236,19 +226,18 @@ Rscript long_sim_plots.R 'outputs/20240215'
 Model Weights, Intermediate Results, and Visualizations
 ------
 
-This section outlines the model weights, intermediate results, and visualizations available for analysis and evaluation. The results pertain to a single simulated longitudinal dataset (r=1) for 12,500 patients, estimating counterfactual diabetes risk under three regimes: static, dynamic, and stochastic. Data and results are saved in the `ex_outputs/` directory.
+This section outlines the model weights, intermediate results, and visualizations available for analysis and evaluation. The results pertain to a single simulated longitudinal dataset (r=1) for 12,500 patients, estimating counterfactual diabetes risk under three regimes: static, dynamic, and stochastic. **Data and results are saved in the `ex_outputs/` directory unless otherwise noted.**
 
 #### Key Files and Descriptions:
 
 1. **Simulated Dataset**
    - Long format dataset: `tmle_dat_long_R_1_n_12500_J_6.rds`
 
-2. **Simulation Results**
-   - TMLE simulation:  
-     [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
-
-   - RNN-based model simulation:  
-     [longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds](https://www.dropbox.com/scl/fi/yzzocspqfxg7qmvipe1wb/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds?rlkey=42vg98ka5pvldwmsj0acxuudc&dl=0)
+2. **Intermediate Simulation Results**
+   <!-- - LTMLE-SL: `final_results.rds`  -->
+    <!-- Rscript process_matrix.R 'outputs/20240215/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds' -->
+   - LTMLE-RNN: `intermediate_results_lstm.rds` 
+   <!-- Rscript combine_lstm_results.R outputs/20250202 outputs/20250203/-->
 
 3. **Validation Predictions**
    - Multiple binary and categorical treatments:
@@ -267,6 +256,7 @@ This section outlines the model weights, intermediate results, and visualization
      - `lstm_bin_A_model.h5`
      - `lstm_cat_A_model.h5`
      - `lstm_bin_C_model.h5`
+     - `lstm_bin_Y_model.h5`
 
 6. **Descriptive Plots**
    - Graphical outputs summarizing the simulation and analysis:
@@ -279,6 +269,7 @@ This section outlines the model weights, intermediate results, and visualization
          ![Observed Survival Plot](./ex_outputs/survival_plot_observed_12500.png)
        - Truth:  
          ![Truth Survival Plot](./ex_outputs/survival_plot_truth_12500.png)
-       - TMLE estimates:  
-         ![TMLE Estimates Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle)
-
+       - LTMLE-SL (multi.) estimates:  
+         ![LTMLE-SL (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle)
+        - LTMLE-RNN (multi.) estimates:  
+         ![LTMLE-RNN (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle-lstm.png)

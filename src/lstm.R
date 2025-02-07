@@ -98,15 +98,29 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Get all time-varying and static feature columns
   feature_cols <- c()
   
+  # Define feature sets by model type
+  base_features <- c("L1", "L2", "L3")
+  a_model_features <- base_features
+  c_model_features <- c(base_features)
+  y_model_features <- c(c_model_features, "Y")
+  
+  # Select appropriate time-varying features based on model type
+  time_varying_covs <- if(is_treatment_model) {
+    a_model_features
+  } else if(is_censoring_model) {
+    c_model_features
+  } else {
+    y_model_features
+  }
+  
   # Get time-varying feature columns
-  time_varying_covs <- c("L1", "L2", "L3", "C", "Y") 
   for(base_col in time_varying_covs) {
     time_cols <- grep(paste0("^", base_col, "\\.[0-9]+$"), 
                       colnames(data), value=TRUE)
     feature_cols <- c(feature_cols, time_cols)
   }
   
-  # Predefined list of static covariates
+  # Static covariates remain the same
   static_covs <- c("V3", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
   
   # Get static feature columns 
@@ -153,7 +167,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       if(t + window_size > ncol(target_matrix)) return(1)
       val <- target_matrix[id, t + window_size]
       if(is.na(val)) return(1)  # Treat NA as censored
-      return(val)  # Already 0/1 encoded
+      return(val)  # Already 0/1 encoded  # Keeps original encoding (1=event)
     })
   } else if(is_treatment_model) {
     treatment_matrix <- as.matrix(data[target_cols])
@@ -271,7 +285,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
         ifelse(base_col == "V3", mean(col_data, na.rm=TRUE), -1),
         col_data[id_map]
       )
-    } else if(base_col %in% c("L1", "L2", "L3", "C", "Y")) {
+    } else if(base_col %in% time_varying_covs) {
       # Time-varying covariate handling
       time_cols <- grep(paste0("^", base_col, "\\.[0-9]+$"), colnames(data), value=TRUE)
       if(length(time_cols) > 0) {
@@ -350,14 +364,14 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Set Python variables
   py$window_size <- as.integer(window_size)
   py$output_dir <- output_dir
-  py$epochs <- as.integer(200)
+  py$epochs <- as.integer(1)
   py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
-  py$lr <- 0.001
-  py$dr <- 0.2
-  py$nb_batches <- as.integer(128)
-  py$patience <- as.integer(5)
+  py$lr <- 0.005
+  py$dr <- 0.1
+  py$nb_batches <- as.integer(64)
+  py$patience <- as.integer(2)
   py$t_end <- as.integer(t_end + 1)
   py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")
   py$outcome_cols <- outcome_cols

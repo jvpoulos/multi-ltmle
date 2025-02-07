@@ -154,7 +154,7 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored, alpha=0.
   Y_uncensored <- lapply(1:t.end, function(t) {
     if(estimator=="tmle-lstm") {
       if(!is.null(initial_model_for_Y$data$Y)) {
-        y_vals <- initial_model_for_Y$data$Y
+        y_vals <- initial_model_for_Y$data$Y # Raw event probabilities
         if(!is.null(time.censored)) {
           censored_ids <- time.censored$ID[which(time.censored$time_censored < (t+1))]
           y_vals[initial_model_for_Y$data$ID %in% censored_ids] <- NA

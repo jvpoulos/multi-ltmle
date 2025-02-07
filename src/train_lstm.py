@@ -392,7 +392,7 @@ def main():
         for k,v in sorted(class_weight.items()):
             logger.info(f"Class {k}: {v:.4f}")
     
-        # Create datasets
+    # Create datasets
     with strategy.scope():
         train_dataset, train_samples = create_dataset(
             train_x, train_y,
@@ -438,8 +438,13 @@ def main():
     np.save(os.path.join(output_dir, 'split_info.npy'), split_info)
 
     logger.info(f"\nModel configuration:")
-    input_shape = (n_pre, num_features)
-    logger.info(f"Input shape: {input_shape}")
+    # Get actual feature dimension from the dataset
+    for batch in train_dataset.take(1):
+        x_batch = batch[0] if isinstance(batch, tuple) else batch
+        input_shape = (window_size, x_batch.shape[-1])
+        break
+
+    logger.info(f"Using actual input shape from data: {input_shape}")
     
     # Update WandB config
     wandb_config = {
@@ -449,7 +454,7 @@ def main():
         'hidden_units': n_hidden,
         'dropout_rate': dr,
         'optimizer': 'Adam',
-        'input_shape': (n_pre, num_features),
+        'input_shape': input_shape,
         'output_dim': output_dim,
         'loss_function': loss_fn,
         'hidden_activation': hidden_activation,

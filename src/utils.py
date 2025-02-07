@@ -468,7 +468,7 @@ def load_data_from_csv(input_file, output_file):
                 logger.error(f"Error processing binary column {col}: {str(e)}")
                 x_data[col] = 0.0
         
-        # Handle continuous columns
+        # Handle continuous columns 
         for col in cont_cols:
             try:
                 x_data[col] = pd.to_numeric(x_data[col], errors='coerce')
@@ -477,15 +477,7 @@ def load_data_from_csv(input_file, output_file):
                     med = 0.0
                 x_data[col] = x_data[col].fillna(med)
                 
-                if not x_data[col].isna().all():
-                    std = x_data[col].std()
-                    if pd.isna(std) or std == 0:
-                        std = 1.0
-                
-                    # Standardize
-                    mean = x_data[col].mean()
-                    std = x_data[col].std() or 1.0
-                    x_data[col] = (x_data[col] - mean) / std
+                # Remove standardization here - will be done in create_dataset
             except Exception as e:
                 logger.error(f"Error processing continuous column {col}: {str(e)}")
                 x_data[col] = 0.0
@@ -668,250 +660,184 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
     """Create dataset with proper sequence handling for CPU TensorFlow."""
     logger.info(f"Creating dataset with parameters:")
     logger.info(f"n_pre: {n_pre}, batch_size: {batch_size}, loss_fn: {loss_fn}, J: {J}")
+    logger.info(f"Input shape at start - features: {x_data.shape[1]}")
 
-    logger.info("Input data shapes:")
-    logger.info(f"x_data shape: {x_data.shape}")
-    logger.info(f"y_data shape: {y_data.shape}")
-    logger.info(f"y_data columns: {y_data.columns}")
+    # Remove ID if present
+    if 'ID' in x_data.columns:
+        x_data = x_data.drop('ID', axis=1)
     
-    try:
-        # Remove ID if present
-        if 'ID' in x_data.columns:
-            x_data = x_data.drop('ID', axis=1)
-        
-        # Separate binary and continuous features
-        binary_cols = []
-        cont_cols = []
-        
-        for col in x_data.columns:
-            unique_vals = x_data[col].nunique()
-            if unique_vals <= 2:
-                binary_cols.append(col)
-            else:
-                cont_cols.append(col)
-                
-        logger.info(f"Binary features: {len(binary_cols)}")
-        logger.info(f"Continuous features: {len(cont_cols)}")
-        
-        # Process features separately
-        x_values = x_data.values.astype(np.float32)
+    # Define base features
+    a_model_features = ['V3', 'white', 'black', 'latino', 'other', 'mdd', 'bipolar', 'schiz', 'L1', 'L2', 'L3']
+    x_data = x_data[a_model_features].copy()
+    
+    logger.info(f"Selected features: {a_model_features}")
+    logger.info(f"Raw L1 stats - mean: {x_data['L1'].mean():.3f}, std: {x_data['L1'].std():.3f}")
+    
+    # Process features
+    x_values = x_data.values.astype(np.float32)
+    n_features = x_values.shape[1]
+    logger.info(f"Features after processing: {n_features}")
 
-        # Target conversion to ensure int32 for sparse_categorical_crossentropy
+    # Separate scaling for different feature types
+    # Continuous non-count features
+    cont_cols = ['V3']
+    cont_indices = [x_data.columns.get_loc(col) for col in cont_cols if col in x_data.columns]
+    
+    if cont_indices:
+        for idx in cont_indices:
+            col_values = x_values[:, idx]
+            # Use robust scaling with median and IQR
+            q75, q25 = np.percentile(col_values, [75, 25])
+            iqr = q75 - q25
+            if iqr == 0:
+                iqr = 1.0
+            median = np.median(col_values)
+            x_values[:, idx] = (col_values - median) / (iqr + 1e-6)
+
+    # Special handling for L1 (count data)
+    l1_idx = x_data.columns.get_loc('L1')
+    l1_values = x_values[:, l1_idx]
+
+    # Add debug logging
+    logger.info(f"L1 before processing - min: {np.min(l1_values)}, max: {np.max(l1_values)}")
+    logger.info(f"L1 unique values: {np.unique(l1_values)}")
+
+    if np.any(l1_values != 0):  # Only scale if non-zero values exist
+        # Log transform for count data (adding 1 to handle zeros)
+        l1_transformed = np.log1p(l1_values)
+        # Scale to [-1, 1] range using robust scaling
+        if np.std(l1_transformed) != 0:
+            # Use robust scaling with median and IQR for L1
+            q75, q25 = np.percentile(l1_transformed, [75, 25])
+            iqr = q75 - q25
+            if iqr == 0:
+                iqr = 1.0
+            median = np.median(l1_transformed)
+            x_values[:, l1_idx] = (l1_transformed - median) / (iqr + 1e-6)
+        else:
+            logger.warning("L1 has zero standard deviation after transformation")
+    else:
+        logger.warning("L1 contains all zeros")
+
+    # Clip all features to prevent extreme values
+    x_values = np.clip(x_values, -3, 3)
+
+    # Process targets with robust handling
+    if loss_fn == "sparse_categorical_crossentropy":
         if 'target' in y_data.columns:
-            if loss_fn == "sparse_categorical_crossentropy":
-                # Convert to int32 and stay int32
-                y_data['target'] = pd.to_numeric(y_data['target'], downcast='integer')
-                y_data['target'] = y_data['target'].astype('int32')
-
-        # Only standardize continuous columns
-        if cont_cols:
-            cont_indices = [x_data.columns.get_loc(col) for col in cont_cols]
-            mean = np.zeros(x_values.shape[1])
-            std = np.ones(x_values.shape[1])
-            
-            mean[cont_indices] = np.nanmedian(x_values[:, cont_indices], axis=0)
-            std[cont_indices] = np.nanstd(x_values[:, cont_indices], axis=0)
-            std[std < 1e-6] = 1.0
+            y_values = y_data['target'].values
         else:
-            mean = np.zeros(x_values.shape[1])
-            std = np.ones(x_values.shape[1])
-        
-        # Prepare targets based on model type
-        if loss_fn == "sparse_categorical_crossentropy":
-            # Treatment model (A) 
-            if 'target' in y_data.columns:
-                # Ensure consistent int32 type and force it to stay int32
-                y_values = tf.cast(y_data['target'].values, tf.int32).numpy()
-                # Simply ensure valid class range
-                y_values = np.clip(y_values, 0, J-1)
+            if 'A' in y_data.columns:
+                y_values = y_data['A'].values
             else:
-                if 'A' in y_data.columns:
-                    # Force int32 type
-                    y_values = tf.cast(y_data['A'].values, tf.int32).numpy()
-                else:
-                    treatment_cols = [f'A{i}' for i in range(J)]
-                    if all(col in y_data.columns for col in treatment_cols):
-                        # Ensure consistent int32 type for argmax result
-                        y_values = tf.cast(
-                            np.argmax(y_data[treatment_cols].values, axis=1),
-                            tf.int32
-                        ).numpy()
-                    else:
-                        raise ValueError("No suitable treatment columns found")
-            
-            if not is_training:
-                # For validation/test, keep exact values
-                y_values = np.clip(y_values, 0, J-1)
-            
-            # Log class distribution
-            unique, counts = np.unique(y_values, return_counts=True)
-            logger.info("Treatment class distribution:")
-            for val, count in zip(unique, counts):
-                logger.info(f"Class {val}: {count} ({count/len(y_values)*100:.2f}%)")
-        else:
-            # Binary case (Y, C, or binary A models)
-            if 'target' in y_data.columns:
-                y_raw = y_data['target'].values.astype(np.float32)
-                
-                if not is_censoring and J > 1:  # Multi-class treatment case
-                    # Create one-hot encoded matrix
-                    y_values = np.zeros((len(y_raw), J), dtype=np.float32)
-                    valid_mask = y_raw >= 0  # Identify valid entries
-                    
-                    # Process valid entries using vectorized operations
-                    valid_indices = np.where(valid_mask)[0]
-                    class_indices = np.clip(y_raw[valid_mask].astype(int), 0, J-1)
-                    y_values[valid_indices, class_indices] = 1.0  
-                    
-                    if is_training:                        
-                        # Normalize each row to sum to 1
-                        row_sums = np.sum(y_values, axis=1)
-                        for i in range(len(y_values)):
-                            if row_sums[i] > 0:
-                                y_values[i] = y_values[i] / row_sums[i]
-                            else:
-                                y_values[i] = np.ones(J) / J
-                                
-                elif not is_censoring:  # Y model
-                    valid_mask = y_raw > -1
-                    y_values = y_raw.reshape(-1, 1)
-                    y_values[~valid_mask] = 0  # Set censored values to 0 for Y model
-                    y_values = np.clip(y_values, 0, 1)
-                    
-                    # Calculate stats only on valid values
-                    valid_y = y_values[valid_mask]
-                    logger.info(f"Y model stats:")
-                    logger.info(f"Valid values: {np.sum(valid_mask)}")
-                    logger.info(f"Censored values: {np.sum(~valid_mask)}")
-                    logger.info(f"Mean of valid values: {np.mean(valid_y)}")
-                    logger.info(f"Std of valid values: {np.std(valid_y)}")
-                    
-                elif is_censoring:  # C model
-                    # For censoring model, properly encode censoring indicator
-                    # First check if target is already encoded (0/1)
-                    if set(np.unique(y_raw)) <= {0, 1}:
-                        y_values = y_raw.reshape(-1, 1)
-                    else:
-                        # Otherwise use -1 to indicate censoring
-                        y_values = np.where(y_raw < 0, 1, 0).astype(np.float32).reshape(-1, 1)
-
-                    logger.info(f"C model stats:")
-                    logger.info(f"Censored (target=1): {np.sum(y_values == 1)}")
-                    logger.info(f"Uncensored (target=0): {np.sum(y_values == 0)}")
-                    logger.info(f"Target distribution:")
-                    logger.info(pd.Series(y_values.flatten()).value_counts(normalize=True))
-                    
-                    # Add sample weights for censoring model if weights provided
-                    if pos_weight is not None and neg_weight is not None:
-                        sample_weights = np.ones_like(y_values, dtype=np.float32)
-                        sample_weights[y_values == 1] = pos_weight
-                        sample_weights[y_values == 0] = neg_weight
-                    
-            else:
-                # Handle one-hot encoded treatment inputs
                 treatment_cols = [f'A{i}' for i in range(J)]
                 if all(col in y_data.columns for col in treatment_cols):
-                    y_values = y_data[treatment_cols].values.astype(np.float32)
-                    
-                    if is_training:
-                        # Ensure valid probability distribution
-                        row_sums = y_values.sum(axis=1, keepdims=True)
-                        y_values = np.where(row_sums > 0, 
-                                          y_values / row_sums,
-                                          np.ones_like(y_values) / J)
+                    y_values = np.argmax(y_data[treatment_cols].values, axis=1)
                 else:
                     raise ValueError("No suitable treatment columns found")
+        
+        y_values = np.clip(y_values, 0, J-1).astype(np.int32)
+    else:  # binary_crossentropy
+        if 'target' in y_data.columns:
+            y_values = y_data['target'].values
+        else:
+            # Handle multi-class binary case
+            if all(f'A{i}' in y_data.columns for i in range(J)):
+                y_values = y_data[[f'A{i}' for i in range(J)]].values
+            else:
+                raise ValueError("No suitable target columns found")
 
-        # Log target info
-        logger.info(f"Target shape: {y_values.shape}")
+    # Create sequences with proper dimensionality
+    num_samples = len(x_values) - n_pre + 1
+    
+    # Create normalized time and position encodings
+    time_index = (np.arange(len(x_values))[:, np.newaxis] / max(len(x_values)-1, 1)).astype(np.float32)
+    pos_encoding = (np.arange(n_pre)[:, np.newaxis] / max(n_pre-1, 1)).astype(np.float32)
+    
+    # Add time index to features - scaled between -1 and 1
+    x_values_with_time = np.concatenate([x_values, 2 * time_index - 1], axis=1)
+    logger.info(f"Shape after adding time: {x_values_with_time.shape}")
+    
+    # Initialize sequences array with correct dimensions
+    x_sequences = np.zeros((num_samples, n_pre, n_features + 2), dtype=np.float32)
+
+    # Different initialization for y_sequences based on loss function
+    if loss_fn == "sparse_categorical_crossentropy":
+        # For categorical A model
+        y_sequences = np.zeros(num_samples, dtype=np.int32)
+    else:  # binary_crossentropy
         if len(y_values.shape) > 1:
-            logger.info(f"Target mean per class: {np.mean(y_values, axis=0)}")
-            logger.info(f"Target std per class: {np.std(y_values, axis=0)}")
+            # For multi-class binary (binary A model)
+            y_sequences = np.zeros((num_samples, y_values.shape[1]), dtype=np.float32)
         else:
-            logger.info(f"Target mean: {np.mean(y_values)}")
-            logger.info(f"Target std: {np.std(y_values)}")
-                
-        # Create sequences
-        num_samples = len(x_values) - n_pre + 1
-        x_sequences = []
-        y_sequences = []
+            # For single binary output (C/Y model)
+            y_sequences = np.zeros((num_samples, 1), dtype=np.float32)
 
-        for i in range(num_samples):
-            if i + n_pre <= len(x_values):
-                # Handle features
-                x_seq = x_values[i:i + n_pre].copy()
-                
-                # Only standardize continuous features
-                if cont_cols:
-                    x_seq[:, cont_indices] = (x_seq[:, cont_indices] - mean[cont_indices]) / std[cont_indices]
-                
-                # Handle binary features - keep as is without standardization
-                if len(binary_cols) > 0:
-                    binary_indices = [x_data.columns.get_loc(col) for col in binary_cols]
-                    x_seq[:, binary_indices] = x_values[i:i + n_pre, binary_indices].copy()
-                
-                # Ensure consistent types
-                y_seq = y_values[i + n_pre - 1].copy()
-                if loss_fn == "sparse_categorical_crossentropy":
-                    # Explicitly force int32 type
-                    y_seq = tf.cast(y_values[i + n_pre - 1], tf.int32).numpy()
-                else:
-                    y_seq = y_values[i + n_pre - 1].astype(np.float32)
-                
-                x_sequences.append(x_seq)
-                y_sequences.append(y_seq)
-        
-        # Convert sequences to arrays with consistent types
-        x_sequences = np.array(x_sequences, dtype=np.float32)
-        if loss_fn == "sparse_categorical_crossentropy":
-            # Force int32 type using TensorFlow cast
-            y_sequences = tf.cast(y_sequences, tf.int32).numpy()
-        else:
-            y_sequences = np.array(y_sequences, dtype=np.float32)
+    # Fill sequences with proper indexing
+    for i in range(num_samples):
+        end_idx = i + n_pre
+        if end_idx <= len(x_values):
+            x_sequences[i, :, :n_features + 1] = x_values_with_time[i:end_idx]
+            x_sequences[i, :, -1] = 2 * pos_encoding[:, 0] - 1
+            if loss_fn == "sparse_categorical_crossentropy":
+                # For categorical A model
+                y_sequences[i] = y_values[i]
+            elif len(y_values.shape) > 1:
+                # For multi-class binary (binary A model)
+                y_sequences[i, :] = y_values[i]
+            else:
+                # For single binary output (C/Y model)
+                y_sequences[i, 0] = y_values[i]
 
-        # Calculate steps once
-        num_sequences = len(x_sequences)
-        steps_per_epoch = math.ceil(num_sequences / batch_size)
-        if steps_per_epoch < 10 and is_training:
-            logger.warning(f"Very few steps ({steps_per_epoch}). Consider reducing batch size.")
+    # Final preprocessing
+    x_sequences = np.nan_to_num(x_sequences, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        # Create base dataset
-        dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences))
+    logger.info(f"Final features dimension: {n_features + 2}") # Original features + time + position
 
-        # Add sample weights only for Y model if needed
-        if not is_censoring and 'target' in y_data.columns:
-            # Create sample weights (0 for censored, 1 for valid)
-            sample_weights = (y_sequences >= 0).astype(np.float32)
-            # Add weights to dataset
-            dataset = tf.data.Dataset.zip((
-                dataset,
-                tf.data.Dataset.from_tensor_slices(sample_weights)
-            )).map(lambda xy, w: (xy[0], xy[1], w))
-        elif is_censoring:
-            # For censoring model, all samples have equal weight
-            dataset = dataset.map(lambda x, y: (x, y, tf.ones_like(y, dtype=tf.float32)))
+    # Log shapes and stats
+    logger.info(f"Final sequence shapes:")
+    logger.info(f"X sequences: {x_sequences.shape}")
+    logger.info(f"Y sequences: {y_sequences.shape}")
+    logger.info(f"X range: [{np.min(x_sequences):.3f}, {np.max(x_sequences):.3f}]")
+    logger.info(f"Final feature dimension: {x_sequences.shape[2]}")
+    logger.info(f"Feature stats:")
+    for i in range(x_sequences.shape[2]):
+        data = x_sequences[:, :, i].flatten()
+        logger.info(f"  Feature {i}: mean={np.mean(data):.3f}, std={np.std(data):.3f}")
+        
+    # Create dataset with memory optimizations
+    dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences))
 
-        # Apply remaining transformations
-        if is_training:
-            dataset = dataset.shuffle(buffer_size=min(10000, num_sequences),
-                                    reshuffle_each_iteration=True)
-            dataset = dataset.batch(batch_size)
-            dataset = dataset.repeat()
-        else:
-            dataset = dataset.batch(batch_size)
-        
-        dataset = dataset.prefetch(tf.data.AUTOTUNE)
-        
-        logger.info(f"Created dataset with {num_sequences} sequences")
-        logger.info(f"Batch size: {batch_size}")
-        logger.info(f"Steps per {'epoch' if is_training else 'validation'}: {steps_per_epoch}")
-        
-        return dataset, steps_per_epoch
-        
-    except Exception as e:
-        logger.error(f"Error creating dataset: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise
+    # Add weights if needed
+    if not is_censoring and 'target' in y_data.columns:
+        sequence_weights = np.linspace(0.5, 1.0, n_pre)
+        sample_weights = (y_sequences >= 0).astype(np.float32)
+        sample_weights *= sequence_weights[-1]
+        dataset = tf.data.Dataset.zip((
+            dataset,
+            tf.data.Dataset.from_tensor_slices(sample_weights)
+        )).map(lambda xy, w: (xy[0], xy[1], w))
+    elif is_censoring:
+        dataset = dataset.map(lambda x, y: (x, y, tf.ones_like(y, dtype=tf.float32)))
+
+    # Memory-efficient pipeline
+    
+    if is_training:
+        dataset = dataset.shuffle(
+            buffer_size=min(10000, num_samples),
+            reshuffle_each_iteration=True
+        )
+
+    dataset = (dataset
+              .batch(batch_size, drop_remainder=is_training)
+              .cache()  # Cache after batching
+              .prefetch(tf.data.AUTOTUNE)
+              .repeat())  # Repeat at the end
+
+    logger.info(f"Dataset created successfully")
+    logger.info(f"Features: {n_features}, With time & position: {n_features + 2}")
+
+    return dataset, num_samples
 
 def weighted_binary_crossentropy(pos_weight, neg_weight):
     """Custom weighted binary crossentropy that explicitly accepts class weights"""
@@ -929,87 +855,160 @@ def weighted_binary_crossentropy(pos_weight, neg_weight):
         return tf.reduce_mean(bce)
     return loss
 
+class MultiHeadAttention(tf.keras.layers.Layer):
+    def __init__(self, name="multi_head_attention", **kwargs):
+        super().__init__(name=name, **kwargs)
+        
+    def call(self, queries, keys, values, mask=None):
+        # Multi-head attention with scaling
+        matmul_qk = tf.matmul(queries, keys, transpose_b=True)
+        dk = tf.cast(tf.shape(keys)[-1], tf.float32)
+        scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
+        
+        if mask is not None:
+            scaled_attention_logits += (mask * -1e9)
+        
+        attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)
+        output = tf.matmul(attention_weights, values)
+        
+        return output, attention_weights
+
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
                 out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False):
-    """Create model with proper handling of binary and categorical cases."""
+    logger.info(f"Model input shape: {input_shape}")
     if strategy is None:
         strategy = get_strategy()
     
-    # Initialize class_weight to None
     class_weight = None
 
     with strategy.scope():
-        # Input layer with fixed name
         inputs = Input(shape=input_shape, dtype=tf.float32, name="input_1")
         
-        # Initial masking and normalization
+        # Initial masking and normalization 
         x = tf.keras.layers.Masking(mask_value=-1.0, name="masking_layer")(inputs)
         x = tf.keras.layers.LayerNormalization(name="norm_0")(x)
         
-        # Common configurations for all LSTM layers
+        # Add positional embedding
+        pos_embedding = tf.keras.layers.Dense(
+            units=n_hidden,
+            name="positional_embedding"
+        )(x)
+        
+        # Enhanced LSTM config
         lstm_config = {
             'activation': 'tanh',
-            'recurrent_activation': 'sigmoid',
+            'recurrent_activation': 'sigmoid', 
             'kernel_initializer': 'glorot_uniform',
             'recurrent_initializer': 'orthogonal',
-            'kernel_regularizer': l2(0.05),
-            'recurrent_regularizer': l2(0.05),
-            'bias_regularizer': l2(0.05),
+            'kernel_regularizer': l2(0.01),
+            'recurrent_regularizer': l2(0.01),
+            'bias_regularizer': l2(0.01),
             'dropout': dr,
             'recurrent_dropout': 0,
             'unit_forget_bias': True,
             'dtype': tf.float32
         }
-        
-        # Project input to common dimension for skip connections
-        x = tf.keras.layers.Dense(n_hidden, activation=None, name="projection")(x)
 
-        # First LSTM layer
-        x = tf.keras.layers.LSTM(
+        # Multi-head self-attention layer
+        def attention_layer(queries, keys, values, mask=None):
+            # Multi-head attention with scaling
+            matmul_qk = tf.matmul(queries, keys, transpose_b=True)
+            dk = tf.cast(tf.shape(keys)[-1], tf.float32)
+            scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
+            
+            if mask is not None:
+                scaled_attention_logits += (mask * -1e9)
+            
+            attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)
+            output = tf.matmul(attention_weights, values)
+            return output, attention_weights
+
+        # First LSTM + Attention block
+        lstm1 = tf.keras.layers.LSTM(
             units=n_hidden,
             return_sequences=True,
             name="lstm_1",
             **lstm_config
         )(x)
-        x = tf.keras.layers.LayerNormalization(name="norm_1")(x)
+        
+        # Project positional embedding to match first LSTM
+        pos_emb1 = pos_embedding
+
+        # Self-attention on LSTM outputs
+        attention_layer = MultiHeadAttention(name="attention_1")
+        att1, _ = attention_layer(
+            queries=lstm1 + pos_emb1,
+            keys=lstm1 + pos_emb1,
+            values=lstm1
+        )
+        x = tf.keras.layers.LayerNormalization(name="norm_1")(att1)
         x = tf.keras.layers.Dropout(dr, name="drop_1")(x)
         
-        # Add skip connection
+        # Skip connection with attention output
         skip = x
 
-        # Second LSTM layer
-        x = tf.keras.layers.LSTM(
+        # Second LSTM + Attention block
+        lstm2 = tf.keras.layers.LSTM(
             units=n_hidden,
             return_sequences=True,
             name="lstm_2",
             **lstm_config
         )(x)
-        x = tf.keras.layers.LayerNormalization(name="norm_2")(x)
+        
+        # Project positional embedding to match second LSTM
+        pos_emb2 = pos_embedding
+        
+        # Self-attention using custom layer
+        attention_layer2 = MultiHeadAttention(name="attention_2")
+        att2, _ = attention_layer2(
+            queries=lstm2 + pos_emb2,
+            keys=lstm2 + pos_emb2,
+            values=lstm2
+        )
+        
+        x = tf.keras.layers.LayerNormalization(name="norm_2")(att2)
         x = tf.keras.layers.Dropout(dr, name="drop_2")(x)
         
-        # Add skip connection back
+        # Residual connection
         x = tf.keras.layers.Add()([x, skip])
 
-        # Final LSTM layer
-        x = tf.keras.layers.LSTM(
+        # Final LSTM + Attention for sequence aggregation
+        lstm3 = tf.keras.layers.LSTM(
             units=max(32, n_hidden // 2),
-            return_sequences=False,
+            return_sequences=True,
             name="lstm_3",
             **lstm_config
         )(x)
+        
+        # Project positional embedding to match third LSTM
+        pos_emb3 = tf.keras.layers.Dense(
+            units=max(32, n_hidden // 2),
+            name="positional_embedding_3"
+        )(pos_embedding)
+        
+        # Global attention using custom layer
+        attention_layer3 = MultiHeadAttention(name="attention_3")
+        att3, _ = attention_layer3(
+            queries=lstm3 + pos_emb3,
+            keys=lstm3 + pos_emb3,
+            values=lstm3
+        )
+        
+        # Global average pooling with attention weights
+        x = tf.keras.layers.GlobalAveragePooling1D()(att3)
         x = tf.keras.layers.LayerNormalization(name="norm_3")(x)
         x = tf.keras.layers.Dropout(dr, name="drop_3")(x)
-        
-        # Dense layer with L2 regularization
+
+        # Dense layer with attention-aware features
         x = tf.keras.layers.Dense(
             units=n_hidden,
             activation='relu',
-            kernel_regularizer=l2(0.001),
+            kernel_regularizer=l2(0.005),
             name="dense_1"
         )(x)
         x = tf.keras.layers.LayerNormalization(name="norm_4")(x)
         x = tf.keras.layers.Dropout(dr, name="drop_4")(x)
-        
+
         # Initialize outputs variable
         outputs = None
         loss = None
@@ -1019,7 +1018,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         if loss_fn == "binary_crossentropy":
             final_activation = 'sigmoid'
             output_units = 1 if is_censoring else J
-            
+            init_bias = 0.0
             if is_censoring:
                 if 'target' in y_data.columns:
                     # For censoring model, censored (target=-1) should be mapped to 1, uncensored to 0
@@ -1031,7 +1030,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                     
                     init_bias = np.log(pos_ratio / (1.0 - pos_ratio))
                     
-                    pos_weight = 1.0 / (pos_ratio + 1e-7)
+                    pos_weight = 1.0 / (pos_ratio + 1e-7) * 0.5 # Scale down positive weight
                     neg_weight = 1.0 / (1.0 - pos_ratio + 1e-7)
                     total = pos_weight + neg_weight  
                     pos_weight = pos_weight / total * 2
@@ -1052,7 +1051,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                         units=output_units,
                         activation=final_activation,
                         kernel_initializer='glorot_uniform',
-                        kernel_regularizer=l2(0.001),
+                        kernel_regularizer=l2(0.005),
                         bias_initializer=tf.keras.initializers.Constant(init_bias),
                         name="output_dense"
                     )(x)
@@ -1084,8 +1083,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                     units=output_units,
                     activation=final_activation,
                     kernel_initializer='glorot_uniform',
-                    kernel_regularizer=l2(0.001),
-                    bias_initializer=tf.keras.initializers.Constant(init_bias),
+                    kernel_regularizer=l2(0.005),
                     name="output_dense"
                 )(x)
 
@@ -1104,7 +1102,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                 units=output_units,
                 activation=final_activation,
                 kernel_initializer='glorot_uniform',
-                kernel_regularizer=l2(0.001),
+                kernel_regularizer=l2(0.01),
                 use_bias=True,
                 name="output_dense"
             )(x)
@@ -1124,16 +1122,15 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         # Create model
         model = Model(inputs=inputs, outputs=outputs, name='lstm_model')
 
-        # Learning rate schedule
+        # Learning rate schedule with longer warmup
         lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            first_decay_steps=steps_per_epoch * 10,
-            t_mul=2.0,
-            m_mul=0.9,
-            alpha=0.1
+            first_decay_steps=steps_per_epoch * 10,  # Longer initial decay
+            t_mul=2.0,  # Double period each restart
+            m_mul=0.9,  # Slightly reduce max learning rate
+            alpha=0.1  # Minimum learning rate
         )
         
-        # Optimizer
         optimizer = tf.keras.optimizers.AdamW(
             learning_rate=lr_schedule,
             weight_decay=0.001,

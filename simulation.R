@@ -135,13 +135,13 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   dat[["A_th2"]] <-sim(DAG = D.dyn2, actions = "A_th2", n = n, LTCF = "Y", rndseed = r, verbose = FALSE)  # dynamic
   dat[["A_th3"]] <-sim(DAG = D.dyn3, actions = "A_th3", n = n, LTCF = "Y", rndseed = r, verbose = FALSE) # stochastic
   
-  # true parameter values
+  # true parameter values:
   
   D.dyn1 <- set.targetE(D.dyn1, outcome = "Y", t=1:t.end, param = "A_th1") # vector of counterfactual means of "Y" over all time periods
   D.dyn2 <- set.targetE(D.dyn2, outcome = "Y", t=1:t.end, param = "A_th2")
   D.dyn3 <- set.targetE(D.dyn3, outcome = "Y", t=1:t.end, param = "A_th3") 
   
-  Y.true <- list()
+  Y.true <- list() # Y.true represents event probabilities (1=event)
   Y.true[["static"]] <- eval.target(D.dyn1, data = dat[["A_th1"]])$res
   Y.true[["dynamic"]] <- eval.target(D.dyn2, data = dat[["A_th2"]])$res
   Y.true[["stochastic"]] <- eval.target(D.dyn3, data = dat[["A_th3"]])$res
@@ -1199,8 +1199,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     lstm_Y_preds <- lstm(
       data = tmle_dat,
       outcome = grep("Y", colnames(tmle_dat), value = TRUE), 
-      covariates = setdiff(colnames(tmle_dat), 
-                           c("ID", grep("^Y\\.", colnames(tmle_dat), value = TRUE))),
+      covariates = setdiff(colnames(tmle_dat), c("ID")),
       t_end = t.end,
       window_size = window_size,
       out_activation = "sigmoid", # Always sigmoid for binary Y
@@ -1426,7 +1425,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       t_end = t.end,
       window_size = window_size,
       n_ids = n_ids,
-      cores = ceiling(cores/2),
+      cores = cores, 
       debug = debug
     )
     
@@ -1436,11 +1435,12 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   if(estimator=='tmle-lstm'){
     # Calculate TMLE estimates - fix dimensions and calculations 
+    # Conversion to survival probabilities (1-p) only happens at the visualization stage, which is correct.
     tmle_estimates <- matrix(NA, nrow=3, ncol=t.end)
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts[[t]])) {
         for(rule in 1:3) {
-          tmle_estimates[rule,t] <- mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE)
+          tmle_estimates[rule,t] <- 1-mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE) # convert event prob. into survival prob.
         }
       }
     }
@@ -1450,7 +1450,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts_bin[[t]])) {
         for(rule in 1:3) {
-          tmle_bin_estimates[rule,t] <- mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
+          tmle_bin_estimates[rule,t] <- 1-mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1461,7 +1461,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
         iptw_means <- tmle_contrasts[[t]]$Qstar_iptw[1,]
         for(rule in 1:3) {
-          iptw_estimates[rule,t] <- iptw_means[rule]
+          iptw_estimates[rule,t] <- 1-iptw_means[rule]
         }
       }
     }
@@ -1472,7 +1472,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
         iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
         for(rule in 1:3) {
-          iptw_bin_estimates[rule,t] <- iptw_means[rule]
+          iptw_bin_estimates[rule,t] <- 1-iptw_means[rule]
         }
       }
     }
@@ -1482,7 +1482,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
         for(rule in 1:3) {
-          gcomp_estimates[rule,t] <- mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
+          gcomp_estimates[rule,t] <- 1-mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
         }
       }
     }
@@ -1789,6 +1789,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     "scale_continuous" = scale.continuous,
     "use_SL" = use.SL,
     "results" = list(
+      "obs_rules"= obs.rules,
+      "Y_true" = Y.true,
       "Ahat_tmle" = Ahat_tmle,
       "Chat_tmle" = Chat_tmle,
       "yhat_tmle" = tmle_estimates,
@@ -1838,7 +1840,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   })
   
   print("Returning list")
-  return(list("Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
+  return(list("obs_rules"= obs.rules, "Y_true" = Y.true, "Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
               "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,"tmle_est_var"=tmle_est_var,
               "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,"tmle_est_var_bin"=tmle_est_var_bin,
@@ -1877,15 +1879,16 @@ R <- 325 # number of simulation runs
 full_vector <- 1:R
 
 # Specify the values to be omitted
-omit_values <- c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72,
+completed_values <- c()
+omit_values <- sort(c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72,
                  101, 113, 51, 108, 81, 57, 80, 70, 64, 105, 96, 74,
                  38, 73, 65, 122, 130, 134, 131, 132, 140, 139, 133,
                  151, 152, 162, 160, 169, 176, 191, 183, 202, 207, 204,
                  209, 223, 217, 237, 233, 236, 243, 244, 247, 255, 263,
-                 269, 282, 279, 294, 306, 311, 316, 324)
+                 269, 282, 279, 294, 306, 311, 316, 324))
 
 # Remove the specified values from the full vector
-final_vector <- full_vector[!full_vector %in% omit_values]
+final_vector <- full_vector[!full_vector %in% c(completed_values,omit_values)]
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -1917,7 +1920,7 @@ if(doMPI){
   library(parallel)
   library(doParallel)
   
-  cores <- (parallel::detectCores())
+  cores <- ceiling((parallel::detectCores())/2)
   print(paste0("number of cores used: ", cores))
   
   cl <- parallel::makeCluster(cores, outfile="")
@@ -1977,7 +1980,7 @@ library_vector <- c(
 )
 
 if(estimator=='tmle-lstm'){ # run sequentially and save at each iteration
-  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE) %do% {
+  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = TRUE) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)

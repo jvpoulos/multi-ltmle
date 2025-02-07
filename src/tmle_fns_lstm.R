@@ -747,7 +747,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
           y_val <- initial_model_for_Y_data$Y[id_rows[1]]
           if(y_val != -1) {
             # Keep as event probability (1=event, 0=no event)
-            observed_Y[i] <- y_val
+            observed_Y[i] <- y_val # Keep as event probability (1=event, 0=no event)
           } else {
             # Look back up to 3 time points for a valid Y value
             for(back_t in 1:3) {
@@ -918,7 +918,7 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
           
           if(sum(valid_data) >= 5) {
             glm_data <- data.frame(
-              y = observed_Y[valid_idx][valid_data],
+              y = observed_Y[valid_idx][valid_data], # Event probabilities
               offset = offset_vals[valid_data],
               h = H[valid_idx][valid_data],
               w = w[valid_idx][valid_data]
