@@ -197,19 +197,61 @@ def test_model():
             logger.info(f"{name}: {value:.4f}")
         
         logger.info("\nGenerating predictions...")
+        # Get predictions without reshaping - predictions already respect temporal order
         preds_test = model.predict(
             test_dataset,
             steps=test_steps,
+            batch_size=batch_size * 2,
             verbose=1
         )
-
-        # Pad predictions to match original length
-        num_pad = len(x_data) - len(preds_test)
+        
+        logger.info(f"Raw test predictions shape: {preds_test.shape}")
+        
+        # Pad predictions to match original length if needed
+        num_pad = len(test_data_x) - len(preds_test)
         if num_pad > 0:
-            # Replicate last prediction for remaining samples
-            pad_predictions = np.repeat(preds_test[-1:], num_pad, axis=0)
+            logger.info("Padding predictions to match original length...")
+            logger.info(f"Original predictions stats:")
+            logger.info(f"Mean: {np.mean(preds_test)}, Std: {np.std(preds_test)}")
+            logger.info(f"Min: {np.min(preds_test)}, Max: {np.max(preds_test)}")
+            
+            # Use last few valid predictions to initialize padding
+            k = min(50, len(preds_test))
+            last_valid = preds_test[-k:]
+            
+            # Create padding that follows the trend
+            pad_predictions = []
+            for i in range(num_pad):
+                if i == 0:
+                    # Start with mean of last valid predictions
+                    pad_value = np.mean(last_valid, axis=0)
+                else:
+                    # Add small random variation to maintain temporal change
+                    variation = np.std(last_valid, axis=0) * 0.1
+                    pad_value = pad_predictions[-1] + np.random.normal(0, variation, pad_value.shape)
+                pad_predictions.append(pad_value)
+            
+            pad_predictions = np.array(pad_predictions)
             preds_test = np.vstack([preds_test, pad_predictions])
-
+        
+        logger.info(f"Final test predictions shape: {preds_test.shape}")
+        
+        # Ensure we only keep predictions for actual samples
+        n_valid_samples = len(test_data_x) - n_pre + 1
+        if n_valid_samples <= 0:
+            raise ValueError(f"Invalid number of samples: {n_valid_samples}")
+            
+        preds_test = preds_test[:n_valid_samples]
+        
+        logger.info(f"Final test predictions shape: {preds_test.shape}")
+        
+        # Ensure we only keep predictions for actual samples
+        n_valid_samples = len(test_data_x) - n_pre + 1
+        if n_valid_samples <= 0:
+            raise ValueError(f"Invalid number of samples: {n_valid_samples}")
+            
+        preds_test = preds_test[:n_valid_samples]
+        
         logger.info(f"Final test predictions shape: {preds_test.shape}")
         
         # Ensure we only keep predictions for actual samples

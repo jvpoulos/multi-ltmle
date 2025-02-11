@@ -372,16 +372,31 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
     
     return callbacks
 
+def process_sequence_data(x_data, col):
+    """Process sequence data from comma-separated string format."""
+    sequences = []
+    for seq_str in x_data[col]:
+        try:
+            # Split by comma and convert to numeric, keeping sequence structure
+            values = [float(x.strip()) for x in str(seq_str).split(',') if x.strip()]
+            sequences.append(values)
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Error parsing sequence: {seq_str}, error: {e}")
+            sequences.append([0.0] * 12)  # Default length
+            
+    # Convert to numpy for stats
+    sequence_array = np.array(sequences)
+    logger.info(f"{col} sequence stats:")
+    logger.info(f"  Shape: {sequence_array.shape}")
+    logger.info(f"  Mean: {np.mean(sequence_array):.3f}")
+    logger.info(f"  Max: {np.max(sequence_array):.3f}")
+    logger.info(f"  Non-zero entries: {np.sum(sequence_array > 0)}")
+    
+    return sequences
+
 def load_data_from_csv(input_file, output_file):
     """
-    Load and preprocess input and output data from CSV files with improved column type detection.
-    
-    Args:
-        input_file (str): Path to input CSV file
-        output_file (str): Path to output CSV file
-        
-    Returns:
-        tuple: Processed input and output data as pandas DataFrames
+    Load and preprocess input and output data from CSV files with improved sequence handling.
     """
     try:
         # Load input data
@@ -402,12 +417,25 @@ def load_data_from_csv(input_file, output_file):
         # Initialize column type lists
         binary_cols = []
         cont_cols = []
+        sequence_cols = []
+
+        # First pass: identify sequences
+        for col in x_data.columns:
+            if col != 'ID' and isinstance(x_data[col].iloc[0], str) and ',' in str(x_data[col].iloc[0]):
+                sequence_cols.append(col)
+                logger.info(f"Found sequence column: {col}")
+
+        # Process sequences first
+        sequence_data = {}
+        for col in sequence_cols:
+            sequence_data[col] = process_sequence_data(x_data, col)
+            # Store sequence data back in DataFrame as string to preserve it
+            x_data[col] = [','.join(map(str, seq)) for seq in sequence_data[col]]
 
         # Function to determine if a column is binary
         def is_binary_column(series):
             unique_vals = series.dropna().unique()
             if len(unique_vals) <= 2:
-                # Check if values are 0/1 or boolean
                 vals = set(unique_vals)
                 return vals.issubset({0, 1, True, False, "0", "1"})
             return False
@@ -415,63 +443,18 @@ def load_data_from_csv(input_file, output_file):
         # Function to determine if a column is continuous
         def is_continuous_column(col_name, series):
             try:
-                # Convert to numeric, handle errors
                 numeric_series = pd.to_numeric(series, errors='coerce')
                 unique_vals = numeric_series.dropna().unique()
-                
-                # If too few unique values, probably not continuous
                 if len(unique_vals) < 3:
                     return False
-                    
-                # Check if values have decimals
                 has_decimals = any(float(x) % 1 != 0 for x in unique_vals if not pd.isna(x))
-                
-                # If has decimals or many unique values, likely continuous
                 return has_decimals or len(unique_vals) > 10
             except:
                 return False
 
-        # First pass: identify sequences and check their content
+        # Identify column types for non-sequence columns
         for col in x_data.columns:
-            if col != 'ID' and isinstance(x_data[col].iloc[0], str) and ',' in str(x_data[col].iloc[0]):
-                try:
-                    # Get more rows for better detection (increase from 5 to 20)
-                    sample_rows = [row for row in x_data[col].iloc[:20] if isinstance(row, str)]
-                    if not sample_rows:
-                        continue
-                        
-                    # Process ALL values in the sampled rows
-                    all_values = []
-                    for row in sample_rows:
-                        values = [float(x.strip()) for x in row.split(',') 
-                                 if x.strip() and x.strip() != 'NA']
-                        all_values.extend(values)
-                        
-                    # Check unique values and their frequency
-                    unique_vals = set(all_values)
-                    
-                    # Special handling for L1 which we know is count data
-                    if col == 'L1':
-                        cont_cols.append(col)
-                        logger.info(f"Column {col} forced to count sequence")
-                    # More thorough sequence type detection
-                    elif len(unique_vals) > 2 and max(unique_vals) > 1:
-                        cont_cols.append(col)
-                        logger.info(f"Column {col} identified as count/continuous sequence")
-                    elif unique_vals.issubset({0, 1}):
-                        binary_cols.append(col)
-                        logger.info(f"Column {col} identified as binary sequence")
-                    else:
-                        cont_cols.append(col)
-                        logger.info(f"Column {col} defaulted to continuous sequence")
-                        
-                except (ValueError, AttributeError):
-                    cont_cols.append(col)
-                    logger.info(f"Column {col} defaulted to continuous (invalid sequence)")
-
-        # Second pass: handle non-sequence columns
-        for col in x_data.columns:
-            if col != 'ID' and col not in binary_cols and col not in cont_cols:
+            if col != 'ID' and col not in sequence_cols:
                 if is_binary_column(x_data[col]):
                     binary_cols.append(col)
                     logger.info(f"Column {col} identified as binary")
@@ -484,28 +467,14 @@ def load_data_from_csv(input_file, output_file):
 
         logger.info(f"Binary columns: {binary_cols}")
         logger.info(f"Continuous columns: {cont_cols}")
+        logger.info(f"Sequence columns: {sequence_cols}")
         
         # Handle binary columns
         for col in binary_cols:
             try:
-                if isinstance(x_data[col].iloc[0], str) and ',' in str(x_data[col].iloc[0]):
-                    # Process binary sequences
-                    def process_binary_seq(seq_str):
-                        try:
-                            values = [float(x.strip()) for x in str(seq_str).split(',') if x.strip() != 'NA']
-                            if not values:
-                                return 0
-                            # Take the mode of the sequence
-                            return max(set(values), key=values.count)
-                        except (ValueError, AttributeError):
-                            return 0
-
-                    x_data[col] = x_data[col].apply(process_binary_seq).fillna(0)
-                else:
-                    x_data[col] = pd.to_numeric(x_data[col], errors='coerce')
-                    mode_val = x_data[col].mode().iloc[0] if not x_data[col].empty else 0
-                    x_data[col] = x_data[col].fillna(mode_val)
-                
+                x_data[col] = pd.to_numeric(x_data[col], errors='coerce')
+                mode_val = x_data[col].mode().iloc[0] if not x_data[col].empty else 0
+                x_data[col] = x_data[col].fillna(mode_val)
                 x_data[col] = (x_data[col] > 0).astype(float)
             except Exception as e:
                 logger.error(f"Error processing binary column {col}: {str(e)}")
@@ -519,23 +488,22 @@ def load_data_from_csv(input_file, output_file):
                 if pd.isna(med):
                     med = 0.0
                 x_data[col] = x_data[col].fillna(med)
-                
-                # Remove standardization here - will be done in create_dataset
             except Exception as e:
                 logger.error(f"Error processing continuous column {col}: {str(e)}")
                 x_data[col] = 0.0
         
-        # Convert to float32
-        try:
-            x_data = x_data.astype(np.float32)
-        except Exception as e:
-            logger.error(f"Error converting to float32: {str(e)}")
-            # Try converting column by column
-            for col in x_data.columns:
-                try:
-                    x_data[col] = x_data[col].astype(np.float32)
-                except:
-                    x_data[col] = 0.0
+        # Convert non-sequence columns to float32
+        float_cols = [col for col in x_data.columns if col not in sequence_cols and col != 'ID']
+        if float_cols:
+            try:
+                x_data[float_cols] = x_data[float_cols].astype(np.float32)
+            except Exception as e:
+                logger.error(f"Error converting to float32: {str(e)}")
+                for col in float_cols:
+                    try:
+                        x_data[col] = x_data[col].astype(np.float32)
+                    except:
+                        x_data[col] = 0.0
         
         # Final verification
         logger.info("\nFinal data summary:")
@@ -543,6 +511,9 @@ def load_data_from_csv(input_file, output_file):
         logger.info(f"Y-data shape: {y_data.shape}")
         logger.info(f"X-data contains NaN: {x_data.isna().any().any()}")
         logger.info(f"Y-data contains NaN: {y_data.isna().any().any()}")
+        
+        # Store sequence data as attribute
+        x_data.attrs['sequence_data'] = sequence_data
         
         return x_data, y_data
         
@@ -698,7 +669,7 @@ def configure_device():
     except Exception as e:
         logger.warning(f"Device configuration failed: {e}")
         return False
-
+   
 def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False, pos_weight=None, neg_weight=None):
     """Create dataset with proper sequence handling for CPU TensorFlow."""
     logger.info(f"Creating dataset with parameters:")
@@ -713,23 +684,61 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
     a_model_features = ['V3', 'white', 'black', 'latino', 'other', 'mdd', 'bipolar', 'schiz', 'L1', 'L2', 'L3']
     x_data = x_data[a_model_features].copy()
     
-    logger.info(f"Selected features: {a_model_features}")
-    logger.info(f"Raw L1 stats - mean: {x_data['L1'].mean():.3f}, std: {x_data['L1'].std():.3f}")
-    
-    # Process features
-    x_values = x_data.values.astype(np.float32)
-    n_features = x_values.shape[1]
-    logger.info(f"Features after processing: {n_features}")
+    # Process L1, L2, L3 sequences
+    sequence_features = {}
+    for seq_col in ['L1', 'L2', 'L3']:
+        sequences = []
+        if 'sequence_data' in x_data.attrs and seq_col in x_data.attrs['sequence_data']:
+        # Get pre-processed sequences
+            sequences = x_data.attrs['sequence_data'][seq_col]
+            # Convert to numpy array and ensure correct dimensionality
+            seq_array = np.array(sequences)
+            # If sequence is multi-dimensional, take first dimension
+            if seq_array.ndim > 2:
+                seq_array = seq_array.reshape(seq_array.shape[0], -1)
+            sequence_features[seq_col] = seq_array
+            logger.info(f"Using pre-processed {seq_col} sequences")
+        else:
+            # Process sequences from strings
+            logger.info(f"Processing {seq_col} sequences from strings")
+            for seq_str in x_data[seq_col]:
+                try:
+                    if isinstance(seq_str, str):
+                        values = [float(x.strip()) for x in seq_str.split(',') if x.strip()]
+                    elif isinstance(seq_str, (list, np.ndarray)):
+                        values = [float(x) for x in seq_str if x is not None]
+                    else:
+                        values = [0.0] * n_pre
+                        
+                    if not values:
+                        values = [0.0] * n_pre
+                    elif len(values) < n_pre:
+                        values = values + [values[-1]] * (n_pre - len(values))
+                    sequences.append(values[:n_pre])
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Error parsing {seq_col} sequence: {seq_str}, error: {e}")
+                    sequences.append([0.0] * n_pre)
+            
+            sequence_features[seq_col] = np.array(sequences)
 
-    # Separate scaling for different feature types
-    # Continuous non-count features
+        # Log sequence stats
+        logger.info(f"{seq_col} sequence stats:")
+        logger.info(f"  Shape: {sequence_features[seq_col].shape}")
+        logger.info(f"  Mean: {np.mean(sequence_features[seq_col]):.3f}")
+        logger.info(f"  Max: {np.max(sequence_features[seq_col]):.3f}")
+        logger.info(f"  Non-zero entries: {np.sum(sequence_features[seq_col] > 0)}")
+    
+    # Process non-sequence features
+    non_seq_cols = [col for col in a_model_features if col not in ['L1', 'L2', 'L3']]
+    x_values = x_data[non_seq_cols].values.astype(np.float32)
+    
+    # Scale continuous features
     cont_cols = ['V3']
-    cont_indices = [x_data.columns.get_loc(col) for col in cont_cols if col in x_data.columns]
+    cont_indices = [non_seq_cols.index(col) for col in cont_cols if col in non_seq_cols]
     
     if cont_indices:
         for idx in cont_indices:
             col_values = x_values[:, idx]
-            # Use robust scaling with median and IQR
             q75, q25 = np.percentile(col_values, [75, 25])
             iqr = q75 - q25
             if iqr == 0:
@@ -737,35 +746,29 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
             median = np.median(col_values)
             x_values[:, idx] = (col_values - median) / (iqr + 1e-6)
 
-    # Special handling for L1 (count data)
-    l1_idx = x_data.columns.get_loc('L1')
-    l1_values = x_values[:, l1_idx]
+    # Scale sequence features
+    for seq_col in ['L1', 'L2', 'L3']:
+        seq_values = sequence_features[seq_col]
+        if np.any(seq_values != 0):
+            if seq_col == 'L1':  # Special handling for L1
+                # Handle non-positive values before log1p
+                min_val = np.min(seq_values)
+                if min_val <= 0:
+                    seq_values = seq_values - min_val + 1e-6  # Shift to positive
+                seq_transformed = np.log1p(seq_values)
+            else:
+                seq_transformed = seq_values.copy()  # Use copy to avoid modifying original
+            
+            # Handle constant sequences
+            if np.std(seq_transformed) > 1e-6:  # Use small threshold
+                q75, q25 = np.percentile(seq_transformed, [75, 25])
+                iqr = q75 - q25 if q75 > q25 else 1.0
+                median = np.median(seq_transformed)
+                sequence_features[seq_col] = (seq_transformed - median) / (iqr + 1e-6)
+            else:
+                sequence_features[seq_col] = np.zeros_like(seq_transformed)
 
-    # Add debug logging
-    logger.info(f"L1 before processing - min: {np.min(l1_values)}, max: {np.max(l1_values)}")
-    logger.info(f"L1 unique values: {np.unique(l1_values)}")
-
-    if np.any(l1_values != 0):  # Only scale if non-zero values exist
-        # Log transform for count data (adding 1 to handle zeros)
-        l1_transformed = np.log1p(l1_values)
-        # Scale to [-1, 1] range using robust scaling
-        if np.std(l1_transformed) != 0:
-            # Use robust scaling with median and IQR for L1
-            q75, q25 = np.percentile(l1_transformed, [75, 25])
-            iqr = q75 - q25
-            if iqr == 0:
-                iqr = 1.0
-            median = np.median(l1_transformed)
-            x_values[:, l1_idx] = (l1_transformed - median) / (iqr + 1e-6)
-        else:
-            logger.warning("L1 has zero standard deviation after transformation")
-    else:
-        logger.warning("L1 contains all zeros")
-
-    # Clip all features to prevent extreme values
-    x_values = np.clip(x_values, -3, 3)
-
-    # Process targets with robust handling
+    # Process targets
     if loss_fn == "sparse_categorical_crossentropy":
         if 'target' in y_data.columns:
             y_values = y_data['target'].values
@@ -783,72 +786,159 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
     else:  # binary_crossentropy
         if 'target' in y_data.columns:
             y_values = y_data['target'].values
+            
+            if not is_censoring:
+                # Get the minimum length to ensure arrays are aligned
+                min_length = min(len(x_values), len(y_values))
+                for seq_col in sequence_features:
+                    min_length = min(min_length, len(sequence_features[seq_col]))
+                
+                # Truncate all arrays to the minimum length
+                x_values = x_values[:min_length]
+                y_values = y_values[:min_length]
+                for seq_col in ['L1', 'L2', 'L3']:
+                    sequence_features[seq_col] = sequence_features[seq_col][:min_length]
+                
+                # Now create and apply the mask
+                valid_mask = y_values != -1
+                logger.info(f"Found {np.sum(~valid_mask)} censored values out of {min_length}")
+                
+                # Apply mask to all arrays
+                x_values = x_values[valid_mask]
+                y_values = y_values[valid_mask]
+                for seq_col in ['L1', 'L2', 'L3']:
+                    sequence_features[seq_col] = sequence_features[seq_col][valid_mask]
+                
+                y_values = (y_values > 0).astype(np.float32)
+                
+                logger.info(f"After filtering censored values - Target distribution:")
+                logger.info(f"  0s: {np.sum(y_values == 0)}")
+                logger.info(f"  1s: {np.sum(y_values == 1)}")
+                logger.info(f"Final array shapes after filtering:")
+                logger.info(f"  x_values: {x_values.shape}")
+                logger.info(f"  y_values: {y_values.shape}")
+                for seq_col in ['L1', 'L2', 'L3']:
+                    logger.info(f"  {seq_col}: {sequence_features[seq_col].shape}")
         else:
-            # Handle multi-class binary case
             if all(f'A{i}' in y_data.columns for i in range(J)):
                 y_values = y_data[[f'A{i}' for i in range(J)]].values
             else:
                 raise ValueError("No suitable target columns found")
 
-    # Create sequences with proper dimensionality
-    num_samples = len(x_values) - n_pre + 1
+    # Create sequences for temporal forecasting
+    num_samples = len(x_values) - n_pre
     
-    # Create normalized time and position encodings
-    time_index = (np.arange(len(x_values))[:, np.newaxis] / max(len(x_values)-1, 1)).astype(np.float32)
-    pos_encoding = (np.arange(n_pre)[:, np.newaxis] / max(n_pre-1, 1)).astype(np.float32)
+    # Calculate total feature dimension
+    base_features = len(non_seq_cols)      # Non-sequence features
+    seq_features = 3                       # L1, L2, L3
+    time_features = 1                      # Global time index
+    pos_features = 1                       # Position index
+    total_features = base_features + seq_features + time_features + pos_features
     
-    # Add time index to features - scaled between -1 and 1
-    x_values_with_time = np.concatenate([x_values, 2 * time_index - 1], axis=1)
-    logger.info(f"Shape after adding time: {x_values_with_time.shape}")
+    # Initialize arrays with correct dimensions
+    x_sequences = np.zeros((num_samples, n_pre, total_features), dtype=np.float32)
     
-    # Initialize sequences array with correct dimensions
-    x_sequences = np.zeros((num_samples, n_pre, n_features + 2), dtype=np.float32)
-
-    # Different initialization for y_sequences based on loss function
     if loss_fn == "sparse_categorical_crossentropy":
-        # For categorical A model
         y_sequences = np.zeros(num_samples, dtype=np.int32)
-    else:  # binary_crossentropy
+    else:
         if len(y_values.shape) > 1:
-            # For multi-class binary (binary A model)
             y_sequences = np.zeros((num_samples, y_values.shape[1]), dtype=np.float32)
         else:
-            # For single binary output (C/Y model)
             y_sequences = np.zeros((num_samples, 1), dtype=np.float32)
 
-    # Fill sequences with proper indexing
+    # Add relative position features
+    pos_index = np.linspace(0, 1, n_pre)[:, np.newaxis].astype(np.float32)
+
+    # Fill sequences preserving temporal order
     for i in range(num_samples):
-        end_idx = i + n_pre
-        if end_idx <= len(x_values):
-            x_sequences[i, :, :n_features + 1] = x_values_with_time[i:end_idx]
-            x_sequences[i, :, -1] = 2 * pos_encoding[:, 0] - 1
+        seq_start = i
+        seq_end = i + n_pre
+        target_idx = seq_end - 1
+        
+        # Get base features
+        current_features = x_values[seq_start:seq_end]
+        
+        # Process base features
+        current_features = x_values[seq_start:seq_end]  # Shape: (n_pre, base_features)
+        
+        # Process sequence features with proper reshaping
+        seq_values = []
+        for seq_col in ['L1', 'L2', 'L3']:
+            # Get one sequence window
+            seq_window = sequence_features[seq_col][seq_start:seq_end]
+            
+            # Handle multi-dimensional sequences
+            if seq_window.ndim > 1:
+                # If sequence is already multi-dimensional, take the appropriate window
+                window_size = min(n_pre, seq_window.shape[0])
+                seq_window = seq_window[:window_size, 0]  # Take first dimension if multiple exist
+                
+                # Pad if necessary
+                if window_size < n_pre:
+                    pad_size = n_pre - window_size
+                    seq_window = np.pad(seq_window, (0, pad_size), mode='edge')
+            
+            # Ensure 1D array of correct length
+            if len(seq_window) != n_pre:
+                # Truncate or pad to match n_pre
+                if len(seq_window) > n_pre:
+                    seq_window = seq_window[:n_pre]
+                else:
+                    seq_window = np.pad(seq_window, (0, n_pre - len(seq_window)), mode='edge')
+            
+            # Reshape to (n_pre, 1)
+            seq_window = seq_window.reshape(n_pre, 1)
+            seq_values.append(seq_window)
+        
+        # Create time features
+        global_time = (np.arange(seq_start, seq_end) / len(x_values)).reshape(n_pre, 1).astype(np.float32)
+        
+        # Debug shapes
+        if i == 0:
+            logger.info(f"Shape check at first iteration:")
+            logger.info(f"  current_features: {current_features.shape}")
+            logger.info(f"  seq_values[0]: {seq_values[0].shape}")
+            logger.info(f"  global_time: {global_time.shape}")
+            logger.info(f"  pos_index: {pos_index.shape}")
+        
+        # Combine all features
+        try:
+            combined = np.concatenate(
+                [current_features] +    # Base features
+                seq_values +            # L1, L2, L3 sequences
+                [global_time] +         # Time index
+                [pos_index],            # Position index
+                axis=1
+            )
+            x_sequences[i] = combined
+        except Exception as e:
+            logger.error(f"Error at iteration {i}:")
+            logger.error(f"  Expected shape: {x_sequences[i].shape}")
+            logger.error(f"  Got shapes: current_features={current_features.shape}, "
+                      f"seq_values={[s.shape for s in seq_values]}, "
+                      f"global_time={global_time.shape}, "
+                      f"pos_index={pos_index.shape}")
+            raise
+        
+        # Set target
+        if target_idx < len(y_values):
             if loss_fn == "sparse_categorical_crossentropy":
-                # For categorical A model
-                y_sequences[i] = y_values[i]
+                y_sequences[i] = y_values[target_idx]
             elif len(y_values.shape) > 1:
-                # For multi-class binary (binary A model)
-                y_sequences[i, :] = y_values[i]
+                y_sequences[i] = y_values[target_idx]
             else:
-                # For single binary output (C/Y model)
-                y_sequences[i, 0] = y_values[i]
+                y_sequences[i, 0] = y_values[target_idx]
 
     # Final preprocessing
     x_sequences = np.nan_to_num(x_sequences, nan=0.0, posinf=1.0, neginf=-1.0)
 
-    logger.info(f"Final features dimension: {n_features + 2}") # Original features + time + position
-
-    # Log shapes and stats
     logger.info(f"Final sequence shapes:")
     logger.info(f"X sequences: {x_sequences.shape}")
     logger.info(f"Y sequences: {y_sequences.shape}")
     logger.info(f"X range: [{np.min(x_sequences):.3f}, {np.max(x_sequences):.3f}]")
     logger.info(f"Final feature dimension: {x_sequences.shape[2]}")
-    logger.info(f"Feature stats:")
-    for i in range(x_sequences.shape[2]):
-        data = x_sequences[:, :, i].flatten()
-        logger.info(f"  Feature {i}: mean={np.mean(data):.3f}, std={np.std(data):.3f}")
-        
-    # Create dataset with memory optimizations
+
+    # Create dataset
     dataset = tf.data.Dataset.from_tensor_slices((x_sequences, y_sequences))
 
     # Add weights if needed
@@ -863,17 +953,16 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
     elif is_censoring:
         dataset = dataset.map(lambda x, y: (x, y, tf.ones_like(y, dtype=tf.float32)))
 
-    # Memory-efficient pipeline
-    # Remove shuffling to preserve temporal order
-
-    dataset = dataset.cache()
+    # Configure dataset
+    if is_training:
+        buffer_size = min(batch_size * 3, num_samples)
+        dataset = dataset.shuffle(buffer_size=buffer_size, seed=42)
+    
     dataset = (dataset
-              .batch(batch_size, drop_remainder=is_training)
-              .prefetch(tf.data.AUTOTUNE)
-              .repeat())
-
-    logger.info(f"Dataset created successfully")
-    logger.info(f"Features: {n_features}, With time & position: {n_features + 2}")
+                  .batch(batch_size, drop_remainder=is_training)
+                  .cache()
+                  .repeat()
+                  .prefetch(tf.data.AUTOTUNE))
 
     return dataset, num_samples
 
@@ -882,15 +971,23 @@ def weighted_binary_crossentropy(pos_weight, neg_weight):
     def loss(y_true, y_pred):
         y_true = tf.cast(y_true, tf.float32)
         
-        # Clip prediction values to avoid log(0)
-        epsilon = tf.keras.backend.epsilon()
+        # Use a larger epsilon for more aggressive clipping
+        epsilon = 1e-7
         y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
         
-        # Calculate binary crossentropy
-        bce = -(y_true * tf.math.log(y_pred) * pos_weight +
-                (1 - y_true) * tf.math.log(1 - y_pred) * neg_weight)
+        # Add numerical stability to log operations
+        log_pos = tf.math.log(y_pred + epsilon)
+        log_neg = tf.math.log(1 - y_pred + epsilon)
         
-        return tf.reduce_mean(bce)
+        # Calculate binary crossentropy with stable operations
+        bce = -(y_true * log_pos * pos_weight +
+                (1 - y_true) * log_neg * neg_weight)
+        
+        # Add gradient clipping
+        bce = tf.clip_by_value(bce, -100, 100)
+        
+        # Use safe reduction
+        return tf.reduce_mean(tf.boolean_mask(bce, tf.math.is_finite(bce)))
     return loss
 
 class MultiHeadAttention(tf.keras.layers.Layer):
@@ -938,9 +1035,9 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             'recurrent_activation': 'sigmoid', 
             'kernel_initializer': 'glorot_uniform',
             'recurrent_initializer': 'orthogonal',
-            'kernel_regularizer': l2(0.01),
-            'recurrent_regularizer': l2(0.01),
-            'bias_regularizer': l2(0.01),
+            'kernel_regularizer': l2(0.001),
+            'recurrent_regularizer': l2(0.001),
+            'bias_regularizer': l2(0.001),
             'dropout': dr,
             'recurrent_dropout': 0,
             'unit_forget_bias': True,

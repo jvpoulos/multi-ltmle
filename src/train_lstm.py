@@ -172,10 +172,17 @@ def main():
     # Force is_censoring=True if we're using C model files
     is_censoring = "lstm_bin_C" in input_file
     
-    if is_censoring:
-        logger.info("Training Censoring (C) Model...")
-    else:
-        logger.info("Training Outcome (Y) Model...")
+    if loss_fn == "sparse_categorical_crossentropy":
+        logger.info("Training Treatment (A) Model with categorical loss...")
+    elif loss_fn == "binary_crossentropy":
+        if is_censoring:
+            logger.info("Training Censoring (C) Model...")
+        else:
+            if (isinstance(outcome_cols, list) and any(col.startswith('Y') for col in outcome_cols)) or \
+               (isinstance(outcome_cols, str) and outcome_cols.startswith('Y')):
+                logger.info("Training Outcome (Y) Model...")
+            else:
+                logger.info("Training Treatment (A) Model with binary loss...")
 
     logger.info("Data loaded successfully")
     logger.info(f"x_data shape: {x_data.shape}")
@@ -523,47 +530,48 @@ def main():
     run.log_artifact(artifact)
     
     logger.info("\nGenerating predictions for all data...")
-
     x_data_final = x_data.copy()
     if 'ID' in x_data_final.columns:
         x_data_final = x_data_final.drop(columns=['ID'])
 
+    # Create one dataset for all data (train+val+test) to maintain temporal order
     final_dataset, final_samples = create_dataset(
-        x_data_final,
+        x_data_final, 
         y_data,
         n_pre,
         batch_size,
         loss_fn,
         J,
-        is_training=False,
+        is_training=False,  # Don't shuffle to preserve temporal order
         is_censoring=is_censoring,
         pos_weight=pos_weight,
         neg_weight=neg_weight
     )
 
-    total_steps = math.ceil(final_samples / batch_size)
+    # Get predictions
+    logger.info("\nGenerating predictions for all samples...")
     predictions = model.predict(
         final_dataset,
-        steps=total_steps,
+        steps=math.ceil(final_samples / batch_size),
+        batch_size=batch_size * 2,
         verbose=1
     )
 
-    # Pad predictions to match original length
-    num_pad = len(x_data) - len(predictions)
-    if num_pad > 0:
-        # Replicate last prediction for remaining samples
-        pad_predictions = np.repeat(predictions[-1:], num_pad, axis=0)
-        predictions = np.vstack([predictions, pad_predictions])
+    logger.info("\nPrediction Analysis:")
+    logger.info(f"Raw prediction shape: {predictions.shape}")
+    logger.info(f"Mean: {np.mean(predictions)}")
+    logger.info(f"Std: {np.std(predictions)}")
+    logger.info(f"Min: {np.min(predictions)}")
+    logger.info(f"Max: {np.max(predictions)}")
+    
 
-    logger.info(f"Final predictions shape: {predictions.shape}")
+    # Check if predictions match original order
+    logger.info("\nOrder Analysis:")
+    logger.info(f"Original data samples: {len(x_data)}")
+    logger.info(f"Prediction samples: {len(predictions)}")
 
-    # Get appropriate filenames
-    model_filename, pred_filename, info_filename = get_model_filenames(
-        loss_fn, output_dim, is_censoring
-    )
-
-    # Set paths
-    model_path = os.path.join(output_dir, model_filename)
+    # Save predictions and info
+    model_filename, pred_filename, info_filename = get_model_filenames(loss_fn, output_dim, is_censoring)
     pred_path = os.path.join(output_dir, pred_filename)
     info_path = os.path.join(output_dir, info_filename)
 
@@ -576,17 +584,14 @@ def main():
     artifact.add_file(model_path)
     run.log_artifact(artifact)
 
-    # Save predictions
     np.save(pred_path, predictions)
-
-    # Save prediction info
     np.savez(
         info_path,
         shape=predictions.shape,
         dtype=str(predictions.dtype),
         min_value=np.min(predictions),
         max_value=np.max(predictions),
-        num_samples=final_samples,
+        num_samples=len(x_data),  # Use full dataset size
         num_features=num_features
     )
 
