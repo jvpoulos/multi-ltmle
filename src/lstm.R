@@ -207,40 +207,97 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   
   # Create output_data based on case
   if(is_treatment_model) {
+    # Get treatment matrix for future predictions
+    treatment_matrix <- as.matrix(data[target_cols])
+    
     if(loss_fn == "binary_crossentropy") {
-      # For binary treatment case, create one-hot encoded output
+      # First get future treatment values
+      data_long$future_treatment <- sapply(1:nrow(data_long), function(i) {
+        id <- data_long$ID[i]
+        t <- data_long$time[i]
+        
+        # Get the treatment for the time step AFTER the window
+        prediction_time <- t + window_size
+        if(prediction_time >= ncol(treatment_matrix)) {
+          return(5)  # Default for out of bounds
+        }
+        
+        # Get the actual future treatment
+        val <- treatment_matrix[id, prediction_time + 1]  # +1 to predict next step
+        if(is.na(val) || !val %in% 0:6) {
+          return(5)  # Default for invalid values
+        }
+        return(as.numeric(val))
+      })
+      
+      # Create output dataframe with ID
       output_data <- data.frame(
         ID = data_long$ID,
         stringsAsFactors = FALSE
       )
       
-      # Convert treatment values to 0-5 categories
-      categorical_target <- ifelse(data_long$A == 0, 5, pmin(data_long$A - 1, 5))
+      # Convert future treatment values to 0-5 categories
+      categorical_target <- ifelse(data_long$future_treatment == 0, 5, 
+                                   pmin(data_long$future_treatment - 1, 5))
       
-      # Create one-hot columns A0 through A5
+      # Create one-hot columns A0 through A5 for future treatments
       for(j in 0:5) {
         col_name <- paste0("A", j)
         output_data[[col_name]] <- as.integer(categorical_target == j)
       }
       
-      # Set filenames for binary case
       output_filename <- file.path(output_dir, "lstm_bin_A_output.csv")
       input_filename <- file.path(output_dir, "lstm_bin_A_input.csv")
       
     } else {
-      # For categorical case
+      # For categorical case, predict future treatment directly
+      data_long$target <- sapply(1:nrow(data_long), function(i) {
+        id <- data_long$ID[i]
+        t <- data_long$time[i]
+        
+        # Get the treatment for the time step AFTER the window
+        prediction_time <- t + window_size
+        if(prediction_time >= ncol(treatment_matrix)) {
+          return(5)  # Default for out of bounds
+        }
+        
+        # Get the actual future treatment
+        val <- treatment_matrix[id, prediction_time + 1]  # +1 to predict next step
+        if(is.na(val) || !val %in% 0:6) {
+          return(5)  # Default for invalid values
+        }
+        val <- ifelse(val == 0, 5, pmin(val - 1, 5))
+        return(val)
+      })
+      
       output_data <- data.frame(
         ID = data_long$ID,
-        target = ifelse(data_long$A == 0, 5, pmin(data_long$A - 1, 5)),
+        target = data_long$target,
         stringsAsFactors = FALSE
       )
       
-      # Set filenames for categorical case
       output_filename <- file.path(output_dir, "lstm_cat_A_output.csv")
       input_filename <- file.path(output_dir, "lstm_cat_A_input.csv")
     }
   } else if(is_Y_model) {
-    # Y model handling (binary)
+    outcome_matrix <- as.matrix(data[target_cols])
+    data_long$target <- sapply(1:nrow(data_long), function(i) {
+      id <- data_long$ID[i]
+      t <- data_long$time[i]
+      
+      # Get the outcome for the time step AFTER the window
+      prediction_time <- t + window_size
+      if(prediction_time >= ncol(outcome_matrix)) {
+        return(0)  # No future data available
+      }
+      
+      # Get the actual future outcome
+      val <- outcome_matrix[id, prediction_time + 1]  # +1 to predict next step
+      if(is.na(val)) return(0)
+      as.numeric(val)
+    })
+    
+    # For Y model, output is binary outcome
     output_data <- data.frame(
       ID = data_long$ID,
       target = data_long$target,
@@ -249,19 +306,30 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     output_filename <- file.path(output_dir, "lstm_bin_Y_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_Y_input.csv")
   } else if(is_censoring_model) {
-    # Censoring model handling
+    # Align censoring predictions with future time steps
+    censoring_matrix <- as.matrix(data[target_cols])
+    data_long$target <- sapply(1:nrow(data_long), function(i) {
+      id <- data_long$ID[i]
+      t <- data_long$time[i]
+      
+      # Get the censoring status for the time step AFTER the window
+      prediction_time <- t + window_size
+      if(prediction_time >= ncol(censoring_matrix)) {
+        return(1)  # Assume censored if beyond available data
+      }
+      
+      # Get the actual future censoring status
+      val <- censoring_matrix[id, prediction_time + 1]  # +1 to predict next step
+      if(is.na(val)) return(1)  # Treat NA as censored
+      as.numeric(val == -1)  # Convert to binary: 1 if censored (-1), 0 if not
+    })
+    
     output_data <- data.frame(
       ID = data_long$ID,
       target = data_long$target,
       stringsAsFactors = FALSE
     )
     
-    print("Censoring model summary:")
-    print(paste("Total samples:", nrow(output_data)))
-    print(paste("Censored (target=1):", sum(output_data$target == 1)))
-    print(paste("Uncensored (target=0):", sum(output_data$target == 0)))
-    
-    # Set C model filenames
     output_filename <- file.path(output_dir, "lstm_bin_C_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_C_input.csv")
   }
@@ -364,17 +432,19 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Set Python variables
   py$window_size <- as.integer(window_size)
   py$output_dir <- output_dir
-  py$epochs <- as.integer(100)
+  py$epochs <- as.integer(1) # 100
   py$n_hidden <- as.integer(256)
   py$hidden_activation <- 'tanh'
   py$out_activation <- out_activation
-  py$lr <- 0.005
-  py$dr <- 0.1
-  py$nb_batches <- as.integer(64)
-  py$patience <- as.integer(2)
+  py$lr <- 0.001
+  py$dr <- 0.3
+  py$nb_batches <- as.integer(256)
+  py$patience <- as.integer(3)
   py$t_end <- as.integer(t_end + 1)
   py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")
   py$outcome_cols <- outcome_cols
+  py$gbound <-gbound
+  py$ybound <-ybound
   
   # Synchronize model type and settings
   if(is_censoring_model) {
@@ -425,12 +495,15 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   
   # Process predictions
   predictions <- tryCatch({
+    # Store model type flags in parent environment
+    is_Y_outcome <- "Y" %in% substr(outcome_cols, 1, 1)
+    is_censoring_model <- is_censoring
+    is_treatment_model <- !is_Y_outcome && !is_censoring_model
+    
     # Determine prediction file path
-    preds_file <- if(is_censoring) {
+    preds_file <- if(is_censoring_model) {
       file.path(output_dir, 'lstm_bin_C_preds.npy')
     } else {
-      # Check if outcome is Y and has binary loss function
-      is_Y_outcome <- any(grepl("^Y", outcome_cols))
       if(is_Y_outcome && loss_fn == "binary_crossentropy") {
         file.path(output_dir, 'lstm_bin_Y_preds.npy')
       } else {
@@ -449,111 +522,58 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     preds_r <- as.array(np$load(preds_file))
     n_total_samples <- nrow(preds_r)
     samples_per_time <- n_total_samples %/% (t_end + 1)
-    prediction_type <- if(is_Y_outcome) "Y" else if(is_censoring) "C" else "A"
+    prediction_type <- if(is_Y_outcome) "Y" else if(is_censoring_model) "C" else "A"
     
     if(debug) {
       cat("\nLoaded predictions from:", preds_file, "\n")
       cat("Array shape:", paste(dim(preds_r), collapse=" x "), "\n")
       cat("Samples per time period:", samples_per_time, "\n")
       cat("Prediction type:", prediction_type, "\n")
-    }
-    
-    # Function to extract a valid time slice
-    get_time_slice <- function(t) {
-      # Calculate slice indices
-      start_idx <- ((t-1) * samples_per_time) + 1
-      end_idx <- min(t * samples_per_time, n_total_samples)
-      
-      # Validate indices
-      if(start_idx > n_total_samples || end_idx < start_idx) {
-        if(debug) cat(sprintf("Invalid slice indices [%d:%d]\n", start_idx, end_idx))
-        return(NULL)
-      }
-      
-      # Extract and validate slice
-      slice <- preds_r[start_idx:end_idx, , drop=FALSE]
-      if(nrow(slice) == 0 || ncol(slice) == 0) {
-        if(debug) cat("Empty slice extracted\n")
-        return(NULL)
-      }
-      
-      if(debug) {
-        cat(sprintf("\nTime %d slice [%d:%d]:\n", t-1, start_idx, end_idx))
-        cat("Shape:", paste(dim(slice), collapse=" x "), "\n")
-        cat("Range:", paste(range(slice), collapse=" - "), "\n")
-      }
-      
-      slice
-    }
-    
-    # Function to process predictions for any type
-    process_predictions <- function(slice, type="A") {
-      # Handle invalid slice
-      if(is.null(slice)) {
-        if(debug) cat("Creating default predictions for NULL slice\n")
-        return(matrix(
-          if(type == "A") 1/J else 0,
-          nrow=n_ids,
-          ncol=if(type == "A") J else 1
-        ))
-      }
-      
-      # Ensure matrix format and proper dimensions
-      if(!is.matrix(slice)) {
-        slice <- matrix(slice, ncol=if(type == "A") J else 1)
-      }
-      
-      # Interpolate if needed
-      if(nrow(slice) != n_ids) {
-        new_slice <- matrix(0, nrow=n_ids, ncol=ncol(slice))
-        for(j in seq_len(ncol(slice))) {
-          x_old <- seq(0, 1, length.out=nrow(slice))
-          x_new <- seq(0, 1, length.out=n_ids)
-          new_slice[,j] <- approx(x_old, slice[,j], x_new)$y
-        }
-        slice <- new_slice
-      }
-      
-      # Process based on type
-      result <- switch(type,
-                       "Y" = {
-                         pmin(pmax(slice, ybound[1]), ybound[2])
-                       },
-                       "C" = {
-                         pmin(pmax(slice, gbound[1]), gbound[2])
-                       },
-                       "A" = {
-                         # For treatment predictions, ensure proper probabilities
-                         t(apply(slice, 1, function(row) {
-                           if(any(is.na(row)) || any(!is.finite(row))) return(rep(1/J, J))
-                           bounded <- pmax(row, gbound[1])
-                           bounded / sum(bounded)
-                         }))
-                       }
-      )
-      
-      # Add column names
-      colnames(result) <- switch(type,
-                                 "Y" = "Y",
-                                 "C" = "C",
-                                 "A" = paste0("A", 1:J)
-      )
-      
-      result
+      cat("Model type:", paste0(
+        "Y=", is_Y_outcome, ", ",
+        "C=", is_censoring_model, ", ",
+        "A=", is_treatment_model
+      ), "\n")
     }
     
     # Process all time periods
     validated_preds <- lapply(1:(t_end + 1), function(t) {
-      slice <- get_time_slice(t)
-      processed <- process_predictions(slice, type=prediction_type)
+      # For times before window_size, adjust start index to use partial window
+      if(t <= window_size) {
+        # Use predictions from first full window
+        start_idx <- ((window_size-1) * samples_per_time) + 1
+        end_idx <- min(window_size * samples_per_time, n_total_samples)
+      } else {
+        # Normal sliding window
+        start_idx <- ((t-1) * samples_per_time) + 1
+        end_idx <- min(t * samples_per_time, n_total_samples)
+      }
       
       if(debug) {
-        cat(sprintf("\nProcessed predictions for time %d:\n", t-1))
-        cat("Shape:", paste(dim(processed), collapse=" x "), "\n")
-        cat("Range:", paste(range(processed), collapse=" - "), "\n")
-        if(prediction_type == "A") {
-          cat("Row sums:", paste(range(rowSums(processed)), collapse=" - "), "\n")
-        }
+        cat(sprintf("\nProcessing time %d:\n", t-1))
+        cat(sprintf("Using predictions from indices %d to %d\n", start_idx, end_idx))
+        cat(sprintf("Window size: %d, Current time: %d\n", window_size, t))
+      }
+      
+      # Get slice of predictions
+      slice <- preds_r[start_idx:end_idx, , drop=FALSE]
+      
+      # Process predictions with explicit parameter passing
+      processed <- process_predictions(
+        slice = slice,
+        type = prediction_type,
+        t = t,
+        t_end = t_end,
+        n_ids = n_ids,
+        J = J,
+        ybound = ybound,
+        gbound = gbound,
+        debug = debug
+      )
+      
+      if(debug) {
+        cat(sprintf("Processed predictions shape: %s\n", paste(dim(processed), collapse=" x ")))
+        cat(sprintf("Range: %s\n", paste(range(processed), collapse=" - ")))
       }
       
       processed
@@ -561,14 +581,6 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     
     # Add time period names
     names(validated_preds) <- paste0("t", 0:t_end)
-    
-    if(debug) {
-      cat("\nFinal validation summary:\n")
-      cat("Time periods processed:", length(validated_preds), "\n")
-      cat("Predictions per period:", nrow(validated_preds[[1]]), "\n")
-      ranges <- range(do.call(rbind, validated_preds))
-      cat("Overall range:", paste(ranges, collapse=" - "), "\n")
-    }
     
     validated_preds
     

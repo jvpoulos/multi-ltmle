@@ -303,15 +303,24 @@ def test_model():
             pred_classes = np.argmax(preds_test, axis=1)
             logger.info(f"Class distribution: {np.bincount(pred_classes)}")
         
-        # Determine prediction filenames
-        if isinstance(outcome_cols, list):
-            is_Y_outcome = any(col.startswith('Y') for col in outcome_cols)
-        elif isinstance(outcome_cols, str):
-            is_Y_outcome = outcome_cols.startswith('Y')
-        else:
+        # Start by ensuring outcome_cols is defined earlier in the function
+        try:
+            # Get outcome info from global scope if it exists
+            outcome_cols = globals().get('outcome_cols', None)
+        except:
+            outcome_cols = None
+
+        # Determine model type
+        is_Y_outcome = False
+        try:
+            if isinstance(outcome_cols, list):
+                is_Y_outcome = any(str(col).startswith('Y') for col in outcome_cols)
+            elif isinstance(outcome_cols, str):
+                is_Y_outcome = str(outcome_cols).startswith('Y')
+        except:
             is_Y_outcome = False
 
-        # Set prediction paths based on case
+        # Set prediction filenames based on model type
         if is_censoring:
             pred_filename = 'test_bin_C_preds.npy'
             info_filename = 'test_bin_C_preds_info.npz'

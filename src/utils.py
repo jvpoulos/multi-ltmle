@@ -956,39 +956,58 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=Fa
     # Configure dataset
     if is_training:
         buffer_size = min(batch_size * 3, num_samples)
-        dataset = dataset.shuffle(buffer_size=buffer_size, seed=42)
-    
-    dataset = (dataset
-                  .batch(batch_size, drop_remainder=is_training)
+        dataset = (dataset
+                  .take(num_samples)  # Take before cache
                   .cache()
+                  .shuffle(buffer_size=buffer_size, seed=42)
+                  .batch(batch_size, drop_remainder=is_training)
+                  .repeat()
+                  .prefetch(tf.data.AUTOTUNE))
+    else:
+        dataset = (dataset
+                  .take(num_samples)  # Take before cache
+                  .cache()
+                  .batch(batch_size, drop_remainder=is_training)
                   .repeat()
                   .prefetch(tf.data.AUTOTUNE))
 
     return dataset, num_samples
 
-def weighted_binary_crossentropy(pos_weight, neg_weight):
-    """Custom weighted binary crossentropy that explicitly accepts class weights"""
-    def loss(y_true, y_pred):
-        y_true = tf.cast(y_true, tf.float32)
-        
-        # Use a larger epsilon for more aggressive clipping
-        epsilon = 1e-7
-        y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
-        
-        # Add numerical stability to log operations
-        log_pos = tf.math.log(y_pred + epsilon)
-        log_neg = tf.math.log(1 - y_pred + epsilon)
-        
-        # Calculate binary crossentropy with stable operations
-        bce = -(y_true * log_pos * pos_weight +
-                (1 - y_true) * log_neg * neg_weight)
-        
-        # Add gradient clipping
-        bce = tf.clip_by_value(bce, -100, 100)
-        
-        # Use safe reduction
-        return tf.reduce_mean(tf.boolean_mask(bce, tf.math.is_finite(bce)))
-    return loss
+def masked_binary_crossentropy(y_true, y_pred):
+    # Create mask for non-censored values
+    mask = tf.not_equal(y_true, -1)
+    
+    # Convert mask to float and ensure proper shape
+    mask = tf.cast(mask, dtype=tf.float32)
+    
+    # Calculate binary crossentropy only on non-censored values
+    bce = tf.keras.losses.binary_crossentropy(
+        y_true * tf.cast(mask, y_true.dtype), 
+        y_pred * tf.cast(mask, y_pred.dtype)
+    )
+    
+    # Apply mask to loss
+    masked_bce = bce * mask
+    
+    # Sum the losses and divide by number of non-censored values
+    return tf.reduce_sum(masked_bce) / (tf.reduce_sum(mask) + tf.keras.backend.epsilon())
+
+def masked_sparse_categorical_crossentropy(y_true, y_pred):
+    # Create mask for non-censored values 
+    mask = tf.not_equal(y_true, -1)
+    mask = tf.cast(mask, dtype=tf.float32)
+
+    # Calculate sparse categorical crossentropy only on non-censored values
+    scce = tf.keras.losses.sparse_categorical_crossentropy(
+        y_true * tf.cast(mask, y_true.dtype),
+        y_pred * tf.cast(mask, y_pred.dtype)
+    )
+
+    # Apply mask to loss
+    masked_scce = scce * mask
+
+    # Average over non-censored values
+    return tf.reduce_sum(masked_scce) / (tf.reduce_sum(mask) + tf.keras.backend.epsilon())
 
 class MultiHeadAttention(tf.keras.layers.Layer):
     def __init__(self, name="multi_head_attention", **kwargs):
@@ -1008,13 +1027,73 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         
         return output, attention_weights
 
+def create_masked_loss(loss_fn, gbound=None, ybound=None):
+    def masked_binary_crossentropy(y_true, y_pred):
+        # Create mask for non-censored values
+        mask = tf.not_equal(y_true, -1)
+        
+        # Convert mask to float and ensure proper shape
+        mask = tf.cast(mask, dtype=tf.float32)
+        
+        # Apply bounds to predictions
+        if ybound is not None:
+            y_pred = tf.clip_by_value(y_pred, ybound[0], ybound[1])
+            
+        # Calculate binary crossentropy only on non-censored values
+        bce = tf.keras.losses.binary_crossentropy(
+            tf.boolean_mask(y_true, mask), 
+            tf.boolean_mask(y_pred, mask)
+        )
+        
+        # Return mean loss over non-censored values
+        return tf.reduce_mean(bce)
+    
+    def masked_sparse_categorical_crossentropy(y_true, y_pred):
+        # Create mask for non-censored values 
+        mask = tf.not_equal(y_true, -1)
+        
+        # Apply bounds to prediction probabilities
+        if gbound is not None:
+            y_pred = tf.clip_by_value(y_pred, gbound[0], gbound[1])
+            # Renormalize probabilities
+            y_pred = y_pred / tf.reduce_sum(y_pred, axis=-1, keepdims=True)
+            
+        # Calculate loss only on non-censored values
+        scce = tf.keras.losses.sparse_categorical_crossentropy(
+            tf.boolean_mask(y_true, mask),
+            tf.boolean_mask(y_pred, mask)
+        )
+        
+        return tf.reduce_mean(scce)
+    
+    if loss_fn == "binary_crossentropy":
+        return masked_binary_crossentropy
+    else:
+        return masked_sparse_categorical_crossentropy
+
+def create_masked_metric(metric_fn):
+    # Get original metric name
+    original_name = metric_fn.name
+    
+    # Create masked version of the metric
+    def masked_metric(y_true, y_pred):
+        mask = tf.not_equal(y_true, -1)
+        return metric_fn(
+            tf.boolean_mask(y_true, mask),
+            tf.boolean_mask(y_pred, mask)
+        )
+    
+    # Set the name of the masked metric function
+    masked_metric.__name__ = f"masked_{original_name}"
+    masked_metric._name = f"masked_{original_name}"  # For Keras internal naming
+    
+    return masked_metric
+
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
-                out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False):
+                out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False, gbound=None, ybound=None):
     logger.info(f"Model input shape: {input_shape}")
     if strategy is None:
         strategy = get_strategy()
-    
-    class_weight = None
 
     with strategy.scope():
         inputs = Input(shape=input_shape, dtype=tf.float32, name="input_1")
@@ -1148,109 +1227,87 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         outputs = None
         loss = None
         metrics = None
-        
+
         # Output layer configuration based on loss function
         if loss_fn == "binary_crossentropy":
             final_activation = 'sigmoid'
             output_units = 1 if is_censoring else J
+
+            # Calculate bias initialization
             init_bias = 0.0
-            if is_censoring:
+            if y_data is not None:
                 if 'target' in y_data.columns:
-                    # For censoring model, censored (target=-1) should be mapped to 1, uncensored to 0
-                    valid_mask = y_data['target'].values != -1  # Identify uncensored entries
-                    n_censored = np.sum(~valid_mask)
-                    n_total = len(y_data['target'].values)
-                    pos_ratio = n_censored / n_total  # Ratio of censored entries
-                    pos_ratio = np.clip(pos_ratio, 0.01, 0.99)
-                    
-                    init_bias = np.log(pos_ratio / (1.0 - pos_ratio))
-                    
-                    pos_weight = 1.0 / (pos_ratio + 1e-7) * 0.5 # Scale down positive weight
-                    neg_weight = 1.0 / (1.0 - pos_ratio + 1e-7)
-                    total = pos_weight + neg_weight  
-                    pos_weight = pos_weight / total * 2
-                    neg_weight = neg_weight / total * 2
-                    
-                    class_weight = {0: neg_weight, 1: pos_weight}
-                    
-                    logger.info(f"Censoring model class weights:")
-                    logger.info(f"Censored (weight={pos_weight:.4f}): {n_censored}")
-                    logger.info(f"Uncensored (weight={neg_weight:.4f}): {n_total - n_censored}")
-                    
-                    loss = weighted_binary_crossentropy(
-                        pos_weight=pos_weight,
-                        neg_weight=neg_weight
-                    )
-                    
-                    outputs = tf.keras.layers.Dense(
-                        units=output_units,
-                        activation=final_activation,
-                        kernel_initializer='glorot_uniform',
-                        kernel_regularizer=l2(0.005),
-                        bias_initializer=tf.keras.initializers.Constant(init_bias),
-                        name="output_dense"
-                    )(x)
-                    
-                    metrics = [
-                        tf.keras.metrics.BinaryAccuracy(name='accuracy'),
-                        tf.keras.metrics.AUC(name='auc'),
-                        tf.keras.metrics.Precision(name='precision'),
-                        tf.keras.metrics.Recall(name='recall'),
-                        tf.keras.metrics.BinaryCrossentropy(name='cross_entropy')
-                    ]
-            else:
-                if output_units == 1:
-                    # Single binary output
-                    init_bias = 0.0
-                    if 'target' in y_data.columns:
-                        pos_ratio = float(np.mean(y_data['target'].values > 0.5))
+                    # For binary case
+                    if output_units == 1:
+                        valid_mask = y_data['target'].values != -1  # Exclude censored values
+                        pos_ratio = float(np.mean(y_data['target'].values[valid_mask] > 0.5))
                         init_bias = np.log(pos_ratio / (1.0 - pos_ratio))
-                else:
-                    # Multiple binary outputs
-                    init_bias = [0.0] * output_units
-                    if y_data is not None:
+                        
+                        # Single binary case metrics
+                        metrics = [
+                            create_masked_metric(tf.keras.metrics.BinaryAccuracy(name='accuracy')),
+                            create_masked_metric(tf.keras.metrics.AUC(name='auc')),
+                            create_masked_metric(tf.keras.metrics.Precision(name='precision')),
+                            create_masked_metric(tf.keras.metrics.Recall(name='recall')),
+                            create_masked_metric(tf.keras.metrics.BinaryCrossentropy(name='cross_entropy'))
+                        ]
+                    else:
+                        # Multi-label case (one-hot)
                         onehot_cols = [f'A{i}' for i in range(output_units)]
                         if all(col in y_data.columns for col in onehot_cols):
-                            init_bias = [np.log(np.mean(y_data[col]) / (1 - np.mean(y_data[col]) + 1e-7)) 
-                                       for col in onehot_cols]
+                            init_bias = []
+                            for col in onehot_cols:
+                                valid_mask = y_data[col] != -1
+                                pos_ratio = float(np.mean(y_data[col][valid_mask]))
+                                init_bias.append(np.log(pos_ratio / (1.0 - pos_ratio)))
+                        
+                        # Multi-label metrics
+                        metrics = [
+                            create_masked_metric(tf.keras.metrics.BinaryAccuracy(name='accuracy')),
+                            create_masked_metric(tf.keras.metrics.AUC(name='auc_macro', multi_label=True, curve='ROC')),
+                            create_masked_metric(tf.keras.metrics.AUC(name='auc_micro', multi_label=True, curve='ROC', multi_label_mode='micro')),
+                            create_masked_metric(tf.keras.metrics.BinaryCrossentropy(name='cross_entropy'))
+                        ]
 
-                outputs = tf.keras.layers.Dense(
-                    units=output_units,
-                    activation=final_activation,
-                    kernel_initializer='glorot_uniform',
-                    kernel_regularizer=l2(0.005),
-                    name="output_dense"
-                )(x)
+            loss = create_masked_loss("binary_crossentropy", ybound=ybound)
 
-                loss = tf.keras.losses.BinaryCrossentropy()
-                metrics = [
-                    tf.keras.metrics.BinaryAccuracy(name='accuracy'),
-                    tf.keras.metrics.AUC(name='auc', multi_label=True if output_units > 1 else False),
-                    tf.keras.metrics.BinaryCrossentropy(name='cross_entropy')
-                ]
-
+            metrics = [
+                create_masked_metric(tf.keras.metrics.BinaryAccuracy(name='accuracy')),
+                create_masked_metric(tf.keras.metrics.AUC(name='auc', multi_label=True if output_units > 1 else False)),
+                create_masked_metric(tf.keras.metrics.Precision(name='precision')),
+                create_masked_metric(tf.keras.metrics.Recall(name='recall')),
+                create_masked_metric(tf.keras.metrics.BinaryCrossentropy(name='cross_entropy'))
+        ]
         else:  # sparse_categorical_crossentropy
             final_activation = 'softmax'
             output_units = J
+
+            # For categorical case, calculate class frequencies
+            if y_data is not None and 'target' in y_data.columns:
+                valid_mask = y_data['target'].values != -1
+                class_counts = np.bincount(y_data['target'].values[valid_mask].astype(int), 
+                                         minlength=J)
+                class_probs = class_counts / np.sum(class_counts)
+                init_bias = np.log(class_probs + 1e-7)  # Add small epsilon for numerical stability
+            else:
+                init_bias = np.zeros(J)
             
-            outputs = tf.keras.layers.Dense(
-                units=output_units,
-                activation=final_activation,
-                kernel_initializer='glorot_uniform',
-                kernel_regularizer=l2(0.01),
-                use_bias=True,
-                name="output_dense"
-            )(x)
-            
-            loss = tf.keras.losses.SparseCategoricalCrossentropy(
-                from_logits=False
-            )
-            
+            loss = create_masked_loss("sparse_categorical_crossentropy", gbound=gbound)
             metrics = [
-                tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy'),
-                tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy')
+                create_masked_metric(tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy')),
+                create_masked_metric(tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy'))
             ]
-        
+      
+        # Create outputs layer
+        outputs = tf.keras.layers.Dense(
+            units=output_units,
+            activation=final_activation,
+            kernel_initializer='glorot_uniform',
+            bias_initializer=tf.keras.initializers.Constant(init_bias),
+            kernel_regularizer=l2(0.005),
+            name="output_dense"
+        )(x)
+
         if outputs is None:
             raise ValueError("Outputs layer was not properly created. Check loss function configuration.")
 
@@ -1281,7 +1338,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             optimizer=optimizer,
             loss=loss,
             metrics=metrics,
-            weighted_metrics=['accuracy'] if class_weight is not None else None,
+            weighted_metrics=None,
             jit_compile=True
         )
         

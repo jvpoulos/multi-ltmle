@@ -100,7 +100,7 @@ def get_model_filenames(loss_fn, output_dim, is_censoring):
     return model_filename, pred_filename, info_filename
 
 def main():
-    global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size, is_censoring
+    global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size, is_censoring, gbound, ybound
 
     # Record start time
     start_time = time.time()
@@ -489,7 +489,9 @@ def main():
         steps_per_epoch=steps_per_epoch,
         y_data=y_data,
         strategy=strategy,
-        is_censoring=is_censoring
+        is_censoring=is_censoring,
+        gbound=gbound,      
+        ybound=ybound       
     )
 
     history = model.fit(
