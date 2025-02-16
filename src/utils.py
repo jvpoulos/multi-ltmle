@@ -1072,22 +1072,63 @@ def create_masked_loss(loss_fn, gbound=None, ybound=None):
         return masked_sparse_categorical_crossentropy
 
 def create_masked_metric(metric_fn):
-    # Get original metric name
-    original_name = metric_fn.name
+    """Create a masked version of a metric that ignores censored values (-1)."""
     
-    # Create masked version of the metric
-    def masked_metric(y_true, y_pred):
-        mask = tf.not_equal(y_true, -1)
-        return metric_fn(
-            tf.boolean_mask(y_true, mask),
-            tf.boolean_mask(y_pred, mask)
-        )
+    metric_name = metric_fn.name
     
-    # Set the name of the masked metric function
-    masked_metric.__name__ = f"masked_{original_name}"
-    masked_metric._name = f"masked_{original_name}"  # For Keras internal naming
-    
-    return masked_metric
+    # Create the masked metric with appropriate name
+    if isinstance(metric_fn, tf.keras.metrics.SparseCategoricalAccuracy):
+        @tf.function
+        def masked_accuracy(y_true, y_pred):
+            mask = tf.not_equal(y_true, -1)
+            mask = tf.cast(mask, tf.bool)
+            indices = tf.where(mask)
+            y_true_valid = tf.gather_nd(y_true, indices)
+            y_pred_valid = tf.gather_nd(y_pred, indices)
+            
+            if tf.equal(tf.size(y_true_valid), 0):
+                return tf.constant(0.0, dtype=tf.float32)
+            
+            return metric_fn(y_true_valid, y_pred_valid)
+        masked_accuracy.__name__ = 'masked_accuracy'
+        return masked_accuracy
+        
+    elif isinstance(metric_fn, tf.keras.metrics.SparseCategoricalCrossentropy):
+        @tf.function
+        def masked_cross_entropy(y_true, y_pred):
+            mask = tf.not_equal(y_true, -1)
+            mask = tf.cast(mask, tf.bool)
+            indices = tf.where(mask)
+            y_true_valid = tf.gather_nd(y_true, indices)
+            y_pred_valid = tf.gather_nd(y_pred, indices)
+            
+            if tf.equal(tf.size(y_true_valid), 0):
+                return tf.constant(0.0, dtype=tf.float32)
+            
+            return metric_fn(y_true_valid, y_pred_valid)
+        masked_cross_entropy.__name__ = 'masked_cross_entropy'
+        return masked_cross_entropy
+        
+    else:
+        # For binary metrics
+        @tf.function
+        def masked_binary_metric(y_true, y_pred):
+            mask = tf.not_equal(y_true, -1)
+            mask = tf.cast(mask, tf.bool)
+            
+            if len(tf.shape(y_pred)) > len(tf.shape(mask)):
+                mask = tf.expand_dims(mask, -1)
+                
+            y_true_masked = tf.where(mask, y_true, tf.zeros_like(y_true))
+            y_pred_masked = tf.where(mask, y_pred, tf.zeros_like(y_pred))
+            
+            denominator = tf.maximum(tf.reduce_sum(tf.cast(mask, tf.float32)), 1.0)
+            result = metric_fn(y_true_masked, y_pred_masked)
+            
+            return result * tf.reduce_sum(tf.cast(mask, tf.float32)) / denominator
+            
+        masked_binary_metric.__name__ = f'masked_{metric_name}'
+        return masked_binary_metric
 
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
                 out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False, gbound=None, ybound=None):
@@ -1246,9 +1287,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                         # Single binary case metrics
                         metrics = [
                             create_masked_metric(tf.keras.metrics.BinaryAccuracy(name='accuracy')),
-                            create_masked_metric(tf.keras.metrics.AUC(name='auc')),
-                            create_masked_metric(tf.keras.metrics.Precision(name='precision')),
-                            create_masked_metric(tf.keras.metrics.Recall(name='recall')),
+                            create_masked_metric(tf.keras.metrics.AUC(name='auc', multi_label=False)),
                             create_masked_metric(tf.keras.metrics.BinaryCrossentropy(name='cross_entropy'))
                         ]
                     else:
@@ -1263,10 +1302,8 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                         
                         # Multi-label metrics
                         metrics = [
-                            create_masked_metric(tf.keras.metrics.BinaryAccuracy(name='accuracy')),
-                            create_masked_metric(tf.keras.metrics.AUC(name='auc_macro', multi_label=True, curve='ROC')),
-                            create_masked_metric(tf.keras.metrics.AUC(name='auc_micro', multi_label=True, curve='ROC', multi_label_mode='micro')),
-                            create_masked_metric(tf.keras.metrics.BinaryCrossentropy(name='cross_entropy'))
+                            create_masked_metric(tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy')),
+                            create_masked_metric(tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy'))
                         ]
 
             loss = create_masked_loss("binary_crossentropy", ybound=ybound)

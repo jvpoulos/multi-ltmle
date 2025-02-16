@@ -110,10 +110,10 @@ Contents
 - Facilitates integration between R and Python for LSTM-based estimations. Used when `estimator='tmle-lstm'`.
 
 ### **src/train_lstm.py**
-- Python script for training LSTMs and predicting on the same dataset.
+- Python script for training LSTMs and predicting on the full dataset.
 
 ### **src/test_lstm.py**
-- Python script for inference using a trained LSTM model on new datasets.
+- Python script for predicting on new data (for the targeting step).
 
 ### **simulation.R**
 - Simulates longitudinal data for comparing the performance of multinomial TMLE with LSTM-based approaches.

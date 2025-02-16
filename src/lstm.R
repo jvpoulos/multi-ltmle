@@ -99,18 +99,18 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   feature_cols <- c()
   
   # Define feature sets by model type
-  base_features <- c("L1", "L2", "L3")
-  a_model_features <- base_features
-  c_model_features <- c(base_features)
-  y_model_features <- c(c_model_features, "Y")
+  base_features <- c("L1", "L2", "L3", "A") # Add A to base features
+  a_model_features <- c("L1", "L2", "L3")  # A model doesn't use A as input
+  c_model_features <- base_features  # C model uses A 
+  y_model_features <- base_features  # Y model uses A
   
   # Select appropriate time-varying features based on model type
   time_varying_covs <- if(is_treatment_model) {
     a_model_features
   } else if(is_censoring_model) {
-    c_model_features
+    c_model_features  # Now includes A
   } else {
-    y_model_features
+    y_model_features  # Now includes A
   }
   
   # Get time-varying feature columns
@@ -136,73 +136,136 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   print("Found feature columns:")
   print(feature_cols)
   
-  n_ids <- length(unique(data$ID))
-  n_times <- length(target_cols)
-  # Adjust for overlapping windows and time periods
-  n_sequences_per_id <- n_times - window_size + 1  # Add 1 for overlapping windows
+  # Calculate dimensions
+  unique_ids <- sort(unique(data$ID))
+  n_ids <- length(unique_ids)
+  
+  # Fix n_times calculation
+  n_times <- 0
+  if(length(target_cols) > 0) {
+    # Extract numeric indices from column names (e.g. "Y.0", "Y.1", etc)
+    time_indices <- as.numeric(gsub(".*\\.", "", target_cols))
+    if(length(time_indices) > 0 && !all(is.na(time_indices))) {
+      n_times <- max(time_indices, na.rm=TRUE) + 1  # Add 1 since indices are 0-based
+    }
+  }
+  
+  # Validate window size with error checking
+  if(is.na(n_times) || n_times == 0) {
+    stop("Could not determine number of time points from target columns")
+  }
+  
+  if(n_times <= window_size) {
+    stop(sprintf("Window size (%d) must be less than number of time points (%d)", 
+                 window_size, n_times))
+  }
+  
+  # Calculate sequences ensuring positive value
+  n_sequences_per_id <- max(1, n_times - window_size + 1)
+  
+  # Create data_long with validated dimensions
   data_long <- data.frame(
-    ID = sort(rep(unique(data$ID), each=n_sequences_per_id)),
-    time = rep(0:(n_sequences_per_id-1), times=n_ids)
+    ID = rep(sort(unique(data$ID)), each = n_sequences_per_id),
+    time = rep(0:(n_sequences_per_id-1), times = n_ids)
   )
   
-  # Set total sequences
-  n_sequences <-  n_ids * n_sequences_per_id
-  target_sequences <- n_sequences
-  
-  # Create base input data frame
-  input_data <- data.frame(ID = data_long$ID)
-  
-  # Handle target creation based on case  
-  if(is_censoring_model) {
-    # Get censoring data from full matrix
-    target_matrix <- matrix(-1, nrow=nrow(data), ncol=length(target_cols))
-    for(i in 1:length(target_cols)) {
-      target_matrix[,i] <- as.numeric(data[[target_cols[i]]] == -1)
+  # For treatment model, ensure A is correctly formatted
+  if(is_treatment_model) {
+    # Create treatment matrix
+    treatment_matrix <- as.matrix(data[target_cols])
+    
+    # Add A column first
+    data_long$A <- rep(NA, nrow(data_long))
+    
+    # Then add target columns for each treatment
+    for(j in 1:J) {
+      data_long[[paste0("A", j-1)]] <- 0  # Initialize to 0
     }
     
-    # Map to long format
-    data_long$target <- sapply(1:nrow(data_long), function(i) {
+    # Fill in treatment indicators
+    for(i in 1:nrow(data_long)) {
       id <- data_long$ID[i]
       t <- data_long$time[i]
-      if(t + window_size > ncol(target_matrix)) return(1)
-      val <- target_matrix[id, t + window_size]
-      if(is.na(val)) return(1)  # Treat NA as censored
-      return(val)  # Already 0/1 encoded  # Keeps original encoding (1=event)
-    })
-  } else if(is_treatment_model) {
-    treatment_matrix <- as.matrix(data[target_cols])
-    rownames(treatment_matrix) <- data$ID  # Set row names for proper indexing
+      
+      # Get row index
+      id_idx <- match(id, data$ID)
+      if(!is.na(id_idx)) {
+        # Check window bounds
+        window_idx <- t + window_size
+        if(window_idx <= ncol(treatment_matrix)) {
+          # Get treatment value
+          val <- treatment_matrix[id_idx, window_idx]
+          if(!is.na(val) && val %in% 0:6) {
+            data_long$A[i] <- val
+            # Set one-hot encoding
+            trt_idx <- val + 1  # 0-based to 1-based
+            if(trt_idx >= 1 && trt_idx <= J) {
+              data_long[[paste0("A", val)]] <- 1
+            }
+          }
+        }
+      }
+    }
     
-    data_long$A <- sapply(1:nrow(data_long), function(i) {
-      id <- data_long$ID[i]
-      t <- data_long$time[i]
-      
-      # Check bounds
-      if(t + window_size >= length(target_cols)) {
-        return(5)  # Default for out of bounds
-      }
-      
-      # Get ID index by matching against row names
-      id_idx <- which(rownames(treatment_matrix) == id)
-      if(length(id_idx) == 0) return(5)  # Default if ID not found
-      
-      # Get value using proper indexing
-      val <- treatment_matrix[id_idx[1], t + 1]
-      if(is.na(val) || !val %in% 0:6) {
-        return(5)  # Default for invalid values
-      }
-      return(as.numeric(val))
-    })
   } else {
-    # Y model case
-    outcome_matrix <- as.matrix(data[target_cols])
-    data_long$target <- sapply(1:nrow(data_long), function(i) {
+    # For censoring or outcome model
+    target_matrix <- if(is_censoring_model) {
+      # Use actual censoring data instead of creating all -1s
+      as.matrix(data[target_cols])
+    } else {
+      as.matrix(data[target_cols])
+    }
+    
+    # Fill in targets
+    for(i in 1:nrow(data_long)) {
       id <- data_long$ID[i]
       t <- data_long$time[i]
-      val <- outcome_matrix[id, t + window_size]
-      if(is.na(val)) return(0)
-      as.numeric(val)
-    })
+      
+      # Get row index
+      id_idx <- match(id, data$ID)
+      if(!is.na(id_idx)) {
+        # Check window bounds
+        window_idx <- t + window_size
+        if(window_idx <= ncol(target_matrix)) {
+          val <- target_matrix[id_idx, window_idx]
+          if(!is.na(val)) {
+            if(is_censoring_model) {
+              # For censoring: 1 if censored (val == -1), 0 otherwise
+              data_long$target[i] <- as.numeric(val == -1)
+            } else {
+              # For outcome: use value directly if not -1
+              data_long$target[i] <- if(val == -1) 0 else val
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  if(debug) {
+    cat("\nFinal data_long structure:")
+    cat("\n  Rows:", nrow(data_long))
+    cat("\n  Columns:", paste(names(data_long), collapse=", "))
+    if(is_treatment_model) {
+      cat("\n  Treatment distribution:")
+      print(table(data_long$A))
+    } else {
+      cat("\n  Target summary:")
+      print(summary(data_long$target))
+    }
+  }
+  
+  # Validate targets after creation
+  if(debug) {
+    cat("\nTarget validation:")
+    if(is_treatment_model) {
+      cat("\n  Treatment values:", paste(sort(unique(data_long$A)), collapse=", "))
+    } else {
+      cat("\n  Target range:", paste(range(data_long$target, na.rm=TRUE), collapse=" - "))
+      cat("\n  NA count:", sum(is.na(data_long$target)))
+      cat("\n  Value counts:")
+      print(table(data_long$target))
+    }
   }
   
   # Create output_data based on case
@@ -342,6 +405,9 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Add explicit binary/continuous type definitions
   binary_covs <- c("L2", "L3", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
   continuous_covs <- c("V3", "L1")
+  
+  # Create input dataframe first
+  input_data <- data.frame(ID = data_long$ID)
   
   for(base_col in base_covariates) {
     if(base_col %in% static_covs) {
