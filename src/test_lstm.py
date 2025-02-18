@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from tensorflow.keras import mixed_precision
 from tensorflow.keras.models import load_model
 from tensorflow.keras.mixed_precision import LossScaleOptimizer
 
@@ -38,8 +39,12 @@ tf.autograph.set_verbosity(0)
 logger = logging.getLogger(__name__)
 
 # Enable mixed precision with modern API
-policy = tf.keras.mixed_precision.Policy('mixed_float16')
-tf.keras.mixed_precision.set_policy(policy)
+try:
+    tf.keras.mixed_precision.set_global_policy('mixed_float16')
+except AttributeError:
+    # Fallback for older TF versions
+    policy = tf.keras.mixed_precision.Policy('mixed_float16')
+    tf.keras.mixed_precision.set_policy(policy)
 
 def get_model_filenames(loss_fn, output_dim, is_censoring):
     """Get appropriate filenames for model and predictions based on model type."""
@@ -69,18 +74,30 @@ def get_model_filenames(loss_fn, output_dim, is_censoring):
     return model_filename, pred_filename, info_filename
     
 def test_model():
-    global window_size, output_dir, nb_batches, loss_fn, J, is_censoring, output_dim
+    global window_size, output_dir, nb_batches, loss_fn, J, is_censoring, outcome_cols
 
     logger.info("Starting model testing...")
     
-    # Configure GPU first
+    # Define output_dim based on model type
+    output_dim = 1 if loss_fn == "binary_crossentropy" else J
+    
+    try:
+        policy = tf.keras.mixed_precision.Policy('mixed_float16')
+    except Exception as e:
+        logger.warning(f"Could not set mixed precision policy: {e}")
+        policy = None
+    
     if not configure_gpu(policy):
         logger.warning("GPU configuration failed, proceeding with default settings")
     
     try:
         output_dir = os.path.abspath(output_dir)
         logger.info(f"Using absolute output directory: {output_dir}")
-
+        
+        # Initialize outcome_cols if not set
+        if 'outcome_cols' not in globals():
+            outcome_cols = ['Y'] if not is_censoring else ['C']
+        
         # Get appropriate filenames using the shared function
         model_filename, pred_filename, info_filename = get_model_filenames(
             loss_fn, output_dim, is_censoring
@@ -165,7 +182,12 @@ def test_model():
         logger.info("\nLoading model...")
         with strategy.scope():
             model = load_model(model_path, custom_objects={
-                'LossScaleOptimizer': LossScaleOptimizer
+                'LossScaleOptimizer': LossScaleOptimizer,
+                'masked_accuracy': create_masked_metric(tf.keras.metrics.BinaryAccuracy()),
+                'masked_auc': create_masked_metric(tf.keras.metrics.AUC()),
+                'masked_precision': create_masked_metric(tf.keras.metrics.Precision()),
+                'masked_recall': create_masked_metric(tf.keras.metrics.Recall()),
+                'masked_cross_entropy': create_masked_metric(tf.keras.metrics.BinaryCrossentropy())
             })
         logger.info("Model loaded successfully")
         

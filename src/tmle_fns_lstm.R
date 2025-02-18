@@ -1052,12 +1052,20 @@ calculate_iptw <- function(g_preds, rules, predict_Qstar, n_rules, gbound, debug
       # Trim extreme weights
       max_weight <- quantile(weights[valid_idx], 0.95, na.rm=TRUE) 
       weights <- pmin(weights, max_weight)
-      weights[valid_idx] <- weights[valid_idx] / sum(weights[valid_idx])
       
-      # Calculate weighted mean
-      iptw_means[rule_idx] <- weighted.mean(outcomes[valid_idx], 
-                                            weights[valid_idx], 
-                                            na.rm=TRUE)
+      # Get valid weights that match valid outcomes
+      valid_weights <- weights[valid_idx]
+      valid_outcomes <- outcomes[valid_idx]
+      
+      # Normalize weights
+      valid_weights <- valid_weights / sum(valid_weights, na.rm=TRUE)
+      
+      # Calculate weighted mean with matching vectors
+      iptw_means[rule_idx] <- if(length(valid_weights) == length(valid_outcomes)) {
+        weighted.mean(valid_outcomes, valid_weights, na.rm=TRUE)
+      } else {
+        mean(valid_outcomes, na.rm=TRUE)  # Fallback if lengths don't match
+      }
     } else {
       iptw_means[rule_idx] <- mean(predict_Qstar[,rule_idx], na.rm=TRUE)
     }
@@ -1089,8 +1097,51 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   # Get dimensions
   n_ids <- nrow(obs.rules)
   
-  # Extract data for current window
-  Y <- initial_model_for_Y_data$Y
+  # Extract data for current window with validation
+  Y <- if(!is.null(initial_model_for_Y_data$Y)) {
+    # Use actual values from input data
+    y_vals <- initial_model_for_Y_data$Y
+    if(all(is.na(y_vals)) || length(y_vals) == 0) {
+      # Get future outcomes for this timestep
+      sapply(1:n_ids, function(i) {
+        id <- initial_model_for_Y_data$ID[i]
+        
+        # Get data row for this ID
+        data_idx <- match(id, data$ID)
+        if(is.na(data_idx)) return(-1)
+        
+        # Calculate future time index
+        future_idx <- current_t + window_size + 1
+        if(future_idx > ncol(target_matrix)) return(-1)
+        
+        # Get value
+        val <- target_matrix[data_idx, future_idx]
+        if(is.na(val)) return(-1)
+        
+        # Return actual value
+        val
+      })
+    } else {
+      # Use existing y_vals
+      y_vals
+    }
+  } else {
+    warning("No Y values found in initial_model_for_Y_data")
+    # Use actual Y values from data if available
+    if("Y" %in% colnames(data)) {
+      data$Y
+    } else {
+      # Fallback to target values
+      data_long$target
+    }
+  }
+  
+  # Validate Y values
+  print("Y value validation:")
+  print(paste("Y range:", paste(range(Y, na.rm=TRUE), collapse=" - ")))
+  print(paste("NA count:", sum(is.na(Y))))
+  print("Y value distribution:")
+  print(table(Y, useNA="ifany"))
   C <- initial_model_for_Y_data$C
   
   # Identify censoring status

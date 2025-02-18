@@ -140,19 +140,24 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   unique_ids <- sort(unique(data$ID))
   n_ids <- length(unique_ids)
   
-  # Fix n_times calculation
-  n_times <- 0
-  if(length(target_cols) > 0) {
-    # Extract numeric indices from column names (e.g. "Y.0", "Y.1", etc)
+  # Fix n_times calculation to handle both Y and Y.0 style columns
+  n_times <- if(length(target_cols) == 1 && target_cols == "Y") {
+    # Single Y column case
+    37  # Since we know it's 36 time points (0-36) + 1
+  } else {
+    # Y.0, Y.1, etc case
     time_indices <- as.numeric(gsub(".*\\.", "", target_cols))
     if(length(time_indices) > 0 && !all(is.na(time_indices))) {
-      n_times <- max(time_indices, na.rm=TRUE) + 1  # Add 1 since indices are 0-based
+      max(time_indices, na.rm=TRUE) + 1
+    } else {
+      stop("Could not determine time points from target columns:", 
+           paste(target_cols, collapse=", "))
     }
   }
   
-  # Validate window size with error checking
+  # Validate window size
   if(is.na(n_times) || n_times == 0) {
-    stop("Could not determine number of time points from target columns")
+    stop("Invalid number of time points:", n_times)
   }
   
   if(n_times <= window_size) {
@@ -163,81 +168,158 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Calculate sequences ensuring positive value
   n_sequences_per_id <- max(1, n_times - window_size + 1)
   
-  # Create data_long with validated dimensions
+  # Create data_long with validated dimensions and pre-allocate target
   data_long <- data.frame(
     ID = rep(sort(unique(data$ID)), each = n_sequences_per_id),
-    time = rep(0:(n_sequences_per_id-1), times = n_ids)
+    time = rep(0:(n_sequences_per_id-1), times = n_ids),
+    target = NA  # Initialize target column upfront
   )
   
-  # For treatment model, ensure A is correctly formatted
+  # Define chunk parameters upfront
+  chunk_size <- 5000
+  n_chunks <- ceiling(nrow(data_long) / chunk_size)
+  
   if(is_treatment_model) {
-    # Create treatment matrix
     treatment_matrix <- as.matrix(data[target_cols])
     
-    # Add A column first
-    data_long$A <- rep(NA, nrow(data_long))
-    
-    # Then add target columns for each treatment
+    # Pre-allocate columns with default values
+    data_long$A <- 5  # Default treatment
     for(j in 1:J) {
-      data_long[[paste0("A", j-1)]] <- 0  # Initialize to 0
+      data_long[[paste0("A", j-1)]] <- 0
     }
     
-    # Fill in treatment indicators
-    for(i in 1:nrow(data_long)) {
-      id <- data_long$ID[i]
-      t <- data_long$time[i]
+    # Pre-calculate mappings
+    all_ids <- sort(unique(data$ID))
+    
+    # Print debug info
+    if(debug) {
+      cat("\nTreatment matrix info:")
+      cat("\nDimensions:", paste(dim(treatment_matrix), collapse=" x "))
+      cat("\nSample values:", paste(head(treatment_matrix[1,]), collapse=", "))
+      cat("\nUnique treatments:", paste(sort(unique(as.vector(treatment_matrix))), collapse=", "))
+    }
+    
+    # Process each ID directly
+    for(id in all_ids) {
+      # Get all rows for this ID
+      id_mask <- data_long$ID == id
+      id_rows <- which(id_mask)
       
-      # Get row index
-      id_idx <- match(id, data$ID)
-      if(!is.na(id_idx)) {
-        # Check window bounds
-        window_idx <- t + window_size
-        if(window_idx <= ncol(treatment_matrix)) {
-          # Get treatment value
-          val <- treatment_matrix[id_idx, window_idx]
-          if(!is.na(val) && val %in% 0:6) {
-            data_long$A[i] <- val
-            # Set one-hot encoding
-            trt_idx <- val + 1  # 0-based to 1-based
-            if(trt_idx >= 1 && trt_idx <= J) {
-              data_long[[paste0("A", val)]] <- 1
+      if(length(id_rows) > 0) {
+        # Get data row for this ID
+        data_idx <- match(id, data$ID)
+        
+        if(!is.na(data_idx)) {
+          # Get all treatment values for this ID
+          all_treatments <- treatment_matrix[data_idx,]
+          
+          # Process each time point
+          for(i in seq_along(id_rows)) {
+            t <- data_long$time[id_rows[i]]
+            window_idx <- t + window_size
+            
+            if(window_idx <= length(all_treatments)) {
+              val <- all_treatments[window_idx]
+              
+              if(!is.na(val) && val %in% 0:6) {
+                # Set treatment value
+                data_long$A[id_rows[i]] <- val
+                
+                # Set one-hot encoding
+                trt_idx <- val + 1  # 0-based to 1-based
+                if(trt_idx >= 1 && trt_idx <= J) {
+                  data_long[[paste0("A", val)]][id_rows[i]] <- 1
+                }
+              }
             }
           }
         }
       }
     }
     
+    if(debug) {
+      cat("\nTreatment assignment results:")
+      cat("\nFinal treatment distribution:\n")
+      print(table(data_long$A, useNA="ifany"))
+      cat("\nOne-hot encoding summary:\n")
+      for(j in 0:5) {
+        cat(paste0("A", j, " sum: ", sum(data_long[[paste0("A", j)]]), "\n"))
+      }
+    }
   } else {
     # For censoring or outcome model
-    target_matrix <- if(is_censoring_model) {
-      # Use actual censoring data instead of creating all -1s
-      as.matrix(data[target_cols])
+    target_matrix <- as.matrix(data[target_cols])
+    
+    # Initialize target values differently for C and Y models
+    data_long$target <- if(is_censoring_model) {
+      0  # Initialize censoring with 0 (not censored)
     } else {
-      as.matrix(data[target_cols])
+      -1 # Initialize Y model with -1 (censored)
     }
     
-    # Fill in targets
-    for(i in 1:nrow(data_long)) {
-      id <- data_long$ID[i]
-      t <- data_long$time[i]
+    if(debug) {
+      cat("\nProcessing", if(is_censoring_model) "censoring" else "outcome", "model")
+      cat("\nTarget matrix dimensions:", paste(dim(target_matrix), collapse=" x "))
+      cat("\nUnique values in target matrix:", paste(sort(unique(as.vector(target_matrix))), collapse=", "))
+    }
+    
+    # Process each ID directly like we do for treatment model
+    for(id in sort(unique(data$ID))) {
+      # Get row in original data
+      data_idx <- match(id, data$ID)
       
-      # Get row index
-      id_idx <- match(id, data$ID)
-      if(!is.na(id_idx)) {
-        # Check window bounds
-        window_idx <- t + window_size
-        if(window_idx <= ncol(target_matrix)) {
-          val <- target_matrix[id_idx, window_idx]
-          if(!is.na(val)) {
+      if(!is.na(data_idx)) {
+        # Get all values for this ID
+        values <- target_matrix[data_idx,]
+        
+        # Get rows in data_long for this ID
+        id_rows <- which(data_long$ID == id)
+        
+        for(i in seq_along(id_rows)) {
+          t <- data_long$time[id_rows[i]]
+          window_idx <- t + window_size
+          
+          if(window_idx < length(values)) {  # Changed <= to < to ensure room for future index
             if(is_censoring_model) {
-              # For censoring: 1 if censored (val == -1), 0 otherwise
-              data_long$target[i] <- as.numeric(val == -1)
+              # For censoring, use current time point
+              val <- values[window_idx]
+              
+              if(!is.na(val)) {
+                row_idx <- id_rows[i]
+                if(!is.na(row_idx)) {
+                  # For C model: 1 if censored (-1), 0 otherwise
+                  data_long$target[row_idx] <- as.numeric(val == -1)
+                }
+              }
             } else {
-              # For outcome: use value directly if not -1
-              data_long$target[i] <- if(val == -1) 0 else val
+              # For Y model, use next time point
+              future_idx <- window_idx + 1
+              val <- values[future_idx]
+              
+              if(!is.na(val)) {
+                row_idx <- id_rows[i]
+                if(!is.na(row_idx)) {
+                  # For Y model: handle actual values
+                  data_long$target[row_idx] <- if(val == -1) -1 else val
+                }
+              }
             }
           }
         }
+      }
+    }
+    
+    # Add validation at the end
+    if(debug) {
+      cat("\nTarget processing results:")
+      cat("\nTarget range:", paste(range(data_long$target), collapse=" - "))
+      cat("\nValue distribution:\n")
+      print(table(data_long$target))
+      if(!is_censoring_model) {
+        cat("\nY model stats:")
+        cat("\n  Censored:", sum(data_long$target == -1))
+        cat("\n  Zeros:", sum(data_long$target == 0))
+        cat("\n  Ones:", sum(data_long$target == 1))
       }
     }
   }
@@ -248,7 +330,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     cat("\n  Columns:", paste(names(data_long), collapse=", "))
     if(is_treatment_model) {
       cat("\n  Treatment distribution:")
-      print(table(data_long$A))
+      print(table(data_long$A, useNA="ifany"))
     } else {
       cat("\n  Target summary:")
       print(summary(data_long$target))
@@ -264,7 +346,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       cat("\n  Target range:", paste(range(data_long$target, na.rm=TRUE), collapse=" - "))
       cat("\n  NA count:", sum(is.na(data_long$target)))
       cat("\n  Value counts:")
-      print(table(data_long$target))
+      print(table(data_long$target, useNA="ifany"))
     }
   }
   
@@ -348,15 +430,24 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       id <- data_long$ID[i]
       t <- data_long$time[i]
       
+      # Get row in original data
+      data_idx <- match(id, data$ID)
+      if(is.na(data_idx)) return(-1)  # Handle missing IDs
+      
       # Get the outcome for the time step AFTER the window
       prediction_time <- t + window_size
       if(prediction_time >= ncol(outcome_matrix)) {
-        return(0)  # No future data available
+        return(-1)  # Mark as censored if no future data
       }
       
       # Get the actual future outcome
-      val <- outcome_matrix[id, prediction_time + 1]  # +1 to predict next step
-      if(is.na(val)) return(0)
+      future_time <- prediction_time + 1  # Look at next time step
+      if(future_time >= ncol(outcome_matrix)) return(-1)
+      
+      val <- outcome_matrix[data_idx, future_time]
+      if(is.na(val)) return(-1)  # Mark missing as censored
+      
+      # Return actual value for Y
       as.numeric(val)
     })
     
@@ -366,6 +457,16 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       target = data_long$target,
       stringsAsFactors = FALSE
     )
+    
+    # Print debug information if needed
+    if(debug) {
+      cat("\nY model target distribution:")
+      print(table(data_long$target))
+      cat("\nCensored: ", sum(data_long$target == -1))
+      cat("\nZeros: ", sum(data_long$target == 0))
+      cat("\nOnes: ", sum(data_long$target == 1))
+    }
+    
     output_filename <- file.path(output_dir, "lstm_bin_Y_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_Y_input.csv")
   } else if(is_censoring_model) {

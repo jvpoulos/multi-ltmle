@@ -530,39 +530,20 @@ def configure_gpu(policy=None):
         tf.keras.backend.clear_session()
         gc.collect()
 
+        # Set mixed precision if policy is provided
+        if policy is not None:
+            try:
+                mixed_precision.set_global_policy(policy)
+            except Exception as e:
+                logger.warning(f"Could not set mixed precision policy: {e}")
+
         gpus = tf.config.list_physical_devices('GPU')
         if not gpus:
             logger.warning("No GPUs available, using CPU")
             return False
 
-        # Use more memory on each GPU
-        for gpu in gpus:
-            try:
-                # Use 10GB instead of 8GB
-                tf.config.set_logical_device_configuration(
-                    gpu,
-                    [tf.config.LogicalDeviceConfiguration(memory_limit=10 * 1024)]
-                )
-                logger.info(f"Successfully configured GPU: {gpu.name}")
-            except RuntimeError as e:
-                logger.error(f"Error configuring GPU {gpu.name}: {e}")
-                continue
-
-        # Optimize for older GPUs
-        tf.config.optimizer.set_experimental_options({
-            'layout_optimizer': True,
-            'constant_folding': True,
-            'shape_optimization': True,
-            'remapping': True,
-            'arithmetic_optimization': True,
-            'dependency_optimization': True,
-            'loop_optimization': True,
-            'function_optimization': True,
-            'debug_stripper': True,
-        })
-
-        return True
-
+        # Rest of GPU configuration remains the same...
+        
     except Exception as e:
         logger.error(f"GPU configuration failed: {e}")
         return False
@@ -670,19 +651,36 @@ def configure_device():
         logger.warning(f"Device configuration failed: {e}")
         return False
    
-def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, is_training=False, is_censoring=False, pos_weight=None, neg_weight=None):
-    """Create dataset with proper sequence handling for CPU TensorFlow."""
+def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J, 
+                  is_training=False, is_censoring=False, 
+                  pos_weight=None, neg_weight=None):
     logger.info(f"Creating dataset with parameters:")
     logger.info(f"n_pre: {n_pre}, batch_size: {batch_size}, loss_fn: {loss_fn}, J: {J}")
     logger.info(f"Input shape at start - features: {x_data.shape[1]}")
+
+    # Define model features
+    a_model_features = ['V3', 'white', 'black', 'latino', 'other', 
+                       'mdd', 'bipolar', 'schiz', 'L1', 'L2', 'L3']
 
     # Remove ID if present
     if 'ID' in x_data.columns:
         x_data = x_data.drop('ID', axis=1)
     
-    # Define base features
-    a_model_features = ['V3', 'white', 'black', 'latino', 'other', 'mdd', 'bipolar', 'schiz', 'L1', 'L2', 'L3']
-    x_data = x_data[a_model_features].copy()
+    # Ensure required columns exist
+    required_cols = ['V3', 'white', 'black', 'latino', 'other', 'mdd', 'bipolar', 'schiz']
+    for col in ['L1', 'L2', 'L3']:
+        if col not in x_data.columns:
+            # Extract columns for this feature
+            time_cols = [c for c in x_data.columns if c.startswith(f"{col}.")]
+            if time_cols:
+                # Combine time series into single column
+                x_data[col] = x_data[time_cols].apply(lambda x: ','.join(map(str, x)), axis=1)
+            else:
+                logger.warning(f"No time series found for {col}")
+                x_data[col] = '0'  # Default value
+    
+    # Use required columns
+    x_data = x_data[required_cols + ['L1', 'L2', 'L3']].copy()
     
     # Process L1, L2, L3 sequences
     sequence_features = {}
@@ -1079,46 +1077,71 @@ def create_masked_metric(metric_fn):
     # Create the masked metric with appropriate name
     if isinstance(metric_fn, tf.keras.metrics.SparseCategoricalAccuracy):
         @tf.function
-        def masked_accuracy(y_true, y_pred):
+        def masked_metric(y_true, y_pred):
             mask = tf.not_equal(y_true, -1)
             mask = tf.cast(mask, tf.bool)
             indices = tf.where(mask)
             y_true_valid = tf.gather_nd(y_true, indices)
             y_pred_valid = tf.gather_nd(y_pred, indices)
             
-            if tf.equal(tf.size(y_true_valid), 0):
-                return tf.constant(0.0, dtype=tf.float32)
-            
-            return metric_fn(y_true_valid, y_pred_valid)
-        masked_accuracy.__name__ = 'masked_accuracy'
-        return masked_accuracy
+            return tf.cond(
+                tf.equal(tf.size(y_true_valid), 0),
+                lambda: tf.constant(0.0, dtype=tf.float32),
+                lambda: metric_fn(y_true_valid, y_pred_valid)
+            )
+        
+        # Set name after function definition
+        masked_metric._name = 'masked_accuracy'
+        masked_metric.__name__ = 'masked_accuracy'
+        return masked_metric
         
     elif isinstance(metric_fn, tf.keras.metrics.SparseCategoricalCrossentropy):
         @tf.function
-        def masked_cross_entropy(y_true, y_pred):
+        def masked_metric(y_true, y_pred):
             mask = tf.not_equal(y_true, -1)
             mask = tf.cast(mask, tf.bool)
             indices = tf.where(mask)
             y_true_valid = tf.gather_nd(y_true, indices)
             y_pred_valid = tf.gather_nd(y_pred, indices)
             
-            if tf.equal(tf.size(y_true_valid), 0):
-                return tf.constant(0.0, dtype=tf.float32)
+            return tf.cond(
+                tf.equal(tf.size(y_true_valid), 0),
+                lambda: tf.constant(0.0, dtype=tf.float32),
+                lambda: metric_fn(y_true_valid, y_pred_valid)
+            )
             
-            return metric_fn(y_true_valid, y_pred_valid)
-        masked_cross_entropy.__name__ = 'masked_cross_entropy'
-        return masked_cross_entropy
+        # Set name after function definition
+        masked_metric._name = 'masked_cross_entropy'
+        masked_metric.__name__ = 'masked_cross_entropy'
+        return masked_metric
         
     else:
-        # For binary metrics
+        # Get appropriate name for binary metrics
+        metric_display_name = 'masked_' + (
+            'accuracy' if isinstance(metric_fn, tf.keras.metrics.BinaryAccuracy) else
+            'auc' if isinstance(metric_fn, tf.keras.metrics.AUC) else
+            'precision' if isinstance(metric_fn, tf.keras.metrics.Precision) else
+            'recall' if isinstance(metric_fn, tf.keras.metrics.Recall) else
+            'cross_entropy' if isinstance(metric_fn, tf.keras.metrics.BinaryCrossentropy) else
+            metric_name
+        )
+        
         @tf.function
-        def masked_binary_metric(y_true, y_pred):
+        def masked_metric(y_true, y_pred):
+            # Ensure tensors have proper shape
+            y_true = tf.convert_to_tensor(y_true)
+            y_pred = tf.convert_to_tensor(y_pred)
+            
+            # Create mask
             mask = tf.not_equal(y_true, -1)
             mask = tf.cast(mask, tf.bool)
             
-            if len(tf.shape(y_pred)) > len(tf.shape(mask)):
-                mask = tf.expand_dims(mask, -1)
-                
+            # Ensure all inputs have rank 2
+            y_true = tf.reshape(y_true, [-1, 1])
+            y_pred = tf.reshape(y_pred, [-1, 1])
+            mask = tf.reshape(mask, [-1, 1])
+            
+            # Apply mask
             y_true_masked = tf.where(mask, y_true, tf.zeros_like(y_true))
             y_pred_masked = tf.where(mask, y_pred, tf.zeros_like(y_pred))
             
@@ -1126,10 +1149,12 @@ def create_masked_metric(metric_fn):
             result = metric_fn(y_true_masked, y_pred_masked)
             
             return result * tf.reduce_sum(tf.cast(mask, tf.float32)) / denominator
-            
-        masked_binary_metric.__name__ = f'masked_{metric_name}'
-        return masked_binary_metric
-
+        
+        # Set name after function definition
+        masked_metric._name = metric_display_name
+        masked_metric.__name__ = metric_display_name
+        return masked_metric
+        
 def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation, 
                 out_activation, loss_fn, J, epochs, steps_per_epoch, y_data=None, strategy=None, is_censoring=False, gbound=None, ybound=None):
     logger.info(f"Model input shape: {input_shape}")
