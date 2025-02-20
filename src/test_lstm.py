@@ -6,7 +6,7 @@ from tensorflow.keras import mixed_precision
 from tensorflow.keras.models import load_model
 from tensorflow.keras.mixed_precision import LossScaleOptimizer
 
-from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy, get_data_filenames
+from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy, get_data_filenames, create_masked_metric, create_masked_loss, MultiHeadAttention, masked_binary_crossentropy, masked_sparse_categorical_crossentropy
 
 import sys
 import traceback
@@ -45,6 +45,80 @@ except AttributeError:
     # Fallback for older TF versions
     policy = tf.keras.mixed_precision.Policy('mixed_float16')
     tf.keras.mixed_precision.set_policy(policy)
+
+@tf.keras.utils.register_keras_serializable()
+class MaskedMetric(tf.keras.metrics.Metric):
+    def __init__(self, metric_fn, name=None, **kwargs):
+        super().__init__(name=name or f'masked_{metric_fn.__name__}', **kwargs)
+        self.metric_fn = metric_fn
+        self.metric = metric_fn()
+    
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.not_equal(y_true, -1)
+        y_true_masked = tf.boolean_mask(y_true, mask)
+        y_pred_masked = tf.boolean_mask(y_pred, mask)
+        return self.metric.update_state(y_true_masked, y_pred_masked, sample_weight)
+    
+    def result(self):
+        return self.metric.result()
+    
+    def reset_state(self):
+        return self.metric.reset_state()
+    
+    def get_config(self):
+        config = super().get_config()
+        return config
+    
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
+def get_masked_metric(metric_fn):
+    return MaskedMetric(metric_fn)
+
+def load_model_with_custom_objects(model_path):
+    """Load model with proper custom objects for metrics."""
+    
+    # Get strategy for proper model loading context
+    strategy = get_strategy()
+    
+    with strategy.scope():
+        # Define custom objects needed for model loading
+        custom_objects = {
+            # Custom metrics
+            'MaskedMetric': MaskedMetric,
+            'masked_accuracy': get_masked_metric(tf.keras.metrics.BinaryAccuracy),
+            'masked_auc': get_masked_metric(tf.keras.metrics.AUC),
+            'masked_precision': get_masked_metric(tf.keras.metrics.Precision),
+            'masked_recall': get_masked_metric(tf.keras.metrics.Recall),
+            'masked_cross_entropy': get_masked_metric(tf.keras.metrics.BinaryCrossentropy),
+            
+            # Custom loss functions
+            'masked_binary_crossentropy': create_masked_loss("binary_crossentropy", ybound=ybound),
+            'masked_sparse_categorical_crossentropy': create_masked_loss("sparse_categorical_crossentropy", gbound=gbound),
+            'binary_crossentropy_masked': masked_binary_crossentropy,
+            'sparse_categorical_crossentropy_masked': masked_sparse_categorical_crossentropy,
+            
+            # Custom layers and attention
+            'MultiHeadAttention': MultiHeadAttention,
+            'attention_layer': MultiHeadAttention.call,  # Include the attention layer method
+            
+            # Other potential custom functions
+            'get_masked_metric': get_masked_metric,
+            'create_masked_loss': create_masked_loss
+        }
+        
+        try:
+            logger.info(f"Loading model from {model_path}")
+            model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
+            logger.info("Model loaded successfully")
+            return model
+        except Exception as e:
+            logger.error(f"Error loading model: {str(e)}")
+            logger.error(traceback.format_exc())
+            logger.error(f"Model path exists: {os.path.exists(model_path)}")
+            logger.error(f"Model file size: {os.path.getsize(model_path) if os.path.exists(model_path) else 'N/A'}")
+            raise
 
 def get_model_filenames(loss_fn, output_dim, is_censoring):
     """Get appropriate filenames for model and predictions based on model type."""
@@ -108,8 +182,6 @@ def test_model():
         pred_path = os.path.join(output_dir, pred_filename)
         info_path = os.path.join(output_dir, info_filename)
 
-        logger.info(f"Loading model from: {model_path}")
-        
         logger.info(f"Loading data from {output_dir}")
         input_file, output_file = get_data_filenames(is_censoring, loss_fn, outcome_cols)
 
@@ -126,19 +198,44 @@ def test_model():
         split_info_path = os.path.join(output_dir, 'split_info.npy')
         logger.info(f"Loading split info from {split_info_path}")
         split_info = np.load(split_info_path, allow_pickle=True).item()
-        
+
         train_size = split_info['train_size']
         val_size = split_info['val_size']
         batch_size = split_info['batch_size']
         n_pre = split_info['n_pre']
         num_features = split_info['num_features']
-        
+
         # Create test dataset from remaining data
         test_data_x = x_data[train_size+val_size:].copy()
         test_data_y = y_data[train_size+val_size:].copy()
-        
+
+        # Handle Y values for inference
+        if 'Y' in test_data_y.columns:
+            # Preserve actual Y values, don't treat as censored
+            logger.info("Processing Y values for inference")
+            test_data_y['Y'] = test_data_y['Y'].fillna(0)
+            logger.info(f"Y distribution before processing: {test_data_y['Y'].value_counts()}")
+            # Only convert -1 to 0 if not performing censoring inference
+            if not is_censoring:
+                test_data_y.loc[test_data_y['Y'] == -1, 'Y'] = 0
+            logger.info(f"Y distribution after processing: {test_data_y['Y'].value_counts()}")
+        elif 'target' in test_data_y.columns:
+            # Handle target column similarly
+            logger.info("Processing target values for inference")
+            test_data_y['target'] = test_data_y['target'].fillna(0)
+            logger.info(f"Target distribution before processing: {test_data_y['target'].value_counts()}")
+            # Only convert -1 to 0 if not performing censoring inference
+            if not is_censoring:
+                test_data_y.loc[test_data_y['target'] == -1, 'target'] = 0
+            logger.info(f"Target distribution after processing: {test_data_y['target'].value_counts()}")
+
         if len(test_data_x) == 0 or len(test_data_y) == 0:
             raise ValueError("Test dataset is empty after splitting")
+
+        # Log final dataset information
+        logger.info(f"\nFinal test dataset sizes:")
+        logger.info(f"X data shape: {test_data_x.shape}")
+        logger.info(f"Y data shape: {test_data_y.shape}")
         
         logger.info("\nDataset information:")
         logger.info(f"Total samples: {len(x_data)}")
@@ -180,15 +277,7 @@ def test_model():
 
         # Load and verify model
         logger.info("\nLoading model...")
-        with strategy.scope():
-            model = load_model(model_path, custom_objects={
-                'LossScaleOptimizer': LossScaleOptimizer,
-                'masked_accuracy': create_masked_metric(tf.keras.metrics.BinaryAccuracy()),
-                'masked_auc': create_masked_metric(tf.keras.metrics.AUC()),
-                'masked_precision': create_masked_metric(tf.keras.metrics.Precision()),
-                'masked_recall': create_masked_metric(tf.keras.metrics.Recall()),
-                'masked_cross_entropy': create_masked_metric(tf.keras.metrics.BinaryCrossentropy())
-            })
+        model = load_model_with_custom_objects(model_path)
         logger.info("Model loaded successfully")
         
         # Verify test dataset characteristics

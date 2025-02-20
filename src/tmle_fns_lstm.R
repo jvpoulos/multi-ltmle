@@ -5,8 +5,6 @@
 
 # Safe prediction getter function
 safe_get_preds <- function(preds_list, t, n_ids = n) {
-  print(paste("Getting predictions for time", t))
-  
   if(is.null(n_ids) || n_ids <= 0) {
     stop("Invalid n_ids value")
   }
@@ -1362,11 +1360,20 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   }))
   colnames(Qstar) <- colnames(obs.rules)
   
-  # Calculate IPTW estimates
+  # Calculate IPTW estimates with weight length check
   Qstar_iptw <- matrix(sapply(1:ncol(clever_covariates), function(i) {
     valid_idx <- clever_covariates[,i] > 0 & !is_censored_adj
     if(any(valid_idx)) {
-      weighted.mean(Y[valid_idx], weights[valid_idx,i], na.rm=TRUE)
+      # Ensure weights and Y have same length
+      w <- weights[valid_idx,i]
+      y <- Y[valid_idx]
+      if(length(w) == length(y)) {
+        weighted.mean(y, w, na.rm=TRUE)
+      } else {
+        if(debug) cat(sprintf("\nWeight length mismatch for rule %d: weights=%d, Y=%d", 
+                              i, length(w), length(y)))
+        mean(Y[valid_rows], na.rm=TRUE)
+      }
     } else {
       mean(Y[valid_rows], na.rm=TRUE)
     }

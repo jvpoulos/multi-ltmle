@@ -171,6 +171,18 @@ Below is a list of files that require user modifications to match their environm
 
 - If no GPU is used, the script will automatically fall back to CPU-based execution. No additional changes are required in this case.
 
+### `utils.py`
+- Include your wandb username in the "entity" field in the setup_wandb() function: 
+  ```python
+    run = wandb.init(
+        project="multi-ltmle",
+        entity="username",
+        config=config,
+        name=f"lstm_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        mode="offline",  # Run offline to prevent uploads
+    )
+  ```
+
 Instructions
 ------
 

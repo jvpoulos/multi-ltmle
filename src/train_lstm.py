@@ -472,9 +472,6 @@ def main():
     callbacks.append(CustomCallback(train_dataset))
     callbacks.append(CustomNanCallback())
 
-    # Add a check for sample weights
-    use_sample_weights = not is_censoring and 'target' in y_data.columns
-
     model = create_model(
         input_shape=input_shape,
         output_dim=output_dim,
@@ -525,11 +522,6 @@ def main():
     # Save model
     model.save(model_path)
     logger.info(f"Model saved to: {model_path}")
-
-    # Log the SavedModel as a WandB Artifact
-    artifact = wandb.Artifact('trained_model', type='model')
-    artifact.add_file(model_path)
-    run.log_artifact(artifact)
     
     logger.info("\nGenerating predictions for all data...")
     x_data_final = x_data.copy()
@@ -576,15 +568,6 @@ def main():
     model_filename, pred_filename, info_filename = get_model_filenames(loss_fn, output_dim, is_censoring)
     pred_path = os.path.join(output_dir, pred_filename)
     info_path = os.path.join(output_dir, info_filename)
-
-    # Save model
-    model.save(model_path)
-    logger.info(f"Model saved to: {model_path}")
-
-    # Log the SavedModel as a WandB Artifact
-    artifact = wandb.Artifact('trained_model', type='model')
-    artifact.add_file(model_path)
-    run.log_artifact(artifact)
 
     np.save(pred_path, predictions)
     np.savez(

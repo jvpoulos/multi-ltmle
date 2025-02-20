@@ -785,7 +785,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J,
         if 'target' in y_data.columns:
             y_values = y_data['target'].values
             
-            if not is_censoring:
+            if not is_censoring:  # Process for Y model
                 # Get the minimum length to ensure arrays are aligned
                 min_length = min(len(x_values), len(y_values))
                 for seq_col in sequence_features:
@@ -797,22 +797,25 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J,
                 for seq_col in ['L1', 'L2', 'L3']:
                     sequence_features[seq_col] = sequence_features[seq_col][:min_length]
                 
-                # Now create and apply the mask
-                valid_mask = y_values != -1
-                logger.info(f"Found {np.sum(~valid_mask)} censored values out of {min_length}")
+                if is_training:  # Only filter during training
+                    # Now create and apply the mask
+                    valid_mask = y_values != -1
+                    logger.info(f"Found {np.sum(~valid_mask)} censored values out of {min_length}")
+                    
+                    # Apply mask to all arrays
+                    x_values = x_values[valid_mask]
+                    y_values = y_values[valid_mask]
+                    for seq_col in ['L1', 'L2', 'L3']:
+                        sequence_features[seq_col] = sequence_features[seq_col][valid_mask]
+                    
+                    y_values = (y_values > 0).astype(np.float32)
+                else:  # During testing/inference, keep censored values
+                    y_values = np.where(y_values == -1, 0, y_values)  # Convert censored to 0
                 
-                # Apply mask to all arrays
-                x_values = x_values[valid_mask]
-                y_values = y_values[valid_mask]
-                for seq_col in ['L1', 'L2', 'L3']:
-                    sequence_features[seq_col] = sequence_features[seq_col][valid_mask]
-                
-                y_values = (y_values > 0).astype(np.float32)
-                
-                logger.info(f"After filtering censored values - Target distribution:")
+                logger.info(f"After processing - Target distribution:")
                 logger.info(f"  0s: {np.sum(y_values == 0)}")
                 logger.info(f"  1s: {np.sum(y_values == 1)}")
-                logger.info(f"Final array shapes after filtering:")
+                logger.info(f"Final array shapes:")
                 logger.info(f"  x_values: {x_values.shape}")
                 logger.info(f"  y_values: {y_values.shape}")
                 for seq_col in ['L1', 'L2', 'L3']:

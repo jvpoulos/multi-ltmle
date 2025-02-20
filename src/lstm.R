@@ -133,8 +133,10 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Ensure unique and sorted
   feature_cols <- sort(unique(feature_cols))
   
-  print("Found feature columns:")
-  print(feature_cols)
+  if(debug){
+    print("Found feature columns:")
+    print(feature_cols)
+  }
   
   # Calculate dimensions
   unique_ids <- sort(unique(data$ID))
@@ -174,10 +176,6 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     time = rep(0:(n_sequences_per_id-1), times = n_ids),
     target = NA  # Initialize target column upfront
   )
-  
-  # Define chunk parameters upfront
-  chunk_size <- 5000
-  n_chunks <- ceiling(nrow(data_long) / chunk_size)
   
   if(is_treatment_model) {
     treatment_matrix <- as.matrix(data[target_cols])
@@ -246,107 +244,63 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
         cat(paste0("A", j, " sum: ", sum(data_long[[paste0("A", j)]]), "\n"))
       }
     }
-  } else {
-    # For censoring or outcome model
-    target_matrix <- as.matrix(data[target_cols])
-    
-    # Initialize target values differently for C and Y models
-    data_long$target <- if(is_censoring_model) {
-      0  # Initialize censoring with 0 (not censored)
-    } else {
-      -1 # Initialize Y model with -1 (censored)
-    }
-    
-    if(debug) {
-      cat("\nProcessing", if(is_censoring_model) "censoring" else "outcome", "model")
-      cat("\nTarget matrix dimensions:", paste(dim(target_matrix), collapse=" x "))
-      cat("\nUnique values in target matrix:", paste(sort(unique(as.vector(target_matrix))), collapse=", "))
-    }
-    
-    # Process each ID directly like we do for treatment model
-    for(id in sort(unique(data$ID))) {
-      # Get row in original data
-      data_idx <- match(id, data$ID)
+  }
+  else if(is_Y_model) {
+    outcome_matrix <- as.matrix(data[target_cols])
+    data_long$target <- sapply(1:nrow(data_long), function(i) {
+      id <- data_long$ID[i]
+      t <- data_long$time[i]
       
-      if(!is.na(data_idx)) {
-        # Get all values for this ID
-        values <- target_matrix[data_idx,]
-        
-        # Get rows in data_long for this ID
-        id_rows <- which(data_long$ID == id)
-        
-        for(i in seq_along(id_rows)) {
-          t <- data_long$time[id_rows[i]]
-          window_idx <- t + window_size
-          
-          if(window_idx < length(values)) {  # Changed <= to < to ensure room for future index
-            if(is_censoring_model) {
-              # For censoring, use current time point
-              val <- values[window_idx]
-              
-              if(!is.na(val)) {
-                row_idx <- id_rows[i]
-                if(!is.na(row_idx)) {
-                  # For C model: 1 if censored (-1), 0 otherwise
-                  data_long$target[row_idx] <- as.numeric(val == -1)
-                }
-              }
-            } else {
-              # For Y model, use next time point
-              future_idx <- window_idx + 1
-              val <- values[future_idx]
-              
-              if(!is.na(val)) {
-                row_idx <- id_rows[i]
-                if(!is.na(row_idx)) {
-                  # For Y model: handle actual values
-                  data_long$target[row_idx] <- if(val == -1) -1 else val
-                }
-              }
-            }
-          }
-        }
+      # Get data index for this ID
+      data_idx <- match(id, data$ID)
+      if(is.na(data_idx)) {
+        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
       }
-    }
+      
+      # Calculate proper time indices
+      current_idx <- t + window_size
+      if(current_idx >= ncol(outcome_matrix)) {
+        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
+      }
+      
+      # For targeting step (inference), use current value 
+      val <- if(inference) {
+        # During inference we want to predict all values, no censoring
+        current_val <- outcome_matrix[data_idx, current_idx + 1]
+        if(is.na(current_val) || current_val == -1) 0 else as.numeric(current_val)
+      } else {
+        # For training, use next time point and preserve censoring
+        future_idx <- current_idx + 1
+        if(future_idx > ncol(outcome_matrix)) return(-1)
+        outcome_matrix[data_idx, future_idx]
+      }
+      
+      # During inference, convert -1 to 0 as we don't want any censoring
+      if(inference && (is.na(val) || val == -1)) {
+        return(0)
+      }
+      
+      as.numeric(val)
+    })
     
-    # Add validation at the end
+    # For Y model, output is binary outcome 
+    output_data <- data.frame(
+      ID = data_long$ID,
+      target = if(inference) {
+        # During inference, convert all -1 to 0
+        ifelse(data_long$target == -1, 0, data_long$target)
+      } else {
+        data_long$target  # Keep censoring during training
+      },
+      stringsAsFactors = FALSE
+    )
+    
     if(debug) {
-      cat("\nTarget processing results:")
-      cat("\nTarget range:", paste(range(data_long$target), collapse=" - "))
-      cat("\nValue distribution:\n")
+      cat("\nY model target distribution:")
       print(table(data_long$target))
-      if(!is_censoring_model) {
-        cat("\nY model stats:")
-        cat("\n  Censored:", sum(data_long$target == -1))
-        cat("\n  Zeros:", sum(data_long$target == 0))
-        cat("\n  Ones:", sum(data_long$target == 1))
-      }
-    }
-  }
-  
-  if(debug) {
-    cat("\nFinal data_long structure:")
-    cat("\n  Rows:", nrow(data_long))
-    cat("\n  Columns:", paste(names(data_long), collapse=", "))
-    if(is_treatment_model) {
-      cat("\n  Treatment distribution:")
-      print(table(data_long$A, useNA="ifany"))
-    } else {
-      cat("\n  Target summary:")
-      print(summary(data_long$target))
-    }
-  }
-  
-  # Validate targets after creation
-  if(debug) {
-    cat("\nTarget validation:")
-    if(is_treatment_model) {
-      cat("\n  Treatment values:", paste(sort(unique(data_long$A)), collapse=", "))
-    } else {
-      cat("\n  Target range:", paste(range(data_long$target, na.rm=TRUE), collapse=" - "))
-      cat("\n  NA count:", sum(is.na(data_long$target)))
-      cat("\n  Value counts:")
-      print(table(data_long$target, useNA="ifany"))
+      cat("\nCensored: ", sum(data_long$target == -1))
+      cat("\nZeros: ", sum(data_long$target == 0))
+      cat("\nOnes: ", sum(data_long$target == 1))
     }
   }
   
@@ -430,31 +384,44 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       id <- data_long$ID[i]
       t <- data_long$time[i]
       
-      # Get row in original data
+      # Get data index for this ID
       data_idx <- match(id, data$ID)
-      if(is.na(data_idx)) return(-1)  # Handle missing IDs
-      
-      # Get the outcome for the time step AFTER the window
-      prediction_time <- t + window_size
-      if(prediction_time >= ncol(outcome_matrix)) {
-        return(-1)  # Mark as censored if no future data
+      if(is.na(data_idx)) {
+        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
       }
       
-      # Get the actual future outcome
-      future_time <- prediction_time + 1  # Look at next time step
-      if(future_time >= ncol(outcome_matrix)) return(-1)
+      # Calculate proper time indices
+      current_idx <- t + window_size
+      if(current_idx >= ncol(outcome_matrix)) {
+        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
+      }
       
-      val <- outcome_matrix[data_idx, future_time]
-      if(is.na(val)) return(-1)  # Mark missing as censored
+      # For targeting step (inference), use current value 
+      val <- if(inference) {
+        # During inference, handle current value and convert -1/NA to 0
+        current_val <- outcome_matrix[data_idx, current_idx + 1]
+        if(is.na(current_val) || current_val == -1) 0 else as.numeric(current_val)
+      } else {
+        # For training, preserve censoring status
+        future_idx <- current_idx + 1
+        if(future_idx > ncol(outcome_matrix)) return(-1)
+        val <- outcome_matrix[data_idx, future_idx]
+        if(is.na(val)) return(-1)
+        val
+      }
       
-      # Return actual value for Y
       as.numeric(val)
     })
     
-    # For Y model, output is binary outcome
+    # For Y model, output is binary outcome 
     output_data <- data.frame(
       ID = data_long$ID,
-      target = data_long$target,
+      target = if(inference) {
+        # During inference, ensure all values are 0/1
+        ifelse(is.na(data_long$target) | data_long$target == -1, 0, data_long$target)
+      } else {
+        data_long$target  # Keep censoring during training
+      },
       stringsAsFactors = FALSE
     )
     
@@ -469,39 +436,77 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     
     output_filename <- file.path(output_dir, "lstm_bin_Y_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_Y_input.csv")
-  } else if(is_censoring_model) {
+  }else if(is_censoring_model) {
     # Align censoring predictions with future time steps
     censoring_matrix <- as.matrix(data[target_cols])
+    # Initialize target as numeric to prevent logical type
+    data_long$target <- as.numeric(NA)
+    
     data_long$target <- sapply(1:nrow(data_long), function(i) {
       id <- data_long$ID[i]
       t <- data_long$time[i]
       
+      # Get data index for this ID
+      data_idx <- match(id, data$ID)
+      if(is.na(data_idx)) {
+        return(as.numeric(1))  # Default to censored
+      }
+      
       # Get the censoring status for the time step AFTER the window
       prediction_time <- t + window_size
       if(prediction_time >= ncol(censoring_matrix)) {
-        return(1)  # Assume censored if beyond available data
+        return(as.numeric(1))  # Assume censored if beyond available data
       }
       
       # Get the actual future censoring status
-      val <- censoring_matrix[id, prediction_time + 1]  # +1 to predict next step
-      if(is.na(val)) return(1)  # Treat NA as censored
-      as.numeric(val == -1)  # Convert to binary: 1 if censored (-1), 0 if not
+      val <- censoring_matrix[data_idx, prediction_time + 1]  # +1 to predict next step
+      
+      # Handle censoring conversion explicitly
+      if(is.na(val)) {
+        return(as.numeric(1))  # Treat NA as censored
+      } else if(val == -1) {
+        return(as.numeric(1))  # Convert -1 to 1 (censored)
+      } else {
+        return(as.numeric(0))  # Not censored
+      }
     })
     
+    # Create output data with proper formatting 
     output_data <- data.frame(
       ID = data_long$ID,
       target = data_long$target,
       stringsAsFactors = FALSE
     )
     
+    if(debug) {
+      cat("\nDistribution summary:\n")
+      if(is_treatment_model) {
+        cat("\nTreatment distribution:")
+        print(table(data_long$A, useNA="ifany"))
+      } else if(is_censoring_model) {
+        cat("\nCensoring target distribution:")
+        print(table(output_data$target, useNA="ifany"))
+        cat("\nCensored (1): ", sum(output_data$target == 1, na.rm=TRUE))
+        cat("\nNot censored (0): ", sum(output_data$target == 0, na.rm=TRUE))
+      } else {
+        cat("\nOutcome distribution:")
+        print(table(data_long$target))
+        cat("\nCensored: ", sum(data_long$target == -1))
+        cat("\nZeros: ", sum(data_long$target == 0))
+        cat("\nOnes: ", sum(data_long$target == 1))
+      }
+    }
+    
     output_filename <- file.path(output_dir, "lstm_bin_C_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_C_input.csv")
   }
   
-  print("Final output data dimensions:")
-  print(dim(output_data))
-  print("Names of output columns:")
-  print(names(output_data))
+  if(debug){
+    print("Final output data dimensions:")
+    print(dim(output_data))
+    print("Names of output columns:")
+    print(names(output_data))
+  }
   
   # Add explicit binary/continuous type definitions
   binary_covs <- c("L2", "L3", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
@@ -566,9 +571,8 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     }
   }
   
-  # Before writing files, add:
-  if(is_censoring_model) {
-    print("Verifying censoring model data:")
+  if(debug) {
+    print("Verifying model data:")
     print(paste("Input rows:", nrow(input_data)))
     print(paste("Output rows:", nrow(output_data)))
     print(paste("Input file:", input_filename))
@@ -668,15 +672,18 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     is_treatment_model <- !is_Y_outcome && !is_censoring_model
     
     # Determine prediction file path
+    prefix <- if(inference) "test_" else ""
     preds_file <- if(is_censoring_model) {
-      file.path(output_dir, 'lstm_bin_C_preds.npy')
+      file.path(output_dir, paste0(prefix, 'lstm_bin_C_preds.npy'))
     } else {
       if(is_Y_outcome && loss_fn == "binary_crossentropy") {
-        file.path(output_dir, 'lstm_bin_Y_preds.npy')
+        file.path(output_dir, paste0(prefix, 'lstm_bin_Y_preds.npy'))
       } else {
         file.path(output_dir, 
-                  if(loss_fn == "sparse_categorical_crossentropy") 'lstm_cat_A_preds.npy' 
-                  else 'lstm_bin_A_preds.npy')
+                  if(loss_fn == "sparse_categorical_crossentropy") 
+                    paste0(prefix, 'lstm_cat_A_preds.npy')
+                  else 
+                    paste0(prefix, 'lstm_bin_A_preds.npy'))
       }
     }
     

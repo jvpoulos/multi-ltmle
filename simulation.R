@@ -576,12 +576,12 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
 
     g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist)))
 
-    g_preds_cuml <- vector("list", length(g_preds))
-
-    g_preds_cuml[[1]] <- g_preds[[1]]
-
-    for (i in 2:length(g_preds)) {
-      g_preds_cuml[[i]] <- g_preds[[i]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] * g_preds_cuml[[i-1]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),]
+    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
+    g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
+    
+    for (i in 2:length(g_preds_bin)) { # Scale probabilities before multiplication
+      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * 
+        ((g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] + 1) / 2)
     }
 
     g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores
