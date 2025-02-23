@@ -2,21 +2,22 @@ import os
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from tensorflow.keras import mixed_precision
+from tensorflow.keras import backend as K
+from tensorflow.keras.mixed_precision import global_policy
 from tensorflow.keras.models import load_model
 from tensorflow.keras.mixed_precision import LossScaleOptimizer
+import json
 
-from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy, get_data_filenames, create_masked_metric, create_masked_loss, MultiHeadAttention, masked_binary_crossentropy, masked_sparse_categorical_crossentropy
+from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy, get_data_filenames, create_masked_metric, create_masked_loss, MultiHeadAttention, MaskedAccuracy, masked_binary_crossentropy, masked_sparse_categorical_crossentropy, load_model_components, get_model_filenames_test
 
 import sys
 import traceback
 import logging
 import warnings
 
-# Suppress TensorFlow logging
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # FATAL
-logging.getLogger('tensorflow').setLevel(logging.ERROR)
-
+# Configure TensorFlow for better stability
+tf.config.run_functions_eagerly(True)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 # Suppress warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -45,108 +46,7 @@ except AttributeError:
     # Fallback for older TF versions
     policy = tf.keras.mixed_precision.Policy('mixed_float16')
     tf.keras.mixed_precision.set_policy(policy)
-
-@tf.keras.utils.register_keras_serializable()
-class MaskedMetric(tf.keras.metrics.Metric):
-    def __init__(self, metric_fn, name=None, **kwargs):
-        super().__init__(name=name or f'masked_{metric_fn.__name__}', **kwargs)
-        self.metric_fn = metric_fn
-        self.metric = metric_fn()
-    
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        mask = tf.not_equal(y_true, -1)
-        y_true_masked = tf.boolean_mask(y_true, mask)
-        y_pred_masked = tf.boolean_mask(y_pred, mask)
-        return self.metric.update_state(y_true_masked, y_pred_masked, sample_weight)
-    
-    def result(self):
-        return self.metric.result()
-    
-    def reset_state(self):
-        return self.metric.reset_state()
-    
-    def get_config(self):
-        config = super().get_config()
-        return config
-    
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
-def get_masked_metric(metric_fn):
-    return MaskedMetric(metric_fn)
-
-def load_model_with_custom_objects(model_path):
-    """Load model with proper custom objects for metrics."""
-    
-    # Get strategy for proper model loading context
-    strategy = get_strategy()
-    
-    with strategy.scope():
-        # Define custom objects needed for model loading
-        custom_objects = {
-            # Custom metrics
-            'MaskedMetric': MaskedMetric,
-            'masked_accuracy': get_masked_metric(tf.keras.metrics.BinaryAccuracy),
-            'masked_auc': get_masked_metric(tf.keras.metrics.AUC),
-            'masked_precision': get_masked_metric(tf.keras.metrics.Precision),
-            'masked_recall': get_masked_metric(tf.keras.metrics.Recall),
-            'masked_cross_entropy': get_masked_metric(tf.keras.metrics.BinaryCrossentropy),
-            
-            # Custom loss functions
-            'masked_binary_crossentropy': create_masked_loss("binary_crossentropy", ybound=ybound),
-            'masked_sparse_categorical_crossentropy': create_masked_loss("sparse_categorical_crossentropy", gbound=gbound),
-            'binary_crossentropy_masked': masked_binary_crossentropy,
-            'sparse_categorical_crossentropy_masked': masked_sparse_categorical_crossentropy,
-            
-            # Custom layers and attention
-            'MultiHeadAttention': MultiHeadAttention,
-            'attention_layer': MultiHeadAttention.call,  # Include the attention layer method
-            
-            # Other potential custom functions
-            'get_masked_metric': get_masked_metric,
-            'create_masked_loss': create_masked_loss
-        }
-        
-        try:
-            logger.info(f"Loading model from {model_path}")
-            model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
-            logger.info("Model loaded successfully")
-            return model
-        except Exception as e:
-            logger.error(f"Error loading model: {str(e)}")
-            logger.error(traceback.format_exc())
-            logger.error(f"Model path exists: {os.path.exists(model_path)}")
-            logger.error(f"Model file size: {os.path.getsize(model_path) if os.path.exists(model_path) else 'N/A'}")
-            raise
-
-def get_model_filenames(loss_fn, output_dim, is_censoring):
-    """Get appropriate filenames for model and predictions based on model type."""
-    
-    if is_censoring:
-        model_filename = 'lstm_bin_C_model.keras'
-        pred_filename = 'test_bin_C_preds.npy'  # Changed from original to use 'test_' prefix
-        info_filename = 'test_bin_C_preds_info.npz'  # Changed from original to use 'test_' prefix
-    else:
-        # Check if Y model based on dimensions and loss function
-        is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
-        if is_y_model:
-            model_filename = 'lstm_bin_Y_model.keras'
-            pred_filename = 'test_bin_Y_preds.npy'
-            info_filename = 'test_bin_Y_preds_info.npz'
-        else:
-            # Treatment model (A)
-            if loss_fn == "sparse_categorical_crossentropy":
-                model_filename = 'lstm_cat_A_model.keras'
-                pred_filename = 'test_cat_A_preds.npy'
-                info_filename = 'test_cat_A_preds_info.npz'
-            else:
-                model_filename = 'lstm_bin_A_model.keras'
-                pred_filename = 'test_bin_A_preds.npy'
-                info_filename = 'test_bin_A_preds_info.npz'
-    
-    return model_filename, pred_filename, info_filename
-    
+  
 def test_model():
     global window_size, output_dir, nb_batches, loss_fn, J, is_censoring, outcome_cols
 
@@ -173,12 +73,12 @@ def test_model():
             outcome_cols = ['Y'] if not is_censoring else ['C']
         
         # Get appropriate filenames using the shared function
-        model_filename, pred_filename, info_filename = get_model_filenames(
+        model_filename, pred_filename, info_filename = get_model_filenames_test(
             loss_fn, output_dim, is_censoring
         )
 
-        # Set paths using absolute directory
-        model_path = os.path.join(output_dir, model_filename)
+        # Set paths using absolute directory but without extension
+        model_base_path = os.path.join(output_dir, model_filename.replace('.keras', ''))
         pred_path = os.path.join(output_dir, pred_filename)
         info_path = os.path.join(output_dir, info_filename)
 
@@ -209,6 +109,35 @@ def test_model():
         test_data_x = x_data[train_size+val_size:].copy()
         test_data_y = y_data[train_size+val_size:].copy()
 
+        # Important: Process sequence data before cleaning columns
+        if 'A' in test_data_x.columns:
+            logger.info("Processing treatment sequences...")
+            # Convert string sequences to numpy arrays
+            a_sequences = []
+            for seq_str in test_data_x['A']:
+                values = [float(v.strip()) for v in str(seq_str).split(',')]
+                a_sequences.append(values)
+            
+            a_sequences = np.array(a_sequences)
+            logger.info(f"Treatment sequences shape: {a_sequences.shape}")
+            
+            # Store processed sequences
+            sequence_data = {
+                'A': a_sequences,
+                'L1': a_sequences.copy(),  # Use treatment sequences for L features
+                'L2': a_sequences.copy(),
+                'L3': a_sequences.copy()
+            }
+            
+            # Store in attributes
+            test_data_x.attrs['sequence_data'] = sequence_data
+            logger.info("Stored sequence data in attributes")
+
+            for key, data in sequence_data.items():
+                logger.info(f"{key} sequence stats:")
+                logger.info(f"  Shape: {data.shape}")
+                logger.info(f"  Range: [{np.min(data)}, {np.max(data)}]")
+
         # Handle Y values for inference
         if 'Y' in test_data_y.columns:
             # Preserve actual Y values, don't treat as censored
@@ -220,17 +149,24 @@ def test_model():
                 test_data_y.loc[test_data_y['Y'] == -1, 'Y'] = 0
             logger.info(f"Y distribution after processing: {test_data_y['Y'].value_counts()}")
         elif 'target' in test_data_y.columns:
-            # Handle target column similarly
             logger.info("Processing target values for inference")
-            test_data_y['target'] = test_data_y['target'].fillna(0)
-            logger.info(f"Target distribution before processing: {test_data_y['target'].value_counts()}")
-            # Only convert -1 to 0 if not performing censoring inference
-            if not is_censoring:
-                test_data_y.loc[test_data_y['target'] == -1, 'target'] = 0
-            logger.info(f"Target distribution after processing: {test_data_y['target'].value_counts()}")
+            test_data_y['target'] = test_data_y['target'].fillna(-1)  # Keep -1 for censored values
+            # Create binary indicator for valid (non-censored) values
+            valid_targets = test_data_y['target'] != -1
+            if valid_targets.any():
+                # For non-censored values, convert to binary outcome
+                test_data_y.loc[valid_targets, 'target'] = (test_data_y.loc[valid_targets, 'target'] > 0).astype(int)
+            logger.info(f"Target distribution after processing:")
+            logger.info(f"  Valid (non-censored): {valid_targets.sum()}")
+            logger.info(f"  Censored (-1): {(~valid_targets).sum()}")
+            logger.info(f"  Values: {test_data_y['target'].value_counts(dropna=False)}")
 
         if len(test_data_x) == 0 or len(test_data_y) == 0:
             raise ValueError("Test dataset is empty after splitting")
+
+        # Remove ID column if present
+        if 'ID' in test_data_x.columns:
+            test_data_x = test_data_x.drop(columns=['ID'])
 
         # Log final dataset information
         logger.info(f"\nFinal test dataset sizes:")
@@ -245,9 +181,10 @@ def test_model():
         logger.info(f"Feature dimension: {num_features}")
         logger.info(f"Sequence length: {n_pre}")
         
-        # Remove ID column if present
-        if 'ID' in test_data_x.columns:
-            test_data_x = test_data_x.drop(columns=['ID'])
+        logger.info(f"Available columns in test data: {test_data_x.columns.tolist()}")
+
+        if 'A' in test_data_x.columns:
+            logger.info(f"A sequence values: {test_data_x['A'].head()}")
         
         # Modify data preparation for binary case
         if loss_fn == "binary_crossentropy":
@@ -275,42 +212,22 @@ def test_model():
         test_steps = max(1, (test_samples - n_pre + 1) // batch_size)
         logger.info(f"Test steps: {test_steps}")
 
-        # Load and verify model
+        # Load model
         logger.info("\nLoading model...")
-        model = load_model_with_custom_objects(model_path)
-        logger.info("Model loaded successfully")
-        
-        # Verify test dataset characteristics
-        for x_batch, y_batch in test_dataset.take(1):
-            logger.info("\nTest dataset characteristics:")
-            logger.info(f"X shape: {x_batch.shape}")
-            logger.info(f"Y shape: {y_batch.shape}")
-            logger.info(f"Feature dimension: {x_batch.shape[-1]}")
-            logger.info(f"Expected features: {num_features}")
-            logger.info(f"X range: [{tf.reduce_min(x_batch)}, {tf.reduce_max(x_batch)}]")
-            
-            # Verify feature dimensions
-            if x_batch.shape[-1] != num_features:
-                raise ValueError(
-                    f"Feature dimension mismatch. Expected {num_features}, got {x_batch.shape[-1]}"
-                )
-        
-        # Generate predictions
-        logger.info("\nEvaluating model...")
-        test_metrics = model.evaluate(
-            test_dataset,
-            steps=test_steps,
-            verbose=1
+        model = load_model_components(
+            base_path=model_base_path,
+            loss_fn=loss_fn,
+            is_censoring=is_censoring,
+            gbound=gbound,
+            ybound=ybound
         )
         
-        logger.info("\nTest metrics:")
-        for name, value in zip(model.metrics_names, test_metrics):
-            logger.info(f"{name}: {value:.4f}")
-        
+        # Generate predictions 
         logger.info("\nGenerating predictions...")
-        # Get predictions without reshaping - predictions already respect temporal order
+        # Map dataset to extract only x values for prediction
+        x_dataset = test_dataset.map(lambda *data: data[0])
         preds_test = model.predict(
-            test_dataset,
+            x_dataset,
             steps=test_steps,
             batch_size=batch_size * 2,
             verbose=1
@@ -409,7 +326,10 @@ def test_model():
         
         if loss_fn == "binary_crossentropy":
             pred_classes = (preds_test > 0.5).astype(int)
-            logger.info(f"Class distribution: {np.bincount(pred_classes.flatten())}")
+            class_counts = np.bincount(pred_classes.flatten())
+            logger.info(f"Class distribution by threshold (0.5):")
+            for cls, count in enumerate(class_counts):
+                logger.info(f"Class {cls}: {count} ({count/len(pred_classes)*100:.2f}%)")
         else:
             pred_classes = np.argmax(preds_test, axis=1)
             logger.info(f"Class distribution: {np.bincount(pred_classes)}")
@@ -451,7 +371,7 @@ def test_model():
         pred_path = os.path.join(output_dir, pred_filename)
         info_path = os.path.join(output_dir, info_filename)
 
-        # Save predictions using the paths from get_model_filenames
+        # Save predictions using the paths from get_model_filenames_test
         np.save(pred_path, preds_test)
         logger.info(f"Test predictions saved to: {pred_path}")
 
@@ -462,8 +382,7 @@ def test_model():
             dtype=str(preds_test.dtype),
             min_value=np.min(preds_test),
             max_value=np.max(preds_test),
-            num_test_samples=n_valid_samples,
-            test_metrics=dict(zip(model.metrics_names, test_metrics))
+            num_test_samples=n_valid_samples
         )
         logger.info(f"Test information saved to: {info_path}")
         

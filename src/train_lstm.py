@@ -39,7 +39,7 @@ from tensorflow.keras.initializers import GlorotNormal, GlorotUniform
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 
-from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, CustomNanCallback, get_data_filenames, create_temporal_split
+from utils import create_model, load_data_from_csv, create_dataset, get_optimized_callbacks, configure_device, get_strategy, setup_wandb, CustomCallback, log_metrics, CustomNanCallback, get_data_filenames, create_temporal_split, get_model_filenames, save_model_components
 
 import sys
 import traceback
@@ -71,33 +71,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-def get_model_filenames(loss_fn, output_dim, is_censoring):
-    """Get appropriate filenames for model and predictions based on model type."""
-    
-    if is_censoring:
-        model_filename = 'lstm_bin_C_model.keras'
-        pred_filename = 'lstm_bin_C_preds.npy'
-        info_filename = 'lstm_bin_C_preds_info.npz'
-    else:
-        # Check if Y model based on dimensions and loss function
-        is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
-        if is_y_model:
-            model_filename = 'lstm_bin_Y_model.keras'
-            pred_filename = 'lstm_bin_Y_preds.npy'
-            info_filename = 'lstm_bin_Y_preds_info.npz'
-        else:
-            # Treatment model (A)
-            if loss_fn == "sparse_categorical_crossentropy":
-                model_filename = 'lstm_cat_A_model.keras'
-                pred_filename = 'lstm_cat_A_preds.npy'
-                info_filename = 'lstm_cat_A_preds_info.npz'
-            else:
-                model_filename = 'lstm_bin_A_model.keras'
-                pred_filename = 'lstm_bin_A_preds.npy'
-                info_filename = 'lstm_bin_A_preds_info.npz'
-    
-    return model_filename, pred_filename, info_filename
 
 def main():
     global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size, is_censoring, gbound, ybound
@@ -506,22 +479,22 @@ def main():
 
     # Determine model filename based on case
     if is_censoring:
-        model_filename = 'lstm_bin_C_model.keras'
+        model_filename = 'lstm_bin_C_model'  # Remove .keras extension
     else:
         # Check if Y model based on dimensions and loss function
         is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
         if is_y_model:
-            model_filename = 'lstm_bin_Y_model.keras'
+            model_filename = 'lstm_bin_Y_model'
         else:
             # Treatment model (A)
-            model_filename = 'lstm_cat_A_model.keras' if loss_fn == "sparse_categorical_crossentropy" else 'lstm_bin_A_model.keras'
+            model_filename = 'lstm_cat_A_model' if loss_fn == "sparse_categorical_crossentropy" else 'lstm_bin_A_model'
 
-    # Set model path
-    model_path = os.path.join(output_dir, model_filename)
+    # Set model path without extension
+    model_base_path = os.path.join(output_dir, model_filename)
 
-    # Save model
-    model.save(model_path)
-    logger.info(f"Model saved to: {model_path}")
+    # Save model components
+    save_model_components(model, model_base_path)
+    logger.info(f"Model components saved to: {model_base_path}[.json/.weights]")
     
     logger.info("\nGenerating predictions for all data...")
     x_data_final = x_data.copy()

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, Optional
 import time
+import json
 import tensorflow as tf
 from tensorflow.keras import Model, Input
 from tensorflow.keras.layers import LSTM, Dense, Masking
@@ -31,6 +32,310 @@ logger = logging.getLogger(__name__)
 
 import wandb
 from datetime import datetime
+
+
+def get_model_filenames_test(loss_fn, output_dim, is_censoring):
+    """Get appropriate filenames for model and predictions based on model type."""
+    
+    if is_censoring:
+        model_filename = 'lstm_bin_C_model.keras'
+        pred_filename = 'test_lstm_bin_C_preds.npy'  # Changed from original to use 'test_' prefix
+        info_filename = 'test_lstm_bin_C_preds_info.npz'  # Changed from original to use 'test_' prefix
+    else:
+        # Check if Y model based on dimensions and loss function
+        is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
+        if is_y_model:
+            model_filename = 'lstm_bin_Y_model.keras'
+            pred_filename = 'test_lstm_bin_Y_preds.npy'
+            info_filename = 'test_lstm_bin_Y_preds_info.npz'
+        else:
+            # Treatment model (A)
+            if loss_fn == "sparse_categorical_crossentropy":
+                model_filename = 'lstm_cat_A_model.keras'
+                pred_filename = 'test_lstm_cat_A_preds.npy'
+                info_filename = 'test_lstm_cat_A_preds_info.npz'
+            else:
+                model_filename = 'lstm_bin_A_model.keras'
+                pred_filename = 'test_lstm_bin_A_preds.npy'
+                info_filename = 'test_lstm_bin_A_preds_info.npz'
+    
+    return model_filename, pred_filename, info_filename
+
+def get_model_filenames(loss_fn, output_dim, is_censoring):
+    """Get appropriate filenames for model and predictions based on model type."""
+    
+    if is_censoring:
+        model_filename = 'lstm_bin_C_model.keras'
+        pred_filename = 'lstm_bin_C_preds.npy'
+        info_filename = 'lstm_bin_C_preds_info.npz'
+    else:
+        # Check if Y model based on dimensions and loss function
+        is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
+        if is_y_model:
+            model_filename = 'lstm_bin_Y_model.keras'
+            pred_filename = 'lstm_bin_Y_preds.npy'
+            info_filename = 'lstm_bin_Y_preds_info.npz'
+        else:
+            # Treatment model (A)
+            if loss_fn == "sparse_categorical_crossentropy":
+                model_filename = 'lstm_cat_A_model.keras'
+                pred_filename = 'lstm_cat_A_preds.npy'
+                info_filename = 'lstm_cat_A_preds_info.npz'
+            else:
+                model_filename = 'lstm_bin_A_model.keras'
+                pred_filename = 'lstm_bin_A_preds.npy'
+                info_filename = 'lstm_bin_A_preds_info.npz'
+    
+    return model_filename, pred_filename, info_filename
+
+def save_model_components(model, base_path):
+    """Save model architecture and weights separately."""
+    try:
+        # Strip metrics from the model before saving
+        original_metrics = model.metrics
+        model._metrics = []  # Clear metrics
+        
+        # Get the custom objects dictionary for core components
+        custom_objects = {
+            'MultiHeadAttention': MultiHeadAttention,
+            'masked_binary_crossentropy': masked_binary_crossentropy,
+            'masked_sparse_categorical_crossentropy': masked_sparse_categorical_crossentropy
+        }
+        
+        # Save stripped model architecture
+        json_config = model.to_json()
+        arch_path = f"{base_path}.json"
+        with open(arch_path, 'w') as f:
+            f.write(json_config)
+            
+        # Save model metadata
+        meta_path = f"{base_path}.meta.json"
+        meta_info = {
+            'metrics': [m.name if hasattr(m, 'name') else str(m) for m in original_metrics],
+            'loss_name': model.loss.name if hasattr(model.loss, 'name') else str(model.loss)
+        }
+        with open(meta_path, 'w') as f:
+            json.dump(meta_info, f)
+            
+        logger.info(f"Model architecture saved to: {arch_path}")
+        logger.info(f"Model metadata saved to: {meta_path}")
+        
+        # Save the weights with proper .h5 extension
+        weights_path = f"{base_path}.weights.h5"
+        model.save_weights(weights_path)
+        logger.info(f"Model weights saved to: {weights_path}")
+        
+        # Restore original metrics
+        model._metrics = original_metrics
+        
+    except Exception as e:
+        logger.error(f"Error saving model components: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
+
+def masked_binary_crossentropy(y_true, y_pred):
+    """
+    Custom loss function that handles masked/censored values for binary classification.
+    
+    Args:
+        y_true: True labels with -1 indicating censoring
+        y_pred: Predicted probabilities
+    
+    Returns:
+        Mean binary cross-entropy over valid elements
+    """
+    # Convert inputs to float32
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    
+    # Create mask for non-censored values (True where y_true != -1)
+    mask = tf.not_equal(y_true, -1)
+    mask = tf.cast(mask, tf.float32)
+    
+    # Replace -1 values with 0 to avoid invalid BCE computation
+    y_true_masked = tf.where(mask > 0, y_true, tf.zeros_like(y_true))
+    
+    # Compute binary cross-entropy
+    bce = tf.keras.losses.binary_crossentropy(
+        y_true_masked,
+        y_pred,
+        from_logits=False,
+        axis=-1
+    )
+    
+    # For multi-label case, average across labels
+    if len(y_true.shape) > 1 and y_true.shape[-1] > 1:
+        mask_sum = tf.maximum(tf.reduce_sum(mask, axis=-1), 1.0)
+        masked_bce = bce * tf.reduce_mean(mask, axis=-1)
+        return tf.reduce_sum(masked_bce) / tf.cast(tf.shape(y_true)[0], tf.float32)
+    else:
+        # For single label case
+        return tf.reduce_sum(bce * mask) / tf.maximum(tf.reduce_sum(mask), 1.0)
+
+def masked_sparse_categorical_crossentropy(y_true, y_pred):
+    """Custom loss function for sparse categorical crossentropy with masking."""
+    # Create mask for non-censored values 
+    mask = tf.not_equal(y_true, -1)
+    
+    # Extract valid samples
+    valid_y_true = tf.boolean_mask(y_true, mask)
+    valid_y_pred = tf.boolean_mask(y_pred, mask)
+    
+    # Calculate loss on valid samples
+    scce = tf.keras.losses.sparse_categorical_crossentropy(
+        valid_y_true,
+        valid_y_pred
+    )
+    
+    # Average over valid samples
+    n_valid = tf.reduce_sum(tf.cast(mask, tf.float32))
+    return tf.reduce_sum(scce) / (n_valid + K.epsilon())
+
+
+@tf.keras.utils.register_keras_serializable(package='Custom')
+class MaskedBinaryAccuracy(tf.keras.metrics.Metric):
+    def __init__(self, name='masked_accuracy', threshold=0.5, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.threshold = threshold
+        self.true_positives = self.add_weight(name='tp', initializer='zeros')
+        self.total_values = self.add_weight(name='total', initializer='zeros')
+
+    @tf.function
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, -1), tf.float32)
+        
+        threshold = tf.cast(self.threshold, y_pred.dtype)
+        y_pred = tf.cast(y_pred > threshold, y_pred.dtype)
+        y_true = tf.cast(y_true > threshold, y_true.dtype)
+        
+        values = tf.cast(tf.equal(y_true, y_pred), tf.float32) * mask
+        self.true_positives.assign_add(tf.reduce_sum(values))
+        self.total_values.assign_add(tf.reduce_sum(mask))
+
+    @tf.function
+    def result(self):
+        return tf.math.divide_no_nan(self.true_positives, self.total_values)
+
+    def reset_states(self):
+        self.true_positives.assign(0.0)
+        self.total_values.assign(0.0)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"threshold": self.threshold})
+        return config
+
+@tf.keras.utils.register_keras_serializable(package='Custom')
+class MaskedAUC(tf.keras.metrics.AUC):
+    def __init__(self, name='masked_auc', multi_label=False, **kwargs):
+        super().__init__(name=name, multi_label=multi_label, **kwargs)
+        self.multi_label = multi_label
+
+    @tf.function
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, -1), tf.float32)
+        if sample_weight is not None:
+            sample_weight = sample_weight * mask
+        else:
+            sample_weight = mask
+        return super().update_state(y_true, y_pred, sample_weight)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"multi_label": self.multi_label})
+        return config
+
+@tf.keras.utils.register_keras_serializable(package='Custom')
+class MaskedAccuracy(tf.keras.metrics.Metric):
+    def __init__(self, name='masked_accuracy', **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.correct = self.add_weight(name='correct', initializer='zeros')
+        self.total = self.add_weight(name='total', initializer='zeros')
+
+    @tf.function
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, -1), tf.float32)
+        y_pred = tf.cast(y_pred > 0.5, tf.float32)
+        y_true = tf.cast(y_true > 0, tf.float32)
+        
+        correct_predictions = tf.cast(tf.equal(y_true, y_pred), tf.float32) * mask
+        self.correct.assign_add(tf.reduce_sum(correct_predictions))
+        self.total.assign_add(tf.reduce_sum(mask))
+
+    def result(self):
+        return tf.math.divide_no_nan(self.correct, self.total)
+
+    def reset_states(self):
+        self.correct.assign(0.)
+        self.total.assign(0.)
+
+    def get_config(self):
+        return super().get_config()
+
+def clean_model_config(config):
+    """Remove metrics and loss functions from model config."""
+    if isinstance(config, dict):
+        # Remove metrics and loss from compile config
+        if 'compile_config' in config:
+            if 'metrics' in config['compile_config']:
+                config['compile_config']['metrics'] = []
+            if 'loss' in config['compile_config']:
+                config['compile_config']['loss'] = None
+        
+        # Recursively clean nested dictionaries
+        for key in config:
+            if isinstance(config[key], (dict, list)):
+                config[key] = clean_model_config(config[key])
+    elif isinstance(config, list):
+        # Recursively clean lists
+        config = [clean_model_config(item) for item in config]
+    
+    return config
+
+def load_model_components(base_path, loss_fn, is_censoring, gbound=None, ybound=None):
+    """Load model with proper custom objects."""
+    try:
+        # Define custom objects - minimal set
+        custom_objects = {
+            'MultiHeadAttention': MultiHeadAttention,
+            'masked_binary_crossentropy': masked_binary_crossentropy
+        }
+
+        # Load and clean model architecture
+        arch_path = f"{base_path}.json"
+        weights_path = f"{base_path}.weights.h5"
+        
+        logger.info(f"Loading model architecture from: {arch_path}")
+        with open(arch_path) as f:
+            model_config = json.load(f)
+        
+        # Clean the config
+        cleaned_config = clean_model_config(model_config)
+        model_json = json.dumps(cleaned_config)
+        
+        # Load model from cleaned config
+        model = tf.keras.models.model_from_json(model_json, custom_objects=custom_objects)
+        
+        logger.info(f"Loading weights from: {weights_path}")
+        model.load_weights(weights_path)
+        
+        # Recompile model with fresh metrics
+        model.compile(
+            optimizer='adam',
+            loss=masked_binary_crossentropy,
+            metrics=[MaskedAccuracy(name='accuracy')],
+            run_eagerly=True
+        )
+        
+        logger.info("Model loaded and compiled successfully")
+        return model
+        
+    except Exception as e:
+        logger.error(f"Error loading model components: {str(e)}")
+        logger.error(traceback.format_exc())
+        logger.error(f"Architecture path exists: {os.path.exists(arch_path)}")
+        logger.error(f"Weights path exists: {os.path.exists(weights_path)}")
+        raise
 
 def create_temporal_split(x_data, y_data, n_pre, train_frac=0.8, val_frac=0.1):
     """Create temporally-aware train/val/test splits.
@@ -785,6 +1090,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J,
         if 'target' in y_data.columns:
             y_values = y_data['target'].values
             
+            # Process targets for Y model
             if not is_censoring:  # Process for Y model
                 # Get the minimum length to ensure arrays are aligned
                 min_length = min(len(x_values), len(y_values))
@@ -809,8 +1115,23 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J,
                         sequence_features[seq_col] = sequence_features[seq_col][valid_mask]
                     
                     y_values = (y_values > 0).astype(np.float32)
-                else:  # During testing/inference, keep censored values
-                    y_values = np.where(y_values == -1, 0, y_values)  # Convert censored to 0
+                else:  
+                    # During testing/inference, keep -1 for censored values
+                    y_values = y_values.astype(np.float32)
+                    # Count statistics
+                    valid_mask = y_values != -1
+                    valid_values = y_values[valid_mask]
+                    logger.info(f"Y value distribution:")
+                    logger.info(f"  Total samples: {len(y_values)}")
+                    logger.info(f"  Censored (-1): {np.sum(~valid_mask)}")
+                    logger.info(f"  Valid: {np.sum(valid_mask)}")
+                    if len(valid_values) > 0:
+                        logger.info(f"  Valid distribution: {np.bincount(valid_values.astype(int))}")
+
+                logger.info(f"Target distribution after sequence processing:")
+                vals, counts = np.unique(y_values, return_counts=True)
+                for v, c in zip(vals, counts):
+                    logger.info(f"  {v}: {c}")
                 
                 logger.info(f"After processing - Target distribution:")
                 logger.info(f"  0s: {np.sum(y_values == 0)}")
@@ -974,42 +1295,6 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J,
 
     return dataset, num_samples
 
-def masked_binary_crossentropy(y_true, y_pred):
-    # Create mask for non-censored values
-    mask = tf.not_equal(y_true, -1)
-    
-    # Convert mask to float and ensure proper shape
-    mask = tf.cast(mask, dtype=tf.float32)
-    
-    # Calculate binary crossentropy only on non-censored values
-    bce = tf.keras.losses.binary_crossentropy(
-        y_true * tf.cast(mask, y_true.dtype), 
-        y_pred * tf.cast(mask, y_pred.dtype)
-    )
-    
-    # Apply mask to loss
-    masked_bce = bce * mask
-    
-    # Sum the losses and divide by number of non-censored values
-    return tf.reduce_sum(masked_bce) / (tf.reduce_sum(mask) + tf.keras.backend.epsilon())
-
-def masked_sparse_categorical_crossentropy(y_true, y_pred):
-    # Create mask for non-censored values 
-    mask = tf.not_equal(y_true, -1)
-    mask = tf.cast(mask, dtype=tf.float32)
-
-    # Calculate sparse categorical crossentropy only on non-censored values
-    scce = tf.keras.losses.sparse_categorical_crossentropy(
-        y_true * tf.cast(mask, y_true.dtype),
-        y_pred * tf.cast(mask, y_pred.dtype)
-    )
-
-    # Apply mask to loss
-    masked_scce = scce * mask
-
-    # Average over non-censored values
-    return tf.reduce_sum(masked_scce) / (tf.reduce_sum(mask) + tf.keras.backend.epsilon())
-
 class MultiHeadAttention(tf.keras.layers.Layer):
     def __init__(self, name="multi_head_attention", **kwargs):
         super().__init__(name=name, **kwargs)
@@ -1029,44 +1314,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
         return output, attention_weights
 
 def create_masked_loss(loss_fn, gbound=None, ybound=None):
-    def masked_binary_crossentropy(y_true, y_pred):
-        # Create mask for non-censored values
-        mask = tf.not_equal(y_true, -1)
-        
-        # Convert mask to float and ensure proper shape
-        mask = tf.cast(mask, dtype=tf.float32)
-        
-        # Apply bounds to predictions
-        if ybound is not None:
-            y_pred = tf.clip_by_value(y_pred, ybound[0], ybound[1])
-            
-        # Calculate binary crossentropy only on non-censored values
-        bce = tf.keras.losses.binary_crossentropy(
-            tf.boolean_mask(y_true, mask), 
-            tf.boolean_mask(y_pred, mask)
-        )
-        
-        # Return mean loss over non-censored values
-        return tf.reduce_mean(bce)
-    
-    def masked_sparse_categorical_crossentropy(y_true, y_pred):
-        # Create mask for non-censored values 
-        mask = tf.not_equal(y_true, -1)
-        
-        # Apply bounds to prediction probabilities
-        if gbound is not None:
-            y_pred = tf.clip_by_value(y_pred, gbound[0], gbound[1])
-            # Renormalize probabilities
-            y_pred = y_pred / tf.reduce_sum(y_pred, axis=-1, keepdims=True)
-            
-        # Calculate loss only on non-censored values
-        scce = tf.keras.losses.sparse_categorical_crossentropy(
-            tf.boolean_mask(y_true, mask),
-            tf.boolean_mask(y_pred, mask)
-        )
-        
-        return tf.reduce_mean(scce)
-    
+    """Create a masked version of the specified loss function."""
     if loss_fn == "binary_crossentropy":
         return masked_binary_crossentropy
     else:
@@ -1334,7 +1582,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
                             create_masked_metric(tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy'))
                         ]
 
-            loss = create_masked_loss("binary_crossentropy", ybound=ybound)
+            loss = masked_binary_crossentropy if ybound is None else create_masked_loss("binary_crossentropy", ybound=ybound)
 
             metrics = [
                 create_masked_metric(tf.keras.metrics.BinaryAccuracy(name='accuracy')),
@@ -1357,7 +1605,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             else:
                 init_bias = np.zeros(J)
             
-            loss = create_masked_loss("sparse_categorical_crossentropy", gbound=gbound)
+            loss = masked_sparse_categorical_crossentropy if gbound is None else create_masked_loss("sparse_categorical_crossentropy", gbound=gbound)
             metrics = [
                 create_masked_metric(tf.keras.metrics.SparseCategoricalAccuracy(name='accuracy')),
                 create_masked_metric(tf.keras.metrics.SparseCategoricalCrossentropy(name='cross_entropy'))
