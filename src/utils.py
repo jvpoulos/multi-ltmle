@@ -39,25 +39,25 @@ def get_model_filenames_test(loss_fn, output_dim, is_censoring):
     
     if is_censoring:
         model_filename = 'lstm_bin_C_model.keras'
-        pred_filename = 'test_lstm_bin_C_preds.npy'  # Changed from original to use 'test_' prefix
-        info_filename = 'test_lstm_bin_C_preds_info.npz'  # Changed from original to use 'test_' prefix
+        pred_filename = 'test_bin_C_preds.npy'  # Remove lstm_ prefix
+        info_filename = 'test_bin_C_preds_info.npz'
     else:
         # Check if Y model based on dimensions and loss function
         is_y_model = (output_dim == 1 and loss_fn == "binary_crossentropy")
         if is_y_model:
             model_filename = 'lstm_bin_Y_model.keras'
-            pred_filename = 'test_lstm_bin_Y_preds.npy'
-            info_filename = 'test_lstm_bin_Y_preds_info.npz'
+            pred_filename = 'test_bin_Y_preds.npy'  # Remove lstm_ prefix
+            info_filename = 'test_bin_Y_preds_info.npz'
         else:
             # Treatment model (A)
             if loss_fn == "sparse_categorical_crossentropy":
                 model_filename = 'lstm_cat_A_model.keras'
-                pred_filename = 'test_lstm_cat_A_preds.npy'
-                info_filename = 'test_lstm_cat_A_preds_info.npz'
+                pred_filename = 'test_bin_A_preds.npy'  # Remove lstm_ prefix
+                info_filename = 'test_bin_A_preds_info.npz'
             else:
                 model_filename = 'lstm_bin_A_model.keras'
-                pred_filename = 'test_lstm_bin_A_preds.npy'
-                info_filename = 'test_lstm_bin_A_preds_info.npz'
+                pred_filename = 'test_bin_A_preds.npy'  # Remove lstm_ prefix 
+                info_filename = 'test_bin_A_preds_info.npz'
     
     return model_filename, pred_filename, info_filename
 

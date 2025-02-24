@@ -671,19 +671,36 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     is_censoring_model <- is_censoring
     is_treatment_model <- !is_Y_outcome && !is_censoring_model
     
-    # Determine prediction file path
-    prefix <- if(inference) "test_" else ""
-    preds_file <- if(is_censoring_model) {
-      file.path(output_dir, paste0(prefix, 'lstm_bin_C_preds.npy'))
-    } else {
-      if(is_Y_outcome && loss_fn == "binary_crossentropy") {
-        file.path(output_dir, paste0(prefix, 'lstm_bin_Y_preds.npy'))
+    # Determine prediction file path with consistent naming
+    if(inference) {
+      # Test predictions
+      preds_file <- if(is_censoring_model) {
+        file.path(output_dir, 'test_bin_C_preds.npy')
       } else {
-        file.path(output_dir, 
-                  if(loss_fn == "sparse_categorical_crossentropy") 
-                    paste0(prefix, 'lstm_cat_A_preds.npy')
-                  else 
-                    paste0(prefix, 'lstm_bin_A_preds.npy'))
+        if(is_Y_outcome && loss_fn == "binary_crossentropy") {
+          file.path(output_dir, 'test_bin_Y_preds.npy')
+        } else {
+          file.path(output_dir, 
+                    if(loss_fn == "sparse_categorical_crossentropy") 
+                      'test_bin_A_preds.npy'
+                    else 
+                      'test_bin_A_preds.npy')
+        }
+      }
+    } else {
+      # Training predictions
+      preds_file <- if(is_censoring_model) {
+        file.path(output_dir, 'lstm_bin_C_preds.npy')
+      } else {
+        if(is_Y_outcome && loss_fn == "binary_crossentropy") {
+          file.path(output_dir, 'lstm_bin_Y_preds.npy')
+        } else {
+          file.path(output_dir, 
+                    if(loss_fn == "sparse_categorical_crossentropy") 
+                      'lstm_cat_A_preds.npy'
+                    else 
+                      'lstm_bin_A_preds.npy')
+        }
       }
     }
     
@@ -692,8 +709,22 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       return(NULL)
     }
     
-    # Load prediction array
+    # Add debugging info
+    if(debug) {
+      cat("\nLooking for predictions file:", preds_file)
+      cat("\nFile exists:", file.exists(preds_file))
+      cat("\nDirectory contents:\n")
+      print(list.files(output_dir, pattern=".npy"))
+    }
+    
+    # Load and validate prediction array
     preds_r <- as.array(np$load(preds_file))
+    
+    # Validate predictions
+    if(is.null(preds_r) || length(dim(preds_r)) < 2) {
+      stop("Invalid prediction format - predictions must be a 2D array")
+    }
+    
     n_total_samples <- nrow(preds_r)
     samples_per_time <- n_total_samples %/% (t_end + 1)
     prediction_type <- if(is_Y_outcome) "Y" else if(is_censoring_model) "C" else "A"

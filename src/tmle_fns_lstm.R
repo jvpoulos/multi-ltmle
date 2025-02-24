@@ -1321,20 +1321,32 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     # Create rule-specific model data
     model_data <- data.frame(
       y = if(current_t < t_end) QAW[,"QA"] else Y,
-      offset = qlogis(QAW[,i+1]),
+      offset = qlogis(pmax(pmin(QAW[,i+1], 0.9999), 0.0001)),  # Bound values for qlogis
       weights = weights[,i]
     )
     
-    # Remove invalid rows
-    model_data <- model_data[
-      is.finite(model_data$y) & 
-        is.finite(model_data$offset) & 
-        is.finite(model_data$weights) &
-        model_data$y != -1,
-    ]
+    # Add validation before model fitting to ensure sufficient data
+    valid_rows <- complete.cases(model_data) &  # All columns present and not NA 
+      is.finite(model_data$y) &  # y values are finite
+      is.finite(model_data$offset) &  # offset values are finite 
+      is.finite(model_data$weights) & # weights are finite
+      model_data$y != -1 & # not censored
+      model_data$weights > 0 & # positive weights
+      !is.infinite(qlogis(model_data$y)) # y can be logit transformed
     
-    if(nrow(model_data) > 0) {
+    # Remove invalid rows
+    model_data <- model_data[valid_rows, , drop=FALSE]
+    
+    if(nrow(model_data) > 0 && 
+       any(!is.na(model_data$y)) && 
+       any(!is.na(model_data$offset)) &&
+       any(model_data$weights > 0)) {
+      
       updated_models[[i]] <- tryCatch({
+        # Ensure proper column names 
+        colnames(model_data) <- c("y", "offset", "weights")
+        
+        # Fit GLM
         glm(y ~ 1 + offset(offset),
             weights = weights,
             family = quasibinomial(),
@@ -1344,21 +1356,34 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
         NULL
       })
     } else {
-      if(debug) cat("\nNo valid data for rule", i)
+      if(debug) cat("\nInsufficient valid data for rule", i)
       updated_models[[i]] <- NULL
     }
   }
   
-  # Generate predictions
+  # Generate predictions with proper error handling
   Qstar <- do.call(cbind, lapply(seq_along(updated_models), function(i) {
     if(is.null(updated_models[[i]])) {
+      # Use default prediction when model is NULL
       rep(mean(Y[valid_rows], na.rm=TRUE), n_ids)
     } else {
-      preds <- predict(updated_models[[i]], type="response")
-      rep(preds, length.out=n_ids)  # Ensure proper length
+      tryCatch({
+        preds <- predict(updated_models[[i]], type="response")
+        # Ensure proper length
+        rep(preds, length.out=n_ids)
+      }, error = function(e) {
+        if(debug) cat("\nPrediction error for rule", i, ":", e$message)
+        rep(mean(Y[valid_rows], na.rm=TRUE), n_ids)
+      })
     }
   }))
-  colnames(Qstar) <- colnames(obs.rules)
+  
+  # Ensure proper column names 
+  if(ncol(Qstar) == ncol(obs.rules)) {
+    colnames(Qstar) <- colnames(obs.rules)
+  } else {
+    warning("Qstar dimensions don't match obs.rules dimensions")
+  }
   
   # Calculate IPTW estimates with weight length check
   Qstar_iptw <- matrix(sapply(1:ncol(clever_covariates), function(i) {
