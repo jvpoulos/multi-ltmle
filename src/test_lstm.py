@@ -3,9 +3,16 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras import backend as K
-from tensorflow.keras.mixed_precision import global_policy
 from tensorflow.keras.models import load_model
-from tensorflow.keras.mixed_precision import LossScaleOptimizer
+try:
+    from tensorflow.keras.mixed_precision import global_policy, LossScaleOptimizer
+except ImportError:
+    # Create placeholders if not available
+    def global_policy(): 
+        return None
+    class LossScaleOptimizer:
+        def __init__(self, *args, **kwargs): 
+            pass
 import json
 
 from utils import load_data_from_csv, create_dataset, configure_gpu, get_strategy, get_data_filenames, create_masked_metric, create_masked_loss, MultiHeadAttention, MaskedAccuracy, masked_binary_crossentropy, masked_sparse_categorical_crossentropy, load_model_components, get_model_filenames_test

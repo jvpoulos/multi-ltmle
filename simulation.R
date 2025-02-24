@@ -1234,7 +1234,8 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       t_end = t.end,
       window_size = window_size,
       n_ids = n_ids,
-      cores = 1, #cores
+      output_dir = output_dir,
+      cores = cores,
       debug = debug
     )
     
@@ -1788,7 +1789,7 @@ library_vector <- c(
 )
 
 if(estimator=='tmle-lstm'){ # run sequentially and save at each iteration
-  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE) %do% {
+  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points", "TMLE_IC", "prepare_lstm_data")) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)

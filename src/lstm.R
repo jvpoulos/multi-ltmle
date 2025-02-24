@@ -1,11 +1,12 @@
 lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, J, ybound, gbound, inference=FALSE, is_censoring=FALSE, debug=TRUE) {
-  # At start of lstm.R
-  print("Input parameters:")
-  print(paste("Loss function:", loss_fn))
-  print(paste("Is censoring:", is_censoring))
-  print(paste("Outcome:", paste(outcome, collapse=",")))
-  print(paste("Length of outcome:", length(outcome)))
-  print(paste("J:", J))
+  if(debug){
+    print("Input parameters:")
+    print(paste("Loss function:", loss_fn))
+    print(paste("Is censoring:", is_censoring))
+    print(paste("Outcome:", paste(outcome, collapse=",")))
+    print(paste("Length of outcome:", length(outcome)))
+    print(paste("J:", J))
+  }
   
   print("Preparing data files...")
   
@@ -30,7 +31,9 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
         is_censoring_model <- grepl("^C", outcome)
       } else {
         outcome_prefix <- unique(substr(outcome, 1, 1))
-        print(paste("Outcome column prefixes:", paste(outcome_prefix, collapse=",")))
+        if(debug){
+          print(paste("Outcome column prefixes:", paste(outcome_prefix, collapse=",")))
+        }
         is_Y_model <- "Y" %in% outcome_prefix 
         is_treatment_model <- "A" %in% outcome_prefix
         is_censoring_model <- "C" %in% outcome_prefix
@@ -50,9 +53,11 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     loss_fn <- "binary_crossentropy"
   }
   
-  print("Initial data structure:")
-  print(paste("Dimensions:", paste(dim(data), collapse=" x ")))
-  
+  if(debug){
+    print("Initial data structure:")
+    print(paste("Dimensions:", paste(dim(data), collapse=" x ")))
+  }
+
   # Validate inputs
   if(!is.data.frame(data) || nrow(data) == 0) {
     stop("Invalid input data")
@@ -69,32 +74,40 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Find appropriate columns based on model type
   if(is_censoring_model) {
     target_cols <- grep("^C\\.[0-9]+$|^C$", colnames(data), value=TRUE)
-    print(paste("Found", length(target_cols), "censoring columns"))
-    print("Censoring columns:")
-    print(target_cols)
+    if(debug){
+      print(paste("Found", length(target_cols), "censoring columns"))
+      print("Censoring columns:")
+      print(target_cols)
+    }
     outcome_cols <- target_cols
   } else if(is_Y_model) {
     target_cols <- grep("^Y\\.[0-9]+$|^Y$", colnames(data), value=TRUE)
-    print(paste("Found", length(target_cols), "outcome columns"))
-    print("Outcome columns:")
-    print(target_cols)
+    if(debug){
+      print(paste("Found", length(target_cols), "outcome columns"))
+      print("Outcome columns:")
+      print(target_cols)
+    }
     outcome_cols <- target_cols
   } else {
     # Treatment columns
     A_cols_dot <- grep("^A\\.[0-9]+$", colnames(data), value=TRUE)
     A_cols_plain <- grep("^A[0-9]+$", colnames(data), value=TRUE)
     target_cols <- if(length(A_cols_dot) > 0) A_cols_dot else A_cols_plain
-    print(paste("Found", length(target_cols), "treatment columns"))
-    print("Treatment columns:")
-    print(target_cols)
+    if(debug){
+      print(paste("Found", length(target_cols), "treatment columns"))
+      print("Treatment columns:")
+      print(target_cols)
+    }
     outcome_cols <- target_cols
   }
   
   # Pre-process feature columns
   base_covariates <- unique(gsub("\\.[0-9]+$", "", covariates))
-  print("Base covariates:")
-  print(base_covariates)
-  
+  if(debug){
+    print("Base covariates:")
+    print(base_covariates)
+  }
+
   # Get all time-varying and static feature columns
   feature_cols <- c()
   
@@ -591,8 +604,10 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     write.csv(output_data, file=output_filename, row.names=FALSE)
     print("Output data written successfully")
     
-    print("Directory contents after writing:")
-    print(list.files(output_dir))
+    if(debug){
+      print("Directory contents after writing:")
+      print(list.files(output_dir))
+    }
   }, error = function(e) {
     print(paste("Error writing files:", e$message))
     print("Directory contents:")
@@ -625,13 +640,19 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     py$J <- as.integer(1)
     py$loss_fn <- "binary_crossentropy"
   } else if(is_Y_model) {
-    print("Training Outcome (Y) Model...")
+    if(!inference) {
+      print("Training Outcome (Y) Model...")
+    }else{
+      print("Testing Outcome (Y) Model...")
+    }
     is_censoring <- FALSE  # Set R variable
     py$is_censoring <- FALSE  # Set Python variable
     py$J <- as.integer(1) 
     py$loss_fn <- "binary_crossentropy"
   } else {
-    print("Training Treatment (A) Model...")
+    if(!inference) {
+      print("Training Treatment (A) Model...")
+    }
     is_censoring <- FALSE  # Set R variable
     py$is_censoring <- FALSE  # Set Python variable
     py$J <- as.integer(J)

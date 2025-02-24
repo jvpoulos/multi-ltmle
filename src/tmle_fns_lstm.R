@@ -370,7 +370,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
                                 tmle_rules, tmle_covars_Y, 
                                 g_preds_processed, g_preds_bin_processed, C_preds_processed,
                                 treatments, obs.rules, 
-                                gbound, ybound, t_end, window_size, n_ids,
+                                gbound, ybound, t_end, window_size, n_ids, output_dir,
                                 cores = 1, debug = FALSE) {
   
   # Initialize results
@@ -455,6 +455,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       obs.rules = obs.rules,
       gbound = gbound,
       ybound = ybound,
+      output_dir = output_dir,
       track_initial_data = track_initial_data,
       track_tmle_results = track_tmle_results,
       track_stored_results = track_stored_results,
@@ -516,6 +517,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
         t_end = t_end,
         window_size = window_size,
         current_t = t,
+        output_dir = output_dir,
         debug = debug
       )
       
@@ -536,6 +538,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
         t_end = t_end,
         window_size = window_size,
         current_t = t,
+        output_dir = output_dir,
         debug = debug
       )
       
@@ -663,6 +666,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
         t_end = t_end,
         window_size = window_size,
         current_t = t,
+        output_dir = output_dir,
         debug = debug
       )
       
@@ -683,6 +687,7 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
         t_end = t_end,
         window_size = window_size,
         current_t = t,
+        output_dir = output_dir,
         debug = debug
       )
       
@@ -1055,14 +1060,22 @@ calculate_iptw <- function(g_preds, rules, predict_Qstar, n_rules, gbound, debug
       valid_weights <- weights[valid_idx]
       valid_outcomes <- outcomes[valid_idx]
       
-      # Normalize weights
-      valid_weights <- valid_weights / sum(valid_weights, na.rm=TRUE)
-      
-      # Calculate weighted mean with matching vectors
-      iptw_means[rule_idx] <- if(length(valid_weights) == length(valid_outcomes)) {
-        weighted.mean(valid_outcomes, valid_weights, na.rm=TRUE)
+      # Check if vectors have matching lengths and are non-empty
+      if(length(valid_weights) > 0 && length(valid_outcomes) > 0) {
+        # If lengths don't match, truncate to the shorter length
+        if(length(valid_weights) != length(valid_outcomes)) {
+          min_len <- min(length(valid_weights), length(valid_outcomes))
+          valid_weights <- valid_weights[1:min_len]
+          valid_outcomes <- valid_outcomes[1:min_len]
+        }
+        
+        # Ensure weights sum to 1
+        valid_weights <- valid_weights / sum(valid_weights, na.rm=TRUE)
+        
+        # Calculate weighted mean with matching vectors
+        iptw_means[rule_idx] <- weighted.mean(valid_outcomes, valid_weights, na.rm=TRUE)
       } else {
-        mean(valid_outcomes, na.rm=TRUE)  # Fallback if lengths don't match
+        iptw_means[rule_idx] <- mean(predict_Qstar[,rule_idx], na.rm=TRUE)  # Fallback
       }
     } else {
       iptw_means[rule_idx] <- mean(predict_Qstar[,rule_idx], na.rm=TRUE)
@@ -1083,7 +1096,7 @@ log_iptw_error <- function(e, g_preds, rules) {
 getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
                             tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded,
                             obs.treatment, obs.rules, gbound, ybound, t_end, window_size,
-                            current_t, debug=FALSE) {
+                            current_t, output_dir, debug=FALSE) {
   
   if(debug) {
     cat("\nStarting getTMLELongLSTM")

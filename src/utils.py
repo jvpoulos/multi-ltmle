@@ -831,26 +831,57 @@ def load_data_from_csv(input_file, output_file):
         raise
         
 def configure_gpu(policy=None):
+    """Configure GPU settings with improved error handling and fallbacks."""
     try:
+        # Clear existing sessions
         tf.keras.backend.clear_session()
         gc.collect()
 
-        # Set mixed precision if policy is provided
-        if policy is not None:
+        # Try to import mixed precision safely
+        try:
+            # First try the newer API
+            from tensorflow.keras.mixed_precision import global_policy
+            mixed_precision_available = True
+        except ImportError:
             try:
-                mixed_precision.set_global_policy(policy)
+                # Fallback to older API
+                from tensorflow.keras.mixed_precision import experimental as mixed_precision
+                mixed_precision_available = True
+            except ImportError:
+                logger.warning("Mixed precision API not available in this TensorFlow version")
+                mixed_precision_available = False
+        
+        # Set mixed precision if policy is provided and API is available
+        if policy is not None and mixed_precision_available:
+            try:
+                if 'set_global_policy' in dir(mixed_precision):
+                    mixed_precision.set_global_policy(policy)
+                else:
+                    mixed_precision.set_policy(policy)
+                logger.info(f"Mixed precision policy set to {policy}")
             except Exception as e:
                 logger.warning(f"Could not set mixed precision policy: {e}")
-
+        
+        # Check GPU availability
         gpus = tf.config.list_physical_devices('GPU')
         if not gpus:
-            logger.warning("No GPUs available, using CPU")
+            logger.info("No GPUs available, using CPU")
             return False
-
-        # Rest of GPU configuration remains the same...
         
+        # Configure memory growth for available GPUs
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                logger.info(f"Set memory growth for GPU: {gpu.name}")
+            except Exception as e:
+                logger.warning(f"Could not set memory growth for GPU {gpu.name}: {e}")
+        
+        logger.info(f"Successfully configured {len(gpus)} GPU(s)")
+        return True
+    
     except Exception as e:
         logger.error(f"GPU configuration failed: {e}")
+        logger.error(traceback.format_exc())
         return False
 
 def get_strategy():
@@ -981,7 +1012,7 @@ def create_dataset(x_data, y_data, n_pre, batch_size, loss_fn, J,
                 # Combine time series into single column
                 x_data[col] = x_data[time_cols].apply(lambda x: ','.join(map(str, x)), axis=1)
             else:
-                logger.warning(f"No time series found for {col}")
+                logger.info(f"No time series found for {col}, using default values")
                 x_data[col] = '0'  # Default value
     
     # Use required columns
