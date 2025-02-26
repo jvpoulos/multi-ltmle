@@ -28,7 +28,7 @@ D.base <- D +
   node("L1",                                      # er_mhsa (count) (varies by smi condition)
        t = 0,
        distr = "NegBinom",
-       mu = ifelse(V2[0] == 3, 0.05, ifelse(V2[0] == 2, 0.025, 0.01)))  +
+       mu = ifelse(V2[0] == 3, 0.09, ifelse(V2[0] == 2, 0.05, 0.03)))  +
   node("L2",                                      # ever_mt_gluc_or_lip (binary) (varies by smi condition)
        t = 0,
        distr = "rbern",
@@ -36,11 +36,11 @@ D.base <- D +
   node("L3",                                      # ever_rx_antidiab (binary) (varies by smi condition)
        t = 0,
        distr = "rbern",
-       prob = ifelse(V2[0] == 3, 0.05, ifelse(V2[0] == 2, 0.025, 0.01))) + 
+       prob = ifelse(V2[0] == 3, 0.085, ifelse(V2[0] == 2, 0.015, 0.035))) + 
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
        t = 0, 
        distr = "Multinom",
-       probs =  c(ifelse(V2[0]==1 & (L1[0]>0 | L2[0]>0 | L3[0]>0), 1/4, 1/8), ifelse(V2[0]==3 & (L1[0]>0), 1/4, 1/8), 1/8, ifelse(V2[0]==2 & (L2[0]>0), 1/4, 1/8), ifelse(V2[0]==2 & (L3[0]>0), 1/4, 1/8), 1/8)) + 
+       probs =  c(ifelse(V2[0]==1 & (L3[0]>0), 1/4, 1/8), ifelse(V2[0]==3 & (L1[0]>0), 1/4, 1/8), 1/8, ifelse(V2[0]==2 & (L2[0]>0), 1/4, 1/8), ifelse(V2[0]==2 & (L1[0]>0 | L2[0]>0 | L3[0]>0), 1/4, 1/8), 1/8)) + 
   node("C",                                     # monthly_censored_indicator (no censoring at baseline)
        t = 0,
        distr = "rbern",
@@ -61,15 +61,15 @@ D <- D.base +
   node("L2",                                      # ever_mt_gluc_or_lip (binary)
        t = 1:t.end,
        distr = "rbern",
-       prob= ifelse(L2[t-1]==1,1, plogis(-4 + .05 * (L1[t] - L1[t-1])**2 + .1 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0))))) +
+       prob= plogis(-2 + .05 * (L1[t] - L1[t-1])**2 + .1 * L3[t-1] + .1 * L2[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0)))) +
   node("L3",                                      # ever_rx_antidiab (binary)
        t = 1:t.end,
        distr = "rbern",
-       prob= ifelse(L3[t-1]==1,1, plogis(-4 + .05 * (L1[t] - L1[t-1])**2 + .1 * L2[t] + 0.1 * L2[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0))))) +
+       prob= plogis(-2 + .05 * (L1[t] - L1[t-1])**2 + 0.1 * L2[t-1] + 0.1 * L3[t-1] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -4, ifelse(A[(t-1)]==5, -5, 0)))) +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
        t = 1:t.end, 
        distr = "Multinom",
-       probs = StochasticFun(A[(t-1)], d=c(ifelse(L1[t]>0 | L2[t]>0 | L3[t]>0, 0.01, 0), ifelse(L1[t]>0, 0.01, 0), 0, ifelse(L2[t]>0, 0.01, 0), ifelse(L3[t]>0, 0.01, 0), 0), stay_prob=0.99)) +
+       probs = StochasticFun(A[(t-1)], d=c(ifelse(L1[t]>0 | L2[t]>0 | L3[t]>0, 0.01, 0), ifelse(L1[t]>0, 0.01, 0), 0, ifelse(L2[t]>0, 0.01, 0), ifelse(L3[t]>0, 0.01, 0), 0), stay_prob=0.95)) +
   node("C",                                      # monthly_censored_indicator
        t = 1:t.end,
        distr = "rbern",

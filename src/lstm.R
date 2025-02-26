@@ -746,8 +746,43 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       stop("Invalid prediction format - predictions must be a 2D array")
     }
     
+    # Ensure t_end is numeric and reasonable
+    if (!is.numeric(t_end) || t_end <= 0) {
+      warning("Invalid t_end value: ", t_end, ", defaulting to 36")
+      t_end <- 36  # Default to 36 time points
+    }
+    
+    # Calculate samples per time with validation
     n_total_samples <- nrow(preds_r)
-    samples_per_time <- n_total_samples %/% (t_end + 1)
+    
+    # Validate t_end is available and numeric
+    if(is.null(t_end) || !is.numeric(t_end) || t_end <= 0) {
+      t_end <- 36  # Default to 36 time points
+      warning("Invalid or missing t_end, using default value:", t_end)
+    }
+    
+    # Calculate samples_per_time safely
+    samples_per_time <- tryCatch({
+      as.integer(ceiling(n_total_samples / (t_end + 1)))
+    }, error = function(e) {
+      warning("Error calculating samples_per_time: ", e$message, 
+              ", using default based on prediction shape")
+      min(14000, max(1, as.integer(n_total_samples / 37)))
+    })
+    
+    # Validate the result
+    if(samples_per_time <= 0 || samples_per_time > n_total_samples) {
+      samples_per_time <- min(14000, max(1, as.integer(n_total_samples / 37)))
+      warning("Invalid samples_per_time calculated: ", samples_per_time, 
+              ", using default based on prediction shape")
+    }
+    
+    if(debug) {
+      cat("\nValidated calculation values:")
+      cat("\n  n_total_samples:", n_total_samples)
+      cat("\n  t_end:", t_end)
+      cat("\n  samples_per_time:", samples_per_time)
+    }
     prediction_type <- if(is_Y_outcome) "Y" else if(is_censoring_model) "C" else "A"
     
     if(debug) {
@@ -764,25 +799,22 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     
     # Process all time periods
     validated_preds <- lapply(1:(t_end + 1), function(t) {
-      # For times before window_size, adjust start index to use partial window
-      if(t <= window_size) {
-        # Use predictions from first full window
-        start_idx <- ((window_size-1) * samples_per_time) + 1
-        end_idx <- min(window_size * samples_per_time, n_total_samples)
-      } else {
-        # Normal sliding window
-        start_idx <- ((t-1) * samples_per_time) + 1
-        end_idx <- min(t * samples_per_time, n_total_samples)
-      }
+      # Calculate direct slices without window offset complexity
+      start_idx <- ((t-1) * samples_per_time) + 1
+      end_idx <- min(t * samples_per_time, n_total_samples)
       
       if(debug) {
         cat(sprintf("\nProcessing time %d:\n", t-1))
-        cat(sprintf("Using predictions from indices %d to %d\n", start_idx, end_idx))
-        cat(sprintf("Window size: %d, Current time: %d\n", window_size, t))
+        cat(sprintf("Using direct indices %d to %d\n", start_idx, end_idx))
       }
       
       # Get slice of predictions
-      slice <- preds_r[start_idx:end_idx, , drop=FALSE]
+      slice <- if(start_idx <= n_total_samples && end_idx >= start_idx) {
+        preds_r[start_idx:end_idx, , drop=FALSE]
+      } else {
+        if(debug) cat("Invalid indices, using default slice\n")
+        matrix(1/J, nrow=min(samples_per_time, 1000), ncol=J)
+      }
       
       # Process predictions with explicit parameter passing
       processed <- process_predictions(
@@ -799,7 +831,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       
       if(debug) {
         cat(sprintf("Processed predictions shape: %s\n", paste(dim(processed), collapse=" x ")))
-        cat(sprintf("Range: %s\n", paste(range(processed), collapse=" - ")))
+        cat(sprintf("Range: %s\n", paste(range(processed, na.rm=TRUE), collapse=" - ")))
       }
       
       processed

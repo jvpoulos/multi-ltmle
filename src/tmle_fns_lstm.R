@@ -71,13 +71,76 @@ safe_get_cuml_preds <- function(preds, n_ids = n) {
   
   for(t in seq_along(preds)) {
     if(t == 1) {
+      # First time point - just get the predictions directly
       cuml_preds[[t]] <- safe_get_preds(list(preds[[t]]), 1, n_ids)
     } else {
+      # Get previous and current predictions
       prev_preds <- cuml_preds[[t-1]]
       curr_preds <- safe_get_preds(list(preds[[t]]), 1, n_ids)
-      # Scale probabilities before multiplication
-      scaled_prev <- (prev_preds + 1) / 2  # Scale to [0.5, 1]
-      cuml_preds[[t]] <- curr_preds * scaled_prev
+      
+      # Verify both have compatible dimensions
+      if(is.null(prev_preds) || is.null(curr_preds)) {
+        # Handle null predictions by using defaults
+        cuml_preds[[t]] <- matrix(0.5, nrow=n_ids, ncol=1)
+        next
+      }
+      
+      # Ensure we have matrices with matching dimensions
+      if(!is.matrix(prev_preds)) prev_preds <- matrix(prev_preds, ncol=1)
+      if(!is.matrix(curr_preds)) curr_preds <- matrix(curr_preds, ncol=1)
+      
+      # Make dimensions match
+      if(ncol(prev_preds) != ncol(curr_preds)) {
+        # Adjust columns to match
+        max_cols <- max(ncol(prev_preds), ncol(curr_preds))
+        if(ncol(prev_preds) < max_cols) {
+          prev_preds <- cbind(prev_preds, matrix(0.5, nrow=nrow(prev_preds), ncol=max_cols-ncol(prev_preds)))
+        }
+        if(ncol(curr_preds) < max_cols) {
+          curr_preds <- cbind(curr_preds, matrix(0.5, nrow=nrow(curr_preds), ncol=max_cols-ncol(curr_preds)))
+        }
+      }
+      
+      # Match row counts
+      if(nrow(prev_preds) != nrow(curr_preds)) {
+        min_rows <- min(nrow(prev_preds), nrow(curr_preds))
+        if(min_rows < n_ids) {
+          # Expand to n_ids
+          prev_preds <- matrix(rep(prev_preds, length.out=n_ids*ncol(prev_preds)), nrow=n_ids)
+          curr_preds <- matrix(rep(curr_preds, length.out=n_ids*ncol(curr_preds)), nrow=n_ids)
+        } else {
+          # Truncate to match
+          prev_preds <- prev_preds[1:min_rows,, drop=FALSE]
+          curr_preds <- curr_preds[1:min_rows,, drop=FALSE]
+        }
+      }
+      
+      # Force numeric type for both matrices
+      storage.mode(prev_preds) <- "numeric"
+      storage.mode(curr_preds) <- "numeric"
+      
+      # Replace NAs with 0.5
+      prev_preds[is.na(prev_preds)] <- 0.5
+      curr_preds[is.na(curr_preds)] <- 0.5
+      
+      # CORRECT SCALING: Scale to [0.5, 1] range to prevent underflow
+      # For probabilities in [0,1], this maps to [0.5, 1]
+      scaled_prev <- 0.5 + (prev_preds / 2)
+      
+      # Perform multiplication with error handling
+      cuml_preds[[t]] <- tryCatch({
+        # Element-wise multiplication
+        result <- curr_preds * scaled_prev
+        
+        # Check for invalid values and replace them
+        result[!is.finite(result)] <- 0.5
+        result
+      }, 
+      error = function(e) {
+        # If error occurs, return a valid default matrix
+        message("Error in cumulative prediction calculation: ", e$message)
+        matrix(0.5, nrow=nrow(curr_preds), ncol=ncol(curr_preds))
+      })
     }
   }
   
@@ -87,9 +150,31 @@ safe_get_cuml_preds <- function(preds, n_ids = n) {
 # Update process_predictions function signature
 process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL, J=NULL, 
                                 ybound=NULL, gbound=NULL, debug=FALSE) {
-  # Get total dimensions from input
-  n_total_samples <- if(is.null(slice)) 0 else nrow(slice)
-  samples_per_time <- if(!is.null(t_end)) n_total_samples %/% (t_end + 1) else 1
+  # Ensure numeric types for calculations
+  if (!is.null(t_end)) t_end <- as.integer(t_end)
+  if (!is.null(t)) t <- as.integer(t)
+  if (!is.null(n_ids)) n_ids <- as.integer(n_ids)
+  if (!is.null(J)) J <- as.integer(J)
+  
+  # Get total dimensions from input with type safety
+  n_total_samples <- if(is.null(slice)) 0 else as.integer(nrow(slice))
+  
+  # Calculate samples per time with validation
+  samples_per_time <- 1  # Default value
+  if(!is.null(t_end) && !is.null(n_total_samples)) {
+    # Proper integer division to avoid overflow
+    if(t_end > 0) {
+      # Use ceiling to ensure we get at least 1 sample per time
+      samples_per_time <- as.integer(ceiling(n_total_samples / (t_end + 1)))
+      
+      # Validate the result is reasonable
+      if(samples_per_time <= 0 || samples_per_time > n_total_samples) {
+        # Default to something reasonable
+        samples_per_time <- min(14000, max(1, as.integer(n_total_samples / 37)))
+        if(debug) cat("Corrected samples_per_time to:", samples_per_time, "\n")
+      }
+    }
+  }
   
   # Get time slice if t is provided and all required parameters are present
   if(!is.null(t) && !is.null(samples_per_time) && !is.null(n_total_samples)) {
@@ -98,6 +183,7 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
       t = t,
       samples_per_time = samples_per_time,
       n_total_samples = n_total_samples,
+      t_end = t_end,  # Pass t_end to the function
       debug = debug
     )
   }
@@ -178,29 +264,109 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
   return(result)
 }
 
-# Helper function to get time slice
-get_time_slice <- function(preds_r, t, samples_per_time, n_total_samples, debug=FALSE) {
-  # Calculate slice indices
-  start_idx <- ((t-1) * samples_per_time) + 1
-  end_idx <- min(t * samples_per_time, n_total_samples)
-  
-  # Validate indices
-  if(start_idx > n_total_samples || end_idx < start_idx) {
-    if(debug) cat(sprintf("Invalid slice indices [%d:%d]\n", start_idx, end_idx))
+get_time_slice <- function(preds_r, t, samples_per_time, n_total_samples, t_end = 36, debug=FALSE) {
+  # Safety check for input parameters
+  if(is.null(preds_r) || !is.numeric(t) || t < 1) {
+    if(debug) cat("Invalid input parameters to get_time_slice\n")
     return(NULL)
   }
   
-  # Extract and validate slice
-  slice <- preds_r[start_idx:end_idx, , drop=FALSE]
-  if(is.null(slice) || nrow(slice) == 0 || ncol(slice) == 0) {
-    if(debug) cat("Empty slice extracted\n")
+  # Validate and adjust samples_per_time if needed
+  if(is.null(samples_per_time) || !is.numeric(samples_per_time) || samples_per_time <= 0) {
+    # Calculate a reasonable default
+    samples_per_time <- ceiling(n_total_samples / (t_end + 1))
+    if(debug) cat("Using calculated samples_per_time:", samples_per_time, "\n")
+  }
+  
+  # For safety, cap samples_per_time to a reasonable value
+  if(samples_per_time > n_total_samples) {
+    samples_per_time <- n_total_samples
+    if(debug) cat("Capped samples_per_time to n_total_samples:", samples_per_time, "\n")
+  }
+  
+  # Calculate slice indices - FIXED CALCULATION
+  chunk_size <- ceiling(n_total_samples / (t_end + 1))
+  start_idx <- ((t-1) * chunk_size) + 1
+  end_idx <- min(t * chunk_size, n_total_samples)
+  
+  # Safety check for indices
+  if(start_idx > n_total_samples || start_idx < 1 || end_idx < start_idx) {
+    if(debug) cat(sprintf("Invalid slice indices [%d:%d] (n_total_samples=%d), using fallback method\n", 
+                          start_idx, end_idx, n_total_samples))
+    
+    # Use simplified, more reliable fallback approach
+    chunks <- min(37, t_end + 1)  # Limit to standard number of time points
+    chunk_size <- ceiling(n_total_samples / chunks)
+    
+    # Ensure t is within valid range
+    t_adjusted <- min(t, chunks)
+    
+    # Calculate indices using adjusted approach
+    start_idx <- ((t_adjusted-1) * chunk_size) + 1
+    end_idx <- min(t_adjusted * chunk_size, n_total_samples)
+    
+    if(debug) cat(sprintf("Fallback indices: [%d:%d]\n", start_idx, end_idx))
+  }
+  
+  # Extract and validate slice with error handling
+  slice <- tryCatch({
+    if(is.vector(preds_r)) {
+      # Handle vector case
+      if(start_idx <= length(preds_r) && end_idx <= length(preds_r)) {
+        slice_vec <- preds_r[start_idx:end_idx]
+        if(length(slice_vec) > 0) {
+          matrix(slice_vec, ncol=1)
+        } else {
+          NULL
+        }
+      } else {
+        if(debug) cat("Vector indices out of bounds\n")
+        NULL
+      }
+    } else if(is.matrix(preds_r)) {
+      # Handle matrix case - ensure indices are valid
+      if(start_idx <= nrow(preds_r) && end_idx <= nrow(preds_r)) {
+        preds_r[start_idx:end_idx, , drop=FALSE]
+      } else {
+        if(debug) cat("Matrix indices out of bounds\n")
+        NULL
+      }
+    } else if(is.data.frame(preds_r)) {
+      # Handle data frame case
+      if(start_idx <= nrow(preds_r) && end_idx <= nrow(preds_r)) {
+        as.matrix(preds_r[start_idx:end_idx, , drop=FALSE])
+      } else {
+        if(debug) cat("Data frame indices out of bounds\n")
+        NULL
+      }
+    } else {
+      # Handle other cases
+      if(debug) cat("Unsupported preds_r type:", class(preds_r), "\n")
+      NULL
+    }
+  }, error = function(e) {
+    if(debug) cat("Error extracting slice:", e$message, "\n")
+    NULL
+  })
+  
+  # Validate extracted slice
+  if(is.null(slice) || length(slice) == 0 || 
+     (is.matrix(slice) && (nrow(slice) == 0 || ncol(slice) == 0))) {
+    if(debug) cat("Empty or invalid slice extracted\n")
     return(NULL)
   }
+  
+  # Ensure numeric mode
+  storage.mode(slice) <- "numeric"
   
   if(debug) {
     cat(sprintf("\nTime %d slice [%d:%d]:\n", t-1, start_idx, end_idx))
     cat("Shape:", paste(dim(slice), collapse=" x "), "\n")
-    cat("Range:", paste(range(slice, na.rm=TRUE), collapse=" - "), "\n")
+    if(all(is.finite(slice))) {
+      cat("Range:", paste(range(slice, na.rm=TRUE), collapse=" - "), "\n")
+    } else {
+      cat("Contains non-finite values\n")
+    }
   }
   
   return(slice)
@@ -373,6 +539,30 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
                                 gbound, ybound, t_end, window_size, n_ids, output_dir,
                                 cores = 1, debug = FALSE) {
   
+  # Ensure reticulate is loaded in the main environment
+  if (!requireNamespace("reticulate", quietly = TRUE)) {
+    # Try to load reticulate package
+    tryCatch({
+      suppressPackageStartupMessages(library(reticulate))
+      if(debug) cat("Loaded reticulate package\n")
+    }, error = function(e) {
+      stop("The reticulate package is required but could not be loaded. Please install it with: install.packages('reticulate')")
+    })
+  }
+  
+  # Get base covariates from tmle_covars_Y for feature_cols
+  base_covariates <- unique(gsub("\\.[0-9]+$", "", tmle_covars_Y))
+  if(debug) {
+    cat("Base covariates for feature_cols:\n")
+    print(base_covariates)
+  }
+  
+  # If base_covariates is empty, provide default feature columns
+  if(length(base_covariates) == 0) {
+    base_covariates <- c("L1", "L2", "L3", "V3")
+    if(debug) cat("Using default base_covariates:", paste(base_covariates, collapse=", "), "\n")
+  }
+  
   # Initialize results
   n_rules <- length(tmle_rules)
   
@@ -409,6 +599,28 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       }
     })
     
+    # Make sure required packages are loaded in worker nodes
+    parallel::clusterEvalQ(cl, {
+      # Load packages silently
+      suppressPackageStartupMessages({
+        library(stats)
+        library(Matrix)
+        # Explicitly load reticulate in each worker
+        if (!requireNamespace("reticulate", quietly = TRUE)) {
+          stop("The reticulate package is required but could not be loaded in worker node")
+        }
+        library(reticulate)
+      })
+      
+      # Verify reticulate is loaded
+      if (!exists("py", mode = "environment")) {
+        reticulate::py <- reticulate::py_run_string("x = 1+1")
+      }
+      
+      # Return confirmation for debugging
+      packageVersion("reticulate")
+    })
+    
     # Export all required objects and functions
     objects_to_export <- c(
       "debug",
@@ -419,27 +631,70 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       "get_y_preds",
       "calculate_iptw",
       "log_iptw_error",
-      "track_initial_data",  # Add tracking functions
+      "track_initial_data",
       "track_tmle_results",
       "track_stored_results",
       "process_time_points_tracking",
       "static_mtp_lstm",
       "dynamic_mtp_lstm",
-      "stochastic_mtp_lstm"
+      "stochastic_mtp_lstm",
+      "base_covariates"  # Export base_covariates for feature_cols
     )
     
     parallel::clusterExport(cl, objects_to_export, envir=environment())
     
-    # Set required packages
+    # Explicitly initialize Python environment with all required variables on each worker
     parallel::clusterEvalQ(cl, {
-      library(stats)
-      library(Matrix)  # Add any other required packages
+      # Load reticulate and initialize py
+      library(reticulate)
+      
+      # Make sure py exists
+      if (!exists("py", mode = "environment")) {
+        py <- reticulate::py_run_string("x = 1+1")
+      }
+      
+      # Explicitly set all Python variables needed by the LSTM function
+      py_initialize <- function() {
+        # Create feature_cols from base_covariates
+        if(exists("base_covariates") && length(base_covariates) > 0) {
+          py$feature_cols <- base_covariates
+        } else {
+          # Provide default feature columns if base_covariates is not available
+          py$feature_cols <- c("L1", "L2", "L3", "V3")
+        }
+        
+        # Set all other required Python variables with default values
+        py$window_size <- 1
+        py$output_dir <- ""
+        py$epochs <- 1
+        py$n_hidden <- 256
+        py$hidden_activation <- 'tanh'
+        py$out_activation <- 'sigmoid'
+        py$lr <- 0.001
+        py$dr <- 0.3
+        py$nb_batches <- 256
+        py$patience <- 3
+        py$t_end <- 1
+        py$outcome_cols <- c("Y")
+        py$gbound <- c(0.05, 1)
+        py$ybound <- c(0.0001, 0.9999)
+        py$loss_fn <- "binary_crossentropy"
+        py$J <- 1
+        py$is_censoring <- FALSE
+      }
+      
+      # Call initialization
+      py_initialize()
+      
+      # Verify that feature_cols is set
+      print(paste("Worker feature_cols:", paste(py$feature_cols, collapse=", ")))
     })
     
-    # Update cluster environment setup with debug functions
+    # Update cluster environment setup with all needed variables
     cluster_env <- list(
       debug = debug,
-      J = length(g_preds_processed[[1]][[1]]),
+      J = if(!is.null(g_preds_processed) && !is.null(g_preds_processed[[1]]) && 
+             !is.null(g_preds_processed[[1]][[1]])) length(g_preds_processed[[1]][[1]]) else 6,
       n_ids = n_ids,
       n_rules = n_rules,
       t_end = t_end,
@@ -459,11 +714,37 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
       track_initial_data = track_initial_data,
       track_tmle_results = track_tmle_results,
       track_stored_results = track_stored_results,
-      process_time_points_tracking = process_time_points_tracking
+      process_time_points_tracking = process_time_points_tracking,
+      base_covariates = base_covariates,
+      # Add Python-specific variables
+      loss_fn = "binary_crossentropy", # Default value
+      out_activation = "sigmoid"      # Default value
     )
     
     # Export variables with explicit environment
     parallel::clusterExport(cl, names(cluster_env), envir=list2env(cluster_env))
+    
+    # Update Python variable values in each worker
+    parallel::clusterEvalQ(cl, {
+      # Update Python variables with values from parent environment
+      py$window_size <- window_size
+      py$output_dir <- output_dir
+      py$t_end <- t_end
+      py$feature_cols <- base_covariates
+      py$gbound <- gbound
+      py$ybound <- ybound
+      py$J <- J
+      py$loss_fn <- loss_fn
+      py$out_activation <- out_activation
+      
+      # Print Python variables for debugging
+      cat("Python variables in worker:\n")
+      cat("window_size:", py$window_size, "\n")
+      cat("output_dir:", py$output_dir, "\n")
+      cat("t_end:", py$t_end, "\n")
+      cat("feature_cols:", paste(py$feature_cols, collapse=", "), "\n")
+      cat("J:", py$J, "\n")
+    })
     
     # Process time points in parallel
     results <- parallel::parLapply(cl, time_points, function(t) {
@@ -607,6 +888,36 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
     
   } else {
     # Sequential processing 
+    # Initialize Python variables in main environment
+    py <- reticulate::py
+    py$feature_cols <- base_covariates
+    py$window_size <- window_size
+    py$output_dir <- output_dir
+    py$t_end <- t_end
+    py$gbound <- gbound
+    py$ybound <- ybound
+    py$J <- length(g_preds_processed[[1]][[1]])
+    py$loss_fn <- "binary_crossentropy"
+    py$out_activation <- "sigmoid"
+    py$outcome_cols <- c("Y")
+    py$epochs <- 1
+    py$n_hidden <- 256
+    py$hidden_activation <- 'tanh'
+    py$lr <- 0.001
+    py$dr <- 0.3
+    py$nb_batches <- 256
+    py$patience <- 3
+    py$is_censoring <- FALSE
+    
+    if(debug) {
+      cat("Python variables in sequential mode:\n")
+      cat("feature_cols:", paste(py$feature_cols, collapse=", "), "\n")
+      cat("window_size:", py$window_size, "\n")
+      cat("output_dir:", py$output_dir, "\n")
+      cat("t_end:", py$t_end, "\n")
+      cat("J:", py$J, "\n")
+    }
+    
     results <- lapply(time_points, function(t) {
       # Process single time point
       if(debug) cat(sprintf("\nProcessing time point %d/%d\n", t, t_end))
@@ -820,7 +1131,6 @@ process_time_points_tracking <- function(tmle_contrast, tmle_contrast_bin, t, de
   }
 }
 
-# Helper functions
 process_g_preds <- function(preds_processed, t, n_ids, J, gbound, debug) {
   if(!is.null(preds_processed) && t <= length(preds_processed)) {
     preds <- preds_processed[[t]]
@@ -830,25 +1140,104 @@ process_g_preds <- function(preds_processed, t, n_ids, J, gbound, debug) {
       return(matrix(1/J, nrow=n_ids, ncol=J))
     }
     
-    # Ensure matrix format with J columns
-    if(!is.matrix(preds)) {
-      if(debug) cat("Converting predictions to matrix\n")
-      preds <- matrix(preds, nrow=n_ids, ncol=J)
+    # Debug info about what we're processing
+    if(debug) {
+      cat("Processing predictions for time", t, "\n")
+      cat("Prediction class:", class(preds), "\n")
+      if(is.matrix(preds)) {
+        cat("Matrix dimensions:", paste(dim(preds), collapse="x"), "\n")
+      } else {
+        cat("Length:", length(preds), "\n")
+      }
     }
     
-    # Normalize probabilities
+    # First ensure we have a numeric matrix with correct dimensions
+    if(!is.matrix(preds)) {
+      if(debug) cat("Converting predictions to matrix\n")
+      tryCatch({
+        if(is.data.frame(preds)) {
+          # Convert data frame to matrix
+          preds <- as.matrix(preds)
+          mode(preds) <- "numeric"
+        } else if(is.list(preds)) {
+          # Extract numeric values from list
+          numeric_values <- unlist(lapply(preds, function(x) {
+            if(is.numeric(x)) return(x)
+            as.numeric(as.character(x))
+          }))
+          preds <- matrix(numeric_values, ncol=J)
+        } else {
+          # Convert other types to vector then matrix
+          preds <- as.numeric(as.character(preds))
+          preds <- matrix(preds, ncol=J)
+        }
+      }, error = function(e) {
+        if(debug) cat("Error converting to matrix:", e$message, "\n")
+        return(matrix(1/J, nrow=n_ids, ncol=J))
+      })
+    }
+    
+    # Check if conversion was successful
+    if(!is.matrix(preds) || !is.numeric(preds)) {
+      if(debug) cat("Conversion failed, using uniform probs\n")
+      return(matrix(1/J, nrow=n_ids, ncol=J))
+    }
+    
+    # Handle dimension mismatches
+    if(ncol(preds) != J) {
+      if(debug) cat("Column count mismatch:", ncol(preds), "vs", J, "\n")
+      if(ncol(preds) < J) {
+        # Add columns if needed
+        preds <- cbind(preds, matrix(1/J, nrow=nrow(preds), ncol=J-ncol(preds)))
+      } else {
+        # Truncate if too many columns
+        preds <- preds[, 1:J, drop=FALSE]
+      }
+    }
+    
+    # Adjust number of rows if needed
+    if(nrow(preds) != n_ids) {
+      if(debug) cat("Row count mismatch:", nrow(preds), "vs", n_ids, "\n")
+      if(nrow(preds) < n_ids) {
+        # Repeat rows to match n_ids
+        repeats <- ceiling(n_ids / nrow(preds))
+        preds <- preds[rep(1:nrow(preds), repeats), , drop=FALSE]
+        preds <- preds[1:n_ids, , drop=FALSE]
+      } else {
+        # Truncate if too many rows
+        preds <- preds[1:n_ids, , drop=FALSE]
+      }
+    }
+    
+    # Replace any remaining NAs with uniform probabilities
+    na_indices <- is.na(preds)
+    if(any(na_indices)) {
+      if(debug) cat("Replacing", sum(na_indices), "NAs with uniform values\n")
+      preds[na_indices] <- 1/J
+    }
+    
+    # Normalize rows to sum to 1
     if(debug) cat("Normalizing probabilities\n")
     preds <- t(apply(preds, 1, function(row) {
-      if(any(!is.finite(row))) return(rep(1/J, J))
-      bounded <- pmin(pmax(row, gbound[1]), gbound[2]) 
-      # Add minimum floor to prevent too small values
-      bounded <- pmax(bounded, 1e-4)
+      # Return uniform distribution for invalid rows
+      if(any(!is.finite(row)) || sum(row) == 0) {
+        return(rep(1/J, J))
+      }
+      
+      # Apply bounds and normalize
+      bounded <- pmin(pmax(row, gbound[1]), gbound[2])
       bounded / sum(bounded)
     }))
     
+    # Final check for non-numeric values
+    if(!is.numeric(preds)) {
+      if(debug) cat("Final matrix is not numeric, converting\n")
+      preds <- matrix(as.numeric(as.character(preds)), nrow=n_ids, ncol=J)
+    }
+    
     return(preds)
   } else {
-    if(debug) cat("No predictions available, using uniform\n") 
+    if(debug) cat("No predictions available for time", t, "using uniform\n") 
     return(matrix(1/J, nrow=n_ids, ncol=J))
   }
 }

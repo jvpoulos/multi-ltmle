@@ -200,29 +200,27 @@ Instructions
 To execute simulations, use the following command:
 
 ```bash
-Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
+Rscript simulation.R [arg1] [arg2] [arg3]
 ```
 
 #### Arguments:
 - **`[arg1]`**: Specifies the estimator. Options:
   - `"tmle"`: Targeted Maximum Likelihood Estimation.
   - `"tmle-lstm"`: Targeted Maximum Likelihood Estimation with Long Short-Term Memory.
-- **`[arg2]`**: A numeric value indicating the treatment rule:
-  - `1`: Use all treatment rules.
-- **`[arg3]`**: Logical flag to indicate whether super learner estimation should be used:
+- **`[arg2]`**: Logical flag to indicate whether super learner estimation should be used:
   - `"TRUE"` or `"FALSE"`.
-- **`[arg4]`**: Logical flag for enabling MPI parallel programming:
+- **`[arg3]`**: Logical flag for enabling MPI parallel programming:
   - `"TRUE"` or `"FALSE"`.
 
 #### Examples:
 1. Using the `"tmle"` estimator with super learner enabled and no MPI:
    ```bash
-   Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'
+   Rscript simulation.R 'tmle' 'TRUE' 'FALSE'
    ```
 
 2. Using the `"tmle-lstm"` estimator without super learner or MPI:
    ```bash
-   Rscript simulation.R 'tmle-lstm' 1 'FALSE' 'FALSE'
+   Rscript simulation.R 'tmle-lstm' 'FALSE' 'FALSE'
    ```
 
 ---
@@ -273,15 +271,15 @@ This section outlines the model weights, intermediate results, and visualization
 6. **Descriptive Plots**
    - Graphical outputs summarizing the simulation and analysis:
      - Directed Acyclic Graph (DAG):  
-       ![DAG Plot](./ex_outputs/DAG_plot.png)
+       ![DAG Plot](./ex_outputs/DAG_plot_latex_cropped.png)
      - Treatment adherence:  
-       ![Adherence Plot](./ex_outputs/treatment_adherence_12500.png)
+       ![Adherence Plot](./ex_outputs/treatment_adherence_20000.png)
      - Survival plots:
        - Observed:  
-         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_12500.png)
+         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_20000.png)
        - Truth:  
-         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_12500.png)
+         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_20000.png)
        - LTMLE-SL (multi.) estimates:  
-         ![LTMLE-SL (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle)
+         ![LTMLE-SL (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle.png)
         - LTMLE-RNN (multi.) estimates:  
          ![LTMLE-RNN (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle-lstm.png)

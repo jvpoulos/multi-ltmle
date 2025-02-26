@@ -26,6 +26,7 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   library(dplyr)
   library(readr)
   library(tidyr)
+  library(latex2exp)
   
   if(estimator=='tmle-lstm'){
     library(reticulate)
@@ -91,20 +92,64 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   # specify intervention rules (t=0 is same as observed)
   Dset <- set.DAG(D, vecfun=c("StochasticFun")) # locks DAG, consistency checks
   
+  # Call the improved function with LaTeX formatting
   if(r==1){
-    png(paste0(output_dir,"DAG_plot.png"))
-    plotDAG(Dset, 
-            excludeattrs=c("C_0","Y_0"), 
-            xjitter=0.95, 
-            yjitter=0.45, 
-            tmax = 3,
-            customvlabs = c("V^1", "V^2", "V^3",
-                            "L^1_0", "L^2_0", "L^3_0",
-                            "L^1_1", "L^2_1", "L^3_1",
-                            "L^1_2", "L^2_2", "L^3_2",
-                            "L^1_3", "L^2_3", "L^3_3",
-                            "A_0", "A_1", "A_2", "A_3", 
-                            "C_1", "C_2","C_3","Y_1","Y_2","Y_3")) # plot DAG
+    # Create a larger PNG file with white background
+    png(paste0(output_dir, "DAG_plot_latex.png"), 
+        width=1800, height=1200, res=150, 
+        pointsize=12, bg="white")
+    
+    # Call the improved plotting function
+    dag_graph <- plotDAG_improved(
+      Dset, 
+      excludeattrs=c("C_0","Y_0"), 
+      xjitter=0,        # No jitter for a more structured layout
+      yjitter=0,        # No jitter for a more structured layout
+      tmax = 3,
+      customvlabs = c("V^1", "V^2", "V^3",
+                      "L^1_0", "L^2_0", "L^3_0",
+                      "L^1_1", "L^2_1", "L^3_1",
+                      "L^1_2", "L^2_2", "L^3_2",
+                      "L^1_3", "L^2_3", "L^3_3",
+                      "A_0", "A_1", "A_2", "A_3", 
+                      "C_1", "C_2", "C_3", "Y_1", "Y_2", "Y_3"),
+      node_size = 8,      # Larger nodes to fit LaTeX text
+      label_size = 1.5,    # Larger text labels
+      label_dist = 0,      # Labels positioned at center of nodes
+      use_latex = TRUE,    # Enable LaTeX formatting
+      arrow_size_mult = 1.5, # Increase arrow head size
+      vertex_attrs = list(frame.width = 1.0),  # Thicker node borders
+      edge_attrs = list(width = 0.8, color = "darkgray")  # Thicker, more visible edges
+    )
+    
+    dev.off()
+    
+    # Save a PDF version as well for better LaTeX rendering
+    pdf(paste0(output_dir, "DAG_plot_latex.pdf"), 
+        width=12, height=8)
+    
+    plotDAG_improved(
+      Dset, 
+      excludeattrs=c("C_0","Y_0"), 
+      xjitter=0,
+      yjitter=0,
+      tmax = 3,
+      customvlabs = c("V^1", "V^2", "V^3",
+                      "L^1_0", "L^2_0", "L^3_0",
+                      "L^1_1", "L^2_1", "L^3_1",
+                      "L^1_2", "L^2_2", "L^3_2",
+                      "L^1_3", "L^2_3", "L^3_3",
+                      "A_0", "A_1", "A_2", "A_3", 
+                      "C_1", "C_2", "C_3", "Y_1", "Y_2", "Y_3"),
+      node_size = 8,
+      label_size = 1.5,
+      label_dist = 0,
+      use_latex = TRUE,
+      arrow_size_mult = 1.5,
+      vertex_attrs = list(frame.width = 1.0),
+      edge_attrs = list(width = 0.8, color = "darkgray")
+    )
+    
     dev.off()
   }
   
@@ -576,12 +621,13 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
 
     g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist)))
 
-    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
-    g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
+    g_preds_cuml <- vector("list", length(g_preds_bin))
+    g_preds_cuml[[1]] <- g_preds_bin[[1]]
     
-    for (i in 2:length(g_preds_bin)) { # Scale probabilities before multiplication
-      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * 
-        ((g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] + 1) / 2)
+    for (i in 2:length(g_preds)) {
+      # CORRECT SCALING: Scale to [0.5, 1] range to prevent underflow
+      g_preds_cuml[[i]] <- g_preds[[i]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] * 
+        (0.5 + (g_preds_cuml[[i-1]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] / 2))
     }
 
     g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores
@@ -754,7 +800,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
 
     for (i in 2:length(g_preds_bin)) {
-      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),]
+      # CORRECT SCALING: Scale to [0.5, 1] range to prevent underflow
+      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * 
+        (0.5 + (g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] / 2))
     }
     g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores
   } else if(estimator=="tmle-lstm"){
@@ -1664,27 +1712,26 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
 #####################
 
 # define settings for simulation
-settings <- expand.grid("n"=c(12500), 
-                        treatment.rule = c("static","dynamic","stochastic")) 
+settings <- expand.grid("n"=c(20000), 
+                        treatment.rule = c("all")) 
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # command line arguments # args <- c('tmle-lstm',1,'TRUE','FALSE')
+args <- commandArgs(trailingOnly = TRUE) # command line arguments # args <- c('tmle','TRUE','FALSE')
 estimator <- as.character(args[1])
-thisrun <- settings[as.numeric(args[2]),]
-use.SL <- as.logical(args[3])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
-doMPI <- as.logical(args[4])
+use.SL <- as.logical(args[2])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
+doMPI <- as.logical(args[3])
 
 # define parameters
 
-n <- as.numeric(thisrun[,1]) # total sample size
+n <- as.numeric(settings[,1]) # total sample size
 
-treatment.rule <- ifelse(estimator=="tmle" | estimator=="tmle-lstm", "all", as.character(thisrun[,2])) # calculate counterfactual means under all treatment rules
+treatment.rule <- as.character(settings[,2]) # calculate counterfactual means under all treatment rules
 
 J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 1#325 # number of simulation runs
+R <- 128 # number of simulation runs
 
 full_vector <- 1:R
 
@@ -1736,7 +1783,6 @@ if(doMPI){
   cl <- parallel::makeCluster(cores, outfile="")
   
   doParallel::registerDoParallel(cl) # register cluster
-  
 }
 
 # output directory
