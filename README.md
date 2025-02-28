@@ -200,7 +200,7 @@ Instructions
 To execute simulations, use the following command:
 
 ```bash
-Rscript simulation.R [arg1] [arg2] [arg3]
+Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
 ```
 
 #### Arguments:
@@ -209,18 +209,19 @@ Rscript simulation.R [arg1] [arg2] [arg3]
   - `"tmle-lstm"`: Targeted Maximum Likelihood Estimation with Long Short-Term Memory.
 - **`[arg2]`**: Logical flag to indicate whether super learner estimation should be used:
   - `"TRUE"` or `"FALSE"`.
-- **`[arg3]`**: Logical flag for enabling MPI parallel programming:
+- **`[arg3]`**: Number of cores to use (>1 for parallel computation)
+- **`[arg4]`**: Logical flag for enabling MPI parallel programming:
   - `"TRUE"` or `"FALSE"`.
 
 #### Examples:
 1. Using the `"tmle"` estimator with super learner enabled and no MPI:
    ```bash
-   Rscript simulation.R 'tmle' 'TRUE' 'FALSE'
+   Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'
    ```
 
 2. Using the `"tmle-lstm"` estimator without super learner or MPI:
    ```bash
-   Rscript simulation.R 'tmle-lstm' 'FALSE' 'FALSE'
+   Rscript simulation.R 'tmle-lstm' 1 'FALSE' 'FALSE'
    ```
 
 ---

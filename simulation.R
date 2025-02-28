@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
+simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
   
   # libraries
   library(simcausal)
@@ -17,7 +17,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   options(sl3.verbose = FALSE)
   library(nnet)
   library(ranger)
-  library(xgboost)
   library(glmnet)
   library(MASS)
   library(progressr)
@@ -29,6 +28,9 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   library(latex2exp)
   
   if(estimator=='tmle-lstm'){
+    source('./src/tmle_fns_lstm.R')
+    source('./src/lstm.R')
+    verify_reticulate()
     library(reticulate)
     use_python("/media/jason/Dropbox/github/multi-ltmle/myenv/bin/python", required = TRUE)
     print(py_config()) # Check Python configuration
@@ -47,12 +49,6 @@ simLong <- function(r, J=6, n=12500, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     print("Checking wandb object:")
     print(py_get_attr(wandb, "__name__"))
     print(py_get_attr(wandb, "__version__"))
-    
-    source('./src/lstm.R')
-  }
-  
-  if(estimator%in%c("tmle-lstm")){
-    source('./src/tmle_fns_lstm.R')
   }
   
   if(estimator%in%c("tmle")){
@@ -1716,10 +1712,11 @@ settings <- expand.grid("n"=c(20000),
                         treatment.rule = c("all")) 
 
 options(echo=TRUE)
-args <- commandArgs(trailingOnly = TRUE) # command line arguments # args <- c('tmle','TRUE','FALSE')
+args <- commandArgs(trailingOnly = TRUE) # command line arguments # args <- c('tmle',1, 'TRUE','FALSE')
 estimator <- as.character(args[1])
-use.SL <- as.logical(args[2])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
-doMPI <- as.logical(args[3])
+cores <- as.numeric(args[2])
+use.SL <- as.logical(args[3])  # When TRUE, use Super Learner for initial Y model and treatment model estimation; if FALSE, use GLM
+doMPI <- as.logical(args[4])
 
 # define parameters
 
@@ -1731,7 +1728,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 128 # number of simulation runs
+R <- 1#128 # number of simulation runs
 
 full_vector <- 1:R
 
@@ -1772,17 +1769,74 @@ if(doMPI){
   # Check cluster size
   print(paste0("cluster size: ", clusterSize(cl)))
   
-} else{
-  library(foreach)
+}
+
+if(cores>1){
   library(parallel)
   library(doParallel)
   
-  cores <- ceiling((parallel::detectCores())/2)
-  print(paste0("number of cores used: ", cores))
+  print(paste0("number of cores used for parallel processing: ", cores))
   
   cl <- parallel::makeCluster(cores, outfile="")
   
   doParallel::registerDoParallel(cl) # register cluster
+  
+  # Load all required packages on all worker nodes
+  clusterEvalQ(cl, {
+    for (pkg in c(
+      "simcausal",
+      "purrr",
+      "origami",
+      "sl3",
+      "nnet",
+      "ranger",
+      "xgboost",
+      "glmnet",
+      "MASS",
+      "progressr", 
+      "data.table",
+      "gtools",
+      "dplyr",
+      "readr",
+      "tidyr",
+      "reticulate",
+      "tensorflow",
+      "keras",
+      "parallel"
+    )) {
+      # Try loading the package
+      success <- tryCatch({
+        suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+        TRUE
+      }, error = function(e) {
+        message(paste("Error loading package", pkg, ":", e$message))
+        FALSE
+      })
+      
+      # If loading failed and it's reticulate, try special handling
+      if (!success && pkg == "reticulate") {
+        try({
+          # Try explicit path loading
+          library(reticulate)
+          message("Reticulate loaded with special handling")
+        }, silent = TRUE)
+      }
+    }
+    
+    # Verify reticulate is loaded
+    if(exists("reticulate")) {
+      # Initialize Python
+      try({
+        use_python("/media/jason/Dropbox/github/multi-ltmle/myenv/bin/python", required = FALSE)
+        message("Python path configured successfully")
+      }, silent = TRUE)
+    } else {
+      warning("Reticulate package not loaded properly")
+    }
+    
+    # Return the loaded packages for verification
+    sessionInfo()$loadedOnly
+  })
 }
 
 # output directory
@@ -1834,14 +1888,16 @@ library_vector <- c(
   "parallel"
 )
 
-if(estimator=='tmle-lstm'){ # run sequentially and save at each iteration
+library(foreach)
+
+if(cores==1){ # run sequentially and save at each iteration
   sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points", "TMLE_IC", "prepare_lstm_data")) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
   }
 }else{ # run in parallel
-  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .inorder=FALSE) %dopar% {
+  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .inorder=FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points", "TMLE_IC", "prepare_lstm_data")) %dopar% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
@@ -1853,6 +1909,8 @@ saveRDS(sim.results, filename)
 if(doMPI){
   closeCluster(cl) # close down MPIcluster
   mpi.finalize()
-}else{
+}
+
+if(cores>1){
   stopCluster(cl)
 }
