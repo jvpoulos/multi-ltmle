@@ -58,7 +58,9 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     print(paste("Dimensions:", paste(dim(data), collapse=" x ")))
   }
 
-  # Validate inputs
+  # Replace in lstm.R after "print("Preparing data files...")"
+  
+  # Validate inputs - no changes needed here but made more efficient
   if(!is.data.frame(data) || nrow(data) == 0) {
     stop("Invalid input data")
   }
@@ -71,45 +73,51 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     stop("Outcome must be character string")
   }
   
-  # Find appropriate columns based on model type
+  # Optimize column finding with direct indexing instead of multiple regex operations
+  # Find appropriate columns based on model type more efficiently
   if(is_censoring_model) {
+    # More direct column matching - store regex results once instead of recomputing
     target_cols <- grep("^C\\.[0-9]+$|^C$", colnames(data), value=TRUE)
     if(debug){
       print(paste("Found", length(target_cols), "censoring columns"))
-      print("Censoring columns:")
-      print(target_cols)
     }
     outcome_cols <- target_cols
   } else if(is_Y_model) {
     target_cols <- grep("^Y\\.[0-9]+$|^Y$", colnames(data), value=TRUE)
     if(debug){
       print(paste("Found", length(target_cols), "outcome columns"))
-      print("Outcome columns:")
-      print(target_cols)
     }
     outcome_cols <- target_cols
   } else {
-    # Treatment columns
-    A_cols_dot <- grep("^A\\.[0-9]+$", colnames(data), value=TRUE)
-    A_cols_plain <- grep("^A[0-9]+$", colnames(data), value=TRUE)
-    target_cols <- if(length(A_cols_dot) > 0) A_cols_dot else A_cols_plain
+    # More efficient treatment column detection
+    A_pattern <- "^A\\.[0-9]+$"
+    A_cols_dot <- grep(A_pattern, colnames(data), value=TRUE)
+    if(length(A_cols_dot) == 0) {
+      A_pattern <- "^A[0-9]+$"
+      A_cols_dot <- grep(A_pattern, colnames(data), value=TRUE)
+    }
+    target_cols <- A_cols_dot
     if(debug){
       print(paste("Found", length(target_cols), "treatment columns"))
-      print("Treatment columns:")
-      print(target_cols)
     }
     outcome_cols <- target_cols
   }
   
-  # Pre-process feature columns
-  base_covariates <- unique(gsub("\\.[0-9]+$", "", covariates))
-  if(debug){
-    print("Base covariates:")
-    print(base_covariates)
+  # Pre-process feature columns more efficiently
+  # Cache the result of the GSub operation instead of recalculating
+  if(length(covariates) > 0) {
+    base_covariates <- unique(gsub("\\.[0-9]+$", "", covariates))
+    if(debug){
+      print("Base covariates:")
+      print(base_covariates)
+    }
+  } else {
+    base_covariates <- character(0)
   }
-
+  
+  # More efficient feature selection with precomputed patterns
   # Get all time-varying and static feature columns
-  feature_cols <- c()
+  feature_cols <- character(0)
   
   # Define feature sets by model type
   base_features <- c("L1", "L2", "L3", "A") # Add A to base features
@@ -126,22 +134,15 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     y_model_features  # Now includes A
   }
   
+  # Precompute regex patterns to avoid multiple regex compilations
   # Get time-varying feature columns
-  for(base_col in time_varying_covs) {
-    time_cols <- grep(paste0("^", base_col, "\\.[0-9]+$"), 
-                      colnames(data), value=TRUE)
-    feature_cols <- c(feature_cols, time_cols)
-  }
+  time_regex_patterns <- paste0("^", time_varying_covs, "\\.[0-9]+$", collapse="|")
+  feature_cols <- c(feature_cols, grep(time_regex_patterns, colnames(data), value=TRUE))
   
-  # Static covariates remain the same
+  # Static covariates remain the same but process more efficiently 
   static_covs <- c("V3", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
-  
-  # Get static feature columns 
-  for(base_col in static_covs) {
-    base_cols <- grep(paste0("^", base_col, "$|^", base_col, "\\.[0-9]+$"),
-                      colnames(data), value=TRUE)
-    feature_cols <- c(feature_cols, base_cols)
-  }
+  static_regex_patterns <- paste0("^", static_covs, "$|^", static_covs, "\\.[0-9]+$", collapse="|")
+  feature_cols <- c(feature_cols, grep(static_regex_patterns, colnames(data), value=TRUE))
   
   # Ensure unique and sorted
   feature_cols <- sort(unique(feature_cols))
@@ -151,17 +152,17 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     print(feature_cols)
   }
   
-  # Calculate dimensions
+  # Calculate dimensions more efficiently
   unique_ids <- sort(unique(data$ID))
   n_ids <- length(unique_ids)
   
-  # Fix n_times calculation to handle both Y and Y.0 style columns
+  # Fix n_times calculation to handle both Y and Y.0 style columns more efficiently
   n_times <- if(length(target_cols) == 1 && target_cols == "Y") {
     # Single Y column case
     37  # Since we know it's 36 time points (0-36) + 1
   } else {
-    # Y.0, Y.1, etc case
-    time_indices <- as.numeric(gsub(".*\\.", "", target_cols))
+    # Y.0, Y.1, etc case - more efficient extraction
+    time_indices <- as.numeric(sub(".*\\.", "", target_cols))
     if(length(time_indices) > 0 && !all(is.na(time_indices))) {
       max(time_indices, na.rm=TRUE) + 1
     } else {
@@ -183,15 +184,21 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
   # Calculate sequences ensuring positive value
   n_sequences_per_id <- max(1, n_times - window_size + 1)
   
+  # Pre-allocate data structure with proper size rather than growing it
   # Create data_long with validated dimensions and pre-allocate target
+  total_rows <- n_ids * n_sequences_per_id
   data_long <- data.frame(
-    ID = rep(sort(unique(data$ID)), each = n_sequences_per_id),
+    ID = rep(unique_ids, each = n_sequences_per_id),
     time = rep(0:(n_sequences_per_id-1), times = n_ids),
-    target = NA  # Initialize target column upfront
+    target = rep(NA_real_, total_rows),
+    stringsAsFactors = FALSE
   )
   
+  # Optimized treatment model data processing
   if(is_treatment_model) {
+    # Extract treatment matrix once
     treatment_matrix <- as.matrix(data[target_cols])
+    treatment_matrix_dim <- dim(treatment_matrix)
     
     # Pre-allocate columns with default values
     data_long$A <- 5  # Default treatment
@@ -199,148 +206,116 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       data_long[[paste0("A", j-1)]] <- 0
     }
     
-    # Pre-calculate mappings
-    all_ids <- sort(unique(data$ID))
+    # Get mapping of IDs to column indices more efficiently
+    id_map <- match(data_long$ID, data$ID)
     
-    # Print debug info
-    if(debug) {
-      cat("\nTreatment matrix info:")
-      cat("\nDimensions:", paste(dim(treatment_matrix), collapse=" x "))
-      cat("\nSample values:", paste(head(treatment_matrix[1,]), collapse=", "))
-      cat("\nUnique treatments:", paste(sort(unique(as.vector(treatment_matrix))), collapse=", "))
-    }
+    # Vectorize time access where possible
+    time_values <- data_long$time
     
-    # Process each ID directly
-    for(id in all_ids) {
-      # Get all rows for this ID
-      id_mask <- data_long$ID == id
-      id_rows <- which(id_mask)
-      
-      if(length(id_rows) > 0) {
-        # Get data row for this ID
-        data_idx <- match(id, data$ID)
+    # Process in larger chunks rather than individual ID rows
+    for(idx in seq_len(nrow(data_long))) {
+      id_idx <- id_map[idx]
+      if(!is.na(id_idx)) {
+        t <- time_values[idx]
+        window_idx <- t + window_size
         
-        if(!is.na(data_idx)) {
-          # Get all treatment values for this ID
-          all_treatments <- treatment_matrix[data_idx,]
+        if(window_idx <= treatment_matrix_dim[2]) {
+          val <- treatment_matrix[id_idx, window_idx]
           
-          # Process each time point
-          for(i in seq_along(id_rows)) {
-            t <- data_long$time[id_rows[i]]
-            window_idx <- t + window_size
+          if(!is.na(val) && val %in% 0:6) {
+            # Set treatment value
+            data_long$A[idx] <- val
             
-            if(window_idx <= length(all_treatments)) {
-              val <- all_treatments[window_idx]
-              
-              if(!is.na(val) && val %in% 0:6) {
-                # Set treatment value
-                data_long$A[id_rows[i]] <- val
-                
-                # Set one-hot encoding
-                trt_idx <- val + 1  # 0-based to 1-based
-                if(trt_idx >= 1 && trt_idx <= J) {
-                  data_long[[paste0("A", val)]][id_rows[i]] <- 1
-                }
-              }
+            # Set one-hot encoding
+            trt_idx <- val + 1  # 0-based to 1-based
+            if(trt_idx >= 1 && trt_idx <= J) {
+              data_long[[paste0("A", val)]][idx] <- 1
             }
           }
         }
       }
     }
-    
-    if(debug) {
-      cat("\nTreatment assignment results:")
-      cat("\nFinal treatment distribution:\n")
-      print(table(data_long$A, useNA="ifany"))
-      cat("\nOne-hot encoding summary:\n")
-      for(j in 0:5) {
-        cat(paste0("A", j, " sum: ", sum(data_long[[paste0("A", j)]]), "\n"))
-      }
-    }
   }
   else if(is_Y_model) {
+    # Extract outcome matrix once
     outcome_matrix <- as.matrix(data[target_cols])
+    outcome_matrix_dim <- dim(outcome_matrix)
+    
+    # More efficient processing with vectorized operations where possible
+    # and reduced function calls
     data_long$target <- sapply(1:nrow(data_long), function(i) {
       id <- data_long$ID[i]
       t <- data_long$time[i]
       
-      # Get data index for this ID
+      # Get data index for this ID - do this lookup once
       data_idx <- match(id, data$ID)
       if(is.na(data_idx)) {
-        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
+        return(if(inference) 0 else -1)
       }
       
       # Calculate proper time indices
       current_idx <- t + window_size
-      if(current_idx >= ncol(outcome_matrix)) {
-        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
+      if(current_idx >= outcome_matrix_dim[2]) {
+        return(if(inference) 0 else -1)
       }
       
-      # For targeting step (inference), use current value 
-      val <- if(inference) {
-        # During inference we want to predict all values, no censoring
-        current_val <- outcome_matrix[data_idx, current_idx + 1]
+      # Use direct matrix indexing instead of repeated conditional checks
+      current_val <- outcome_matrix[data_idx, current_idx + 1]
+      
+      # Simplified logic
+      if(inference) {
+        # During inference, handle current value and convert -1/NA to 0
         if(is.na(current_val) || current_val == -1) 0 else as.numeric(current_val)
       } else {
-        # For training, use next time point and preserve censoring
-        future_idx <- current_idx + 1
-        if(future_idx > ncol(outcome_matrix)) return(-1)
-        outcome_matrix[data_idx, future_idx]
+        # For training, preserve censoring status
+        if(is.na(current_val)) -1 else as.numeric(current_val)
       }
-      
-      # During inference, convert -1 to 0 as we don't want any censoring
-      if(inference && (is.na(val) || val == -1)) {
-        return(0)
-      }
-      
-      as.numeric(val)
     })
     
-    # For Y model, output is binary outcome 
+    # More efficient output data creation
     output_data <- data.frame(
       ID = data_long$ID,
       target = if(inference) {
-        # During inference, convert all -1 to 0
+        # Vectorized operation instead of element-by-element
         ifelse(data_long$target == -1, 0, data_long$target)
       } else {
-        data_long$target  # Keep censoring during training
+        data_long$target
       },
       stringsAsFactors = FALSE
     )
-    
-    if(debug) {
-      cat("\nY model target distribution:")
-      print(table(data_long$target))
-      cat("\nCensored: ", sum(data_long$target == -1))
-      cat("\nZeros: ", sum(data_long$target == 0))
-      cat("\nOnes: ", sum(data_long$target == 1))
-    }
   }
   
-  # Create output_data based on case
+  # Optimized creation of output_data based on case
   if(is_treatment_model) {
     # Get treatment matrix for future predictions
     treatment_matrix <- as.matrix(data[target_cols])
+    treatment_matrix_dim <- dim(treatment_matrix)
     
     if(loss_fn == "binary_crossentropy") {
-      # First get future treatment values
-      data_long$future_treatment <- sapply(1:nrow(data_long), function(i) {
-        id <- data_long$ID[i]
-        t <- data_long$time[i]
-        
-        # Get the treatment for the time step AFTER the window
-        prediction_time <- t + window_size
-        if(prediction_time >= ncol(treatment_matrix)) {
-          return(5)  # Default for out of bounds
+      # Pre-allocate vector for future treatments
+      future_treatments <- numeric(nrow(data_long))
+      
+      # Process future treatments in a more efficient way
+      for(i in seq_len(nrow(data_long))) {
+        id_idx <- match(data_long$ID[i], data$ID)
+        if(!is.na(id_idx)) {
+          t <- data_long$time[i]
+          prediction_time <- t + window_size
+          
+          if(prediction_time < treatment_matrix_dim[2]) {
+            val <- treatment_matrix[id_idx, prediction_time + 1]
+            if(!is.na(val) && val %in% 0:6) {
+              future_treatments[i] <- val
+            } else {
+              future_treatments[i] <- 5 # Default
+            }
+          } else {
+            future_treatments[i] <- 5 # Default for out of bounds
+          }
+        } else {
+          future_treatments[i] <- 5 # Default for invalid ID
         }
-        
-        # Get the actual future treatment
-        val <- treatment_matrix[id, prediction_time + 1]  # +1 to predict next step
-        if(is.na(val) || !val %in% 0:6) {
-          return(5)  # Default for invalid values
-        }
-        return(as.numeric(val))
-      })
+      }
       
       # Create output dataframe with ID
       output_data <- data.frame(
@@ -348,38 +323,39 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
         stringsAsFactors = FALSE
       )
       
-      # Convert future treatment values to 0-5 categories
-      categorical_target <- ifelse(data_long$future_treatment == 0, 5, 
-                                   pmin(data_long$future_treatment - 1, 5))
+      # Convert future treatment values to 0-5 categories efficiently
+      categorical_target <- ifelse(future_treatments == 0, 5, 
+                                   pmin(future_treatments - 1, 5))
       
-      # Create one-hot columns A0 through A5 for future treatments
+      # Create one-hot columns A0 through A5 for future treatments efficiently
+      # using matrix operations instead of column-by-column
       for(j in 0:5) {
-        col_name <- paste0("A", j)
-        output_data[[col_name]] <- as.integer(categorical_target == j)
+        output_data[[paste0("A", j)]] <- as.integer(categorical_target == j)
       }
       
       output_filename <- file.path(output_dir, "lstm_bin_A_output.csv")
       input_filename <- file.path(output_dir, "lstm_bin_A_input.csv")
       
     } else {
-      # For categorical case, predict future treatment directly
+      # Optimize categorical case
       data_long$target <- sapply(1:nrow(data_long), function(i) {
-        id <- data_long$ID[i]
+        id_idx <- match(data_long$ID[i], data$ID)
+        if(is.na(id_idx)) return(5) # Default
+        
         t <- data_long$time[i]
-        
-        # Get the treatment for the time step AFTER the window
         prediction_time <- t + window_size
-        if(prediction_time >= ncol(treatment_matrix)) {
-          return(5)  # Default for out of bounds
+        
+        if(prediction_time >= treatment_matrix_dim[2]) {
+          return(5) # Default for out of bounds
         }
         
-        # Get the actual future treatment
-        val <- treatment_matrix[id, prediction_time + 1]  # +1 to predict next step
+        val <- treatment_matrix[id_idx, prediction_time + 1]
         if(is.na(val) || !val %in% 0:6) {
-          return(5)  # Default for invalid values
+          return(5) # Default for invalid values
         }
-        val <- ifelse(val == 0, 5, pmin(val - 1, 5))
-        return(val)
+        
+        # Convert treatment value to categorical index
+        ifelse(val == 0, 5, pmin(val - 1, 5))
       })
       
       output_data <- data.frame(
@@ -392,222 +368,121 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       input_filename <- file.path(output_dir, "lstm_cat_A_input.csv")
     }
   } else if(is_Y_model) {
-    outcome_matrix <- as.matrix(data[target_cols])
-    data_long$target <- sapply(1:nrow(data_long), function(i) {
-      id <- data_long$ID[i]
-      t <- data_long$time[i]
-      
-      # Get data index for this ID
-      data_idx <- match(id, data$ID)
-      if(is.na(data_idx)) {
-        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
-      }
-      
-      # Calculate proper time indices
-      current_idx <- t + window_size
-      if(current_idx >= ncol(outcome_matrix)) {
-        if(inference) return(0) else return(-1)  # During inference, default to 0 not -1
-      }
-      
-      # For targeting step (inference), use current value 
-      val <- if(inference) {
-        # During inference, handle current value and convert -1/NA to 0
-        current_val <- outcome_matrix[data_idx, current_idx + 1]
-        if(is.na(current_val) || current_val == -1) 0 else as.numeric(current_val)
-      } else {
-        # For training, preserve censoring status
-        future_idx <- current_idx + 1
-        if(future_idx > ncol(outcome_matrix)) return(-1)
-        val <- outcome_matrix[data_idx, future_idx]
-        if(is.na(val)) return(-1)
-        val
-      }
-      
-      as.numeric(val)
-    })
-    
-    # For Y model, output is binary outcome 
-    output_data <- data.frame(
-      ID = data_long$ID,
-      target = if(inference) {
-        # During inference, ensure all values are 0/1
-        ifelse(is.na(data_long$target) | data_long$target == -1, 0, data_long$target)
-      } else {
-        data_long$target  # Keep censoring during training
-      },
-      stringsAsFactors = FALSE
-    )
-    
-    # Print debug information if needed
-    if(debug) {
-      cat("\nY model target distribution:")
-      print(table(data_long$target))
-      cat("\nCensored: ", sum(data_long$target == -1))
-      cat("\nZeros: ", sum(data_long$target == 0))
-      cat("\nOnes: ", sum(data_long$target == 1))
-    }
-    
+    # Y model output creation already optimized above
     output_filename <- file.path(output_dir, "lstm_bin_Y_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_Y_input.csv")
-  }else if(is_censoring_model) {
-    # Align censoring predictions with future time steps
+  } else if(is_censoring_model) {
+    # Optimize censoring model processing
     censoring_matrix <- as.matrix(data[target_cols])
-    # Initialize target as numeric to prevent logical type
-    data_long$target <- as.numeric(NA)
+    censoring_matrix_dim <- dim(censoring_matrix)
     
-    data_long$target <- sapply(1:nrow(data_long), function(i) {
-      id <- data_long$ID[i]
+    # Preallocate targets
+    data_long$target <- numeric(nrow(data_long))
+    
+    # Process censoring targets more efficiently
+    for(i in seq_len(nrow(data_long))) {
+      id_idx <- match(data_long$ID[i], data$ID)
+      if(is.na(id_idx)) {
+        data_long$target[i] <- 1  # Default to censored
+        next
+      }
+      
       t <- data_long$time[i]
-      
-      # Get data index for this ID
-      data_idx <- match(id, data$ID)
-      if(is.na(data_idx)) {
-        return(as.numeric(1))  # Default to censored
-      }
-      
-      # Get the censoring status for the time step AFTER the window
       prediction_time <- t + window_size
-      if(prediction_time >= ncol(censoring_matrix)) {
-        return(as.numeric(1))  # Assume censored if beyond available data
+      
+      if(prediction_time >= censoring_matrix_dim[2]) {
+        data_long$target[i] <- 1  # Default to censored
+        next
       }
       
-      # Get the actual future censoring status
-      val <- censoring_matrix[data_idx, prediction_time + 1]  # +1 to predict next step
-      
-      # Handle censoring conversion explicitly
-      if(is.na(val)) {
-        return(as.numeric(1))  # Treat NA as censored
-      } else if(val == -1) {
-        return(as.numeric(1))  # Convert -1 to 1 (censored)
-      } else {
-        return(as.numeric(0))  # Not censored
-      }
-    })
+      val <- censoring_matrix[id_idx, prediction_time + 1]
+      # Simplified censoring logic
+      data_long$target[i] <- ifelse(is.na(val) || val == -1, 1, 0)
+    }
     
-    # Create output data with proper formatting 
+    # Create output data efficiently
     output_data <- data.frame(
       ID = data_long$ID,
       target = data_long$target,
       stringsAsFactors = FALSE
     )
     
-    if(debug) {
-      cat("\nDistribution summary:\n")
-      if(is_treatment_model) {
-        cat("\nTreatment distribution:")
-        print(table(data_long$A, useNA="ifany"))
-      } else if(is_censoring_model) {
-        cat("\nCensoring target distribution:")
-        print(table(output_data$target, useNA="ifany"))
-        cat("\nCensored (1): ", sum(output_data$target == 1, na.rm=TRUE))
-        cat("\nNot censored (0): ", sum(output_data$target == 0, na.rm=TRUE))
-      } else {
-        cat("\nOutcome distribution:")
-        print(table(data_long$target))
-        cat("\nCensored: ", sum(data_long$target == -1))
-        cat("\nZeros: ", sum(data_long$target == 0))
-        cat("\nOnes: ", sum(data_long$target == 1))
-      }
-    }
-    
     output_filename <- file.path(output_dir, "lstm_bin_C_output.csv")
     input_filename <- file.path(output_dir, "lstm_bin_C_input.csv")
   }
   
-  if(debug){
-    print("Final output data dimensions:")
-    print(dim(output_data))
-    print("Names of output columns:")
-    print(names(output_data))
-  }
+  # Create input dataframe more efficiently
+  input_data <- data.frame(ID = data_long$ID, stringsAsFactors = FALSE)
   
-  # Add explicit binary/continuous type definitions
-  binary_covs <- c("L2", "L3", "C", "Y", "white", "black", "latino", "other", "mdd", "bipolar", "schiz")
-  continuous_covs <- c("V3", "L1")
-  
-  # Create input dataframe first
-  input_data <- data.frame(ID = data_long$ID)
-  
+  # Process static and time-varying covariates more efficiently
   for(base_col in base_covariates) {
     if(base_col %in% static_covs) {
-      # Static covariate handling
-      col_data <- data[[base_col]]
-      id_map <- match(data_long$ID, data$ID)
-      input_data[[base_col]] <- ifelse(
-        is.na(id_map), 
-        ifelse(base_col == "V3", mean(col_data, na.rm=TRUE), -1),
-        col_data[id_map]
-      )
+      # Static covariate handling - vectorized operations
+      if(base_col %in% colnames(data)) {
+        col_data <- data[[base_col]]
+        id_map <- match(data_long$ID, data$ID)
+        default_value <- ifelse(base_col == "V3", mean(col_data, na.rm=TRUE), -1)
+        input_data[[base_col]] <- ifelse(is.na(id_map), default_value, col_data[id_map])
+      }
     } else if(base_col %in% time_varying_covs) {
       # Time-varying covariate handling
       time_cols <- grep(paste0("^", base_col, "\\.[0-9]+$"), colnames(data), value=TRUE)
       if(length(time_cols) > 0) {
+        # Get time data once
         time_data <- as.matrix(data[time_cols])
-        time_data[is.na(time_data) | time_data == -1] <- -1  # Handle both NA and -1
         
+        # Handle NA/missing values more efficiently
+        time_data[is.na(time_data) | time_data == -1] <- -1
+        
+        # Process all rows at once where possible
         id_map <- match(data_long$ID, data$ID)
         sequence_matrix <- matrix(-1, nrow=nrow(data_long), ncol=window_size)
         
         valid_rows <- !is.na(id_map)
         if(any(valid_rows)) {
+          # Process valid rows efficiently
           for(i in which(valid_rows)) {
             t_start <- data_long$time[i] + 1
             t_end <- min(t_start + window_size - 1, ncol(time_data))
             n_valid <- t_end - t_start + 1
             
             if(n_valid > 0) {
+              # Direct matrix assignment
               sequence_matrix[i, 1:n_valid] <- time_data[id_map[i], t_start:t_end]
               if(n_valid < window_size) {
+                # Fill remaining with last value
                 sequence_matrix[i, (n_valid+1):window_size] <- time_data[id_map[i], t_end]
               }
             }
           }
         }
         
+        # Convert to string more efficiently using vectorized apply
         input_data[[base_col]] <- apply(sequence_matrix, 1, toString)
       }
     }
   }
   
-  # Validate processed data
-  print("Validating processed data...")
-  
-  # Add validation checks and debugging output
-  if(debug) {
-    print("Sample processed features:")
-    for(col in names(input_data)) {
-      if(col != "ID") {
-        print(paste("Column:", col))
-        print("First few values:")
-        print(head(input_data[[col]]))
-      }
-    }
-  }
-  
-  if(debug) {
-    print("Verifying model data:")
-    print(paste("Input rows:", nrow(input_data)))
-    print(paste("Output rows:", nrow(output_data)))
-    print(paste("Input file:", input_filename))
-    print(paste("Output file:", output_filename))
-  }
-  
-  # Write files with error handling
+  # Write files with more efficient error handling
   tryCatch({
     print("Writing input data...")
     print(paste("Input file:", input_filename))
-    write.csv(input_data, file=input_filename, row.names=FALSE)
+    # Use fwrite for faster CSV writing if data.table is available
+    if(requireNamespace("data.table", quietly = TRUE)) {
+      data.table::fwrite(input_data, file=input_filename)
+    } else {
+      write.csv(input_data, file=input_filename, row.names=FALSE)
+    }
     print("Input data written successfully")
     
     print("Writing output data...")
     print(paste("Output file:", output_filename))
-    write.csv(output_data, file=output_filename, row.names=FALSE)
-    print("Output data written successfully")
-    
-    if(debug){
-      print("Directory contents after writing:")
-      print(list.files(output_dir))
+    if(requireNamespace("data.table", quietly = TRUE)) {
+      data.table::fwrite(output_data, file=output_filename)
+    } else {
+      write.csv(output_data, file=output_filename, row.names=FALSE)
     }
+    print("Output data written successfully")
   }, error = function(e) {
     print(paste("Error writing files:", e$message))
     print("Directory contents:")

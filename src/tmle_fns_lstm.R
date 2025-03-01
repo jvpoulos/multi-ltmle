@@ -164,7 +164,8 @@ safe_get_cuml_preds <- function(preds, n_ids = n) {
   return(cuml_preds)
 }
 
-# Update process_predictions function signature
+# Optimized version of process_predictions in tmle_fns_lstm.R
+
 process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL, J=NULL, 
                                 ybound=NULL, gbound=NULL, debug=FALSE) {
   # Ensure numeric types for calculations
@@ -176,13 +177,13 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
   # Get total dimensions from input with type safety
   n_total_samples <- if(is.null(slice)) 0 else as.integer(nrow(slice))
   
-  # Calculate samples per time with validation
+  # Calculate samples per time with validation - optimize division
   samples_per_time <- 1  # Default value
   if(!is.null(t_end) && !is.null(n_total_samples)) {
     # Proper integer division to avoid overflow
     if(t_end > 0) {
-      # Use ceiling to ensure we get at least 1 sample per time
-      samples_per_time <- as.integer(ceiling(n_total_samples / (t_end + 1)))
+      # Use direct calculation instead of ceiling
+      samples_per_time <- as.integer((n_total_samples + t_end) / (t_end + 1))
       
       # Validate the result is reasonable
       if(samples_per_time <= 0 || samples_per_time > n_total_samples) {
@@ -195,14 +196,55 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
   
   # Get time slice if t is provided and all required parameters are present
   if(!is.null(t) && !is.null(samples_per_time) && !is.null(n_total_samples)) {
-    slice <- get_time_slice(
-      preds_r = slice,
-      t = t,
-      samples_per_time = samples_per_time,
-      n_total_samples = n_total_samples,
-      t_end = t_end,  # Pass t_end to the function
-      debug = debug
-    )
+    # Calculate slice indices directly instead of calling a separate function
+    # FIXED CALCULATION
+    chunk_size <- as.integer((n_total_samples + t_end) / (t_end + 1))
+    start_idx <- ((t-1) * chunk_size) + 1
+    end_idx <- min(t * chunk_size, n_total_samples)
+    
+    # Safety check for indices
+    if(start_idx > n_total_samples || start_idx < 1 || end_idx < start_idx) {
+      if(debug) cat(sprintf("Invalid slice indices [%d:%d] (n_total_samples=%d), using fallback\n", 
+                            start_idx, end_idx, n_total_samples))
+      
+      # Simplify fallback by calculating directly
+      chunks <- min(37, t_end + 1)  # Limit to standard number of time points
+      chunk_size <- as.integer((n_total_samples + chunks - 1) / chunks)
+      
+      # Ensure t is within valid range
+      t_adjusted <- min(t, chunks)
+      
+      # Calculate indices using adjusted approach
+      start_idx <- ((t_adjusted-1) * chunk_size) + 1
+      end_idx <- min(t_adjusted * chunk_size, n_total_samples)
+    }
+    
+    # Extract slice based on type of input
+    if(is.vector(slice)) {
+      if(start_idx <= length(slice) && end_idx <= length(slice)) {
+        slice <- matrix(slice[start_idx:end_idx], ncol=1)
+      } else {
+        if(debug) cat("Vector indices out of bounds\n")
+        slice <- NULL
+      }
+    } else if(is.matrix(slice)) {
+      if(start_idx <= nrow(slice) && end_idx <= nrow(slice)) {
+        slice <- slice[start_idx:end_idx, , drop=FALSE]
+      } else {
+        if(debug) cat("Matrix indices out of bounds\n")
+        slice <- NULL
+      }
+    } else if(is.data.frame(slice)) {
+      if(start_idx <= nrow(slice) && end_idx <= nrow(slice)) {
+        slice <- as.matrix(slice[start_idx:end_idx, , drop=FALSE])
+      } else {
+        if(debug) cat("Data frame indices out of bounds\n")
+        slice <- NULL
+      }
+    } else {
+      if(debug) cat("Unsupported slice type:", class(slice), "\n")
+      slice <- NULL
+    }
   }
   
   # Handle invalid slice
@@ -219,7 +261,7 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
     ))
   }
   
-  # Ensure matrix format and proper dimensions
+  # Ensure matrix format and proper dimensions - direct conversion
   if(!is.matrix(slice)) {
     if(is.null(J)) {
       J <- if(type == "A") ncol(slice) else 1
@@ -229,47 +271,59 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
   
   # Interpolate if needed and n_ids is provided
   if(!is.null(n_ids) && nrow(slice) != n_ids) {
-    new_slice <- matrix(0, nrow=n_ids, ncol=ncol(slice))
-    for(j in seq_len(ncol(slice))) {
+    # Optimize interpolation with direct approx call
+    if(nrow(slice) > 1) {
       x_old <- seq(0, 1, length.out=nrow(slice))
       x_new <- seq(0, 1, length.out=n_ids)
-      new_slice[,j] <- approx(x_old, slice[,j], x_new)$y
+      
+      # Preallocate matrix
+      new_slice <- matrix(0, nrow=n_ids, ncol=ncol(slice))
+      
+      # Interpolate each column
+      for(j in seq_len(ncol(slice))) {
+        new_slice[,j] <- approx(x_old, slice[,j], x_new)$y
+      }
+      slice <- new_slice
+    } else {
+      # If only one row, just repeat it
+      slice <- matrix(rep(slice, n_ids), nrow=n_ids, ncol=ncol(slice), byrow=TRUE)
     }
-    slice <- new_slice
   }
   
-  # Process based on type
-  result <- switch(type,
-                   "Y" = {
-                     if(is.null(ybound)) {
-                       warning("Missing ybound for Y predictions")
-                       slice
-                     } else {
-                       pmin(pmax(slice, ybound[1]), ybound[2])
-                     }
-                   },
-                   "C" = {
-                     if(is.null(gbound)) {
-                       warning("Missing gbound for C predictions")
-                       slice
-                     } else {
-                       pmin(pmax(slice, gbound[1]), gbound[2])
-                     }
-                   },
-                   "A" = {
-                     if(is.null(gbound) || is.null(J)) {
-                       warning("Missing gbound or J for A predictions")
-                       slice
-                     } else {
-                       # For treatment predictions, ensure proper probabilities
-                       t(apply(slice, 1, function(row) {
-                         if(any(is.na(row)) || any(!is.finite(row))) return(rep(1/J, J))
-                         bounded <- pmax(row, gbound[1])
-                         bounded / sum(bounded)
-                       }))
-                     }
-                   }
-  )
+  # Process based on type with more efficient code
+  if(type == "Y") {
+    if(!is.null(ybound)) {
+      # Apply bounds in a single vectorized operation
+      result <- pmin(pmax(slice, ybound[1]), ybound[2])
+    } else {
+      warning("Missing ybound for Y predictions")
+      result <- slice
+    }
+  } else if(type == "C") {
+    if(!is.null(gbound)) {
+      # Apply bounds in a single vectorized operation
+      result <- pmin(pmax(slice, gbound[1]), gbound[2])
+    } else {
+      warning("Missing gbound for C predictions")
+      result <- slice
+    }
+  } else { # type == "A"
+    if(!is.null(gbound) && !is.null(J)) {
+      # Preallocate result matrix
+      result <- matrix(0, nrow=nrow(slice), ncol=ncol(slice))
+      
+      # Optimize row operations with apply
+      result <- t(apply(slice, 1, function(row) {
+        if(any(is.na(row)) || any(!is.finite(row))) return(rep(1/J, J))
+        # Use direct vector operations
+        bounded <- pmax(row, gbound[1])
+        bounded / sum(bounded)
+      }))
+    } else {
+      warning("Missing gbound or J for A predictions")
+      result <- slice
+    }
+  }
   
   # Add column names
   colnames(result) <- switch(type,
@@ -1103,6 +1157,8 @@ log_iptw_error <- function(e, g_preds, rules) {
   cat("rules:", paste(dim(rules), collapse=" x "), "\n")
 }
 
+# Optimized version of getTMLELongLSTM function from tmle_fns_lstm.R
+
 getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data, 
                             tmle_rules, tmle_covars_Y, g_preds_bounded, C_preds_bounded,
                             obs.treatment, obs.rules, gbound, ybound, t_end, window_size,
@@ -1119,15 +1175,16 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   Y <- initial_model_for_Y_data$Y
   C <- initial_model_for_Y_data$C
   
-  # Vectorize censoring status calculation
+  # Vectorize censoring status calculation - one operation instead of multiple checks
   is_censored <- Y == -1 | is.na(Y) | C == 1
   valid_rows <- !is_censored
   
-  # Preallocate rule predictions matrix
-  Qs <- matrix(NA, nrow=n_ids, ncol=n_rules)
+  # Preallocate rule predictions matrix - one allocation instead of growing
+  Qs <- matrix(NA_real_, nrow=n_ids, ncol=n_rules) 
   colnames(Qs) <- names(tmle_rules)
   
-  # Use efficient rule processing by combining rule operations 
+  # Use efficient rule processing by combining rule operations
+  # Precompute shifted data for all rules at once to avoid redundant processing
   shifted_data_list <- lapply(names(tmle_rules), function(rule) {
     # Get rule-specific treatments using existing functions
     switch(rule,
@@ -1137,16 +1194,19 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   })
   names(shifted_data_list) <- names(tmle_rules)
   
-  # Create rule-specific datasets - do this once with efficient operations
+  # Create rule-specific datasets once efficiently
+  # Use pre-computed ID mapping to avoid redundant lookups
+  id_mapping_master <- match(initial_model_for_Y_data$ID, unique(initial_model_for_Y_data$ID))
+  
   rule_data_list <- lapply(names(tmle_rules), function(rule) {
-    # Start with shared data structure
+    # Start with shared data structure - avoid duplicating large objects
     rule_data <- initial_model_for_Y_data
     
-    # Set treatment columns efficiently
+    # Set treatment columns efficiently using pre-computed mapping
     shifted_data <- shifted_data_list[[rule]]
     id_mapping <- match(rule_data$ID, shifted_data$ID)
     
-    # Vectorized assignment for all time points
+    # Vectorized assignment for all time points - single operation per time point
     for(t in 0:t_end) {
       col_name <- paste0("A.", t)
       rule_data[[col_name]] <- shifted_data$A0[id_mapping]
@@ -1155,24 +1215,23 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     # Base A column also needs to be set
     rule_data$A <- rule_data[[paste0("A.", 0)]]
     
-    # Return the complete dataset
     rule_data
   })
   names(rule_data_list) <- names(tmle_rules)
   
-  # Add A columns to covariates once
+  # Add A columns to covariates once - don't repeat this operation
   tmle_covars_Y_with_A <- unique(c(
     tmle_covars_Y,
     grep("^A\\.", colnames(rule_data_list[[1]]), value=TRUE),
     "A"
   ))
   
-  # Run a single LSTM for all rules if possible, or use separate calls with minimal overhead
+  # Run LSTM for each rule more efficiently
+  # Avoid redundant validations/initializations
   for(i in seq_along(tmle_rules)) {
     rule <- names(tmle_rules)[i]
     
-    # Run an efficient LSTM using the rule-specific data
-    # Perform minimal validation/initialization (avoid redundant calls)
+    # Run LSTM with minimal debug to improve performance
     lstm_preds <- lstm(
       data = rule_data_list[[rule]],
       outcome = "Y",
@@ -1189,18 +1248,21 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       debug = FALSE  # Disable debug for better performance
     )
     
-    # Directly process predictions and assign to the matrix
+    # Process predictions efficiently
     if(is.null(lstm_preds)) {
-      # Fallback prediction with vectorized assignment
+      # Use vectorized assignment for default case
       Qs[,i] <- mean(Y[valid_rows], na.rm=TRUE)
     } else {
-      # Efficient prediction extraction
+      # Get time-specific predictions
       t_preds <- lstm_preds[[min(current_t + 1, length(lstm_preds))]]
+      
       if(is.null(t_preds)) {
+        # Use vectorized assignment for default case
         Qs[,i] <- mean(Y[valid_rows], na.rm=TRUE)
       } else {
-        # Vectorized operations for better performance
+        # Ensure proper dimensions with vectorized operations
         t_preds <- rep(t_preds, length.out=n_ids)
+        # Bound values in one operation
         Qs[,i] <- pmin(pmax(t_preds, ybound[1]), ybound[2])
       }
     }
@@ -1213,20 +1275,27 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   QAW <- cbind(QA = initial_preds, Qs)
   colnames(QAW) <- c("QA", names(tmle_rules))
   
-  # Apply bounds in one vectorized operation
+  # Apply bounds in one vectorized operation instead of multiple checks
   QAW <- pmin(pmax(QAW, ybound[1]), ybound[2])
   
   # Process treatment predictions in one step
+  # Optimize g_matrix creation
   g_matrix <- if(is.list(g_preds_bounded)) {
-    do.call(cbind, lapply(seq_len(ncol(obs.treatment)), function(j) {
+    # Pre-allocate matrix with correct dimensions
+    g_mat <- matrix(0, nrow=n_ids, ncol=ncol(obs.treatment))
+    
+    # Fill matrix efficiently by column
+    for(j in seq_len(ncol(obs.treatment))) {
       if(j <= length(g_preds_bounded) && !is.null(g_preds_bounded[[j]])) {
         pred <- matrix(g_preds_bounded[[j]], nrow=n_ids)
-        if(ncol(pred) > 1) pred[,1] else pred
+        g_mat[,j] <- if(ncol(pred) > 1) pred[,1] else pred
       } else {
-        rep(1/ncol(obs.treatment), n_ids)
+        g_mat[,j] <- rep(1/ncol(obs.treatment), n_ids)
       }
-    }))
+    }
+    g_mat
   } else if(is.matrix(g_preds_bounded)) {
+    # Efficiently handle matrix format
     if(nrow(g_preds_bounded) != n_ids) {
       matrix(rep(g_preds_bounded, length.out=n_ids*ncol(g_preds_bounded)), 
              ncol=ncol(g_preds_bounded))
@@ -1234,10 +1303,11 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       g_preds_bounded 
     }
   } else {
+    # Default uniform probabilities
     matrix(1/ncol(obs.treatment), nrow=n_ids, ncol=ncol(obs.treatment))
   }
   
-  # Create clever covariates in one step
+  # Create clever covariates in one step - preallocate for efficiency
   clever_covariates <- matrix(0, nrow=n_ids, ncol=ncol(obs.rules))
   is_censored_adj <- rep(is_censored, length.out=n_ids)
   
@@ -1249,20 +1319,20 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   # Calculate censoring-adjusted weights efficiently
   weights <- matrix(0, nrow=n_ids, ncol=ncol(obs.rules))
   
-  # Calculate censoring matrix once
+  # Calculate censoring matrix once instead of in the loop
   C_matrix <- matrix(rep(C_preds_bounded, ncol(g_matrix)), 
                      nrow=nrow(C_preds_bounded),
                      ncol=ncol(g_matrix))
   
-  # Joint probability calculation
+  # Joint probability calculation - one operation instead of multiple
   probs <- g_matrix * (1 - C_matrix)
   bounded_probs <- pmin(pmax(probs, gbound[1]), gbound[2])
   
-  # Vectorize calculation for all rules at once
+  # Calculate weights for all rules at once
   for(i in seq_len(ncol(obs.rules))) {
     valid_idx <- clever_covariates[,i] > 0
     if(any(valid_idx)) {
-      # Calculate weights for all valid rows at once
+      # Calculate treatment probabilities for all valid rows at once
       treatment_probs <- rowSums(obs.treatment[valid_idx,] * bounded_probs[valid_idx,], na.rm=TRUE)
       treatment_probs[treatment_probs < gbound[1]] <- gbound[1]
       
@@ -1270,26 +1340,30 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       cens_weights <- 1 / (1 - C_matrix[valid_idx,1])
       weights[valid_idx,i] <- cens_weights / treatment_probs
       
-      # Efficient trimming and normalization
+      # Optimize trimming and normalization
       rule_weights <- weights[valid_idx,i]
-      max_weight <- quantile(rule_weights, 0.99, na.rm=TRUE)
-      weights[valid_idx,i] <- pmin(rule_weights, max_weight) / sum(pmin(rule_weights, max_weight), na.rm=TRUE)
+      if(length(rule_weights) > 0) {
+        # Calculate quantile once and use for all
+        max_weight <- quantile(rule_weights, 0.99, na.rm=TRUE)
+        weights[valid_idx,i] <- pmin(rule_weights, max_weight) / 
+          sum(pmin(rule_weights, max_weight), na.rm=TRUE)
+      }
     }
   }
   
-  # Preallocate targeting models list
+  # Preallocate modeling components
   updated_models <- vector("list", ncol(clever_covariates))
   
-  # Only use glm where data is sufficient - batch process if possible
+  # Optimize GLM fitting - only run when sufficient data
   for(i in seq_len(ncol(clever_covariates))) {
-    # Create model data efficiently
+    # Create model data efficiently - single data.frame creation
     model_data <- data.frame(
       y = if(current_t < t_end) QAW[,"QA"] else Y,
       offset = qlogis(pmax(pmin(QAW[,i+1], 0.9999), 0.0001)),
       weights = weights[,i]
     )
     
-    # Vectorized filtering for valid rows
+    # Filter valid rows in one operation 
     valid_rows <- complete.cases(model_data) &
       is.finite(model_data$y) &
       is.finite(model_data$offset) &
@@ -1300,36 +1374,46 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     
     # Only fit model if sufficient data
     if(sum(valid_rows) > 10) {
+      # Subset data once
       model_data <- model_data[valid_rows, , drop=FALSE]
       
-      # Ensure proper column names
-      colnames(model_data) <- c("y", "offset", "weights")
-      
-      # Only fit the model if we have sufficient data
+      # Only fit if we have data with non-zero weights
       if(nrow(model_data) > 0 && any(model_data$weights > 0)) {
-        # Optimize GLM fit
-        updated_models[[i]] <- glm(
-          y ~ 1 + offset(offset),
-          weights = weights,
-          family = quasibinomial(),
-          data = model_data,
-          control = list(maxit = 25)  # Limit iterations for speed
-        )
+        # Optimize GLM fit with limited iterations
+        updated_models[[i]] <- tryCatch({
+          glm(
+            y ~ 1 + offset(offset),
+            weights = weights,
+            family = quasibinomial(),
+            data = model_data,
+            control = list(maxit = 25)  # Limit iterations for speed
+          )
+        }, error = function(e) {
+          # Return NULL on error rather than stopping
+          if(debug) cat("\nGLM error:", e$message)
+          NULL
+        })
       }
     }
   }
   
   # Generate Qstar predictions efficiently
-  Qstar <- do.call(cbind, lapply(seq_along(updated_models), function(i) {
-    if(is.null(updated_models[[i]])) {
-      rep(mean(Y[valid_rows], na.rm=TRUE), n_ids)
-    } else {
-      preds <- predict(updated_models[[i]], type="response", newdata=NULL)
-      rep(preds, length.out=n_ids)
-    }
-  }))
+  # Pre-allocate results
+  Qstar <- matrix(NA_real_, nrow=n_ids, ncol=length(updated_models))
   
-  # Set column names efficiently
+  # Fill with predictions - use faster approach for NULL models
+  for(i in seq_along(updated_models)) {
+    if(is.null(updated_models[[i]])) {
+      Qstar[,i] <- mean(Y[valid_rows], na.rm=TRUE)
+    } else {
+      # Get predictions directly
+      preds <- predict(updated_models[[i]], type="response", newdata=NULL)
+      # Expand to proper length if needed
+      Qstar[,i] <- rep(preds, length.out=n_ids)
+    }
+  }
+  
+  # Set column names once
   if(ncol(Qstar) == ncol(obs.rules)) {
     colnames(Qstar) <- colnames(obs.rules)
   }
@@ -1340,9 +1424,16 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     if(any(valid_idx)) {
       w <- weights[valid_idx,i]
       y <- Y[valid_idx]
-      # Only calculate weighted mean if vectors match
+      # Check lengths match
       if(length(w) == length(y)) {
-        weighted.mean(y, w, na.rm=TRUE)
+        # Use weighted.mean with non-NA values
+        w_clean <- w[!is.na(y)]
+        y_clean <- y[!is.na(y)]
+        if(length(w_clean) > 0) {
+          weighted.mean(y_clean, w_clean, na.rm=TRUE)
+        } else {
+          mean(Y[valid_rows], na.rm=TRUE)
+        }
       } else {
         mean(Y[valid_rows], na.rm=TRUE)
       }
@@ -1358,10 +1449,14 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   
   # Get epsilons efficiently
   epsilon <- sapply(updated_models, function(mod) {
-    if(is.null(mod)) 0 else tryCatch(coef(mod)[1], error=function(e) 0)
+    if(is.null(mod)) {
+      0 
+    } else {
+      tryCatch(coef(mod)[1], error=function(e) 0)
+    }
   })
   
-  # Return the result list with minimal copying
+  # Return the result list - minimal copies
   list(
     "Qs" = Qs,
     "QAW" = QAW,
