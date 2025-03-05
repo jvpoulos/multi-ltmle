@@ -35,20 +35,26 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
     # Create rule-specific clever covariate
     clever_covariates[[rule]] <- (obs.rules[initial_model_for_Y_data$ID, rule_idx] * (1-C))
     
-    # Create rule-specific weights
+    # Create rule-specific weights with improved stability
     # For treatment probabilities under this specific rule
     rule_data <- rule_data_frames[[rule]]
     
     # Better handling of dimension matching
     if(dim(g_preds_bounded)[1] > length(initial_model_for_Y_data$ID)){
+      # Calculate product first, then bound to avoid numerical issues
       weights[[rule]] <- clever_covariates[[rule]] / 
         rowSums(obs.treatment[initial_model_for_Y_data$ID,] * 
                   boundProbs(g_preds_bounded[initial_model_for_Y_data$ID,] * 
                                C_preds_bounded[initial_model_for_Y_data$ID], bounds = gbound))
     } else {
+      # Use more stable calculation - bound each component first 
+      g_preds_bounded_safe <- boundProbs(g_preds_bounded, bounds = c(0.01, 0.99))
+      C_preds_bounded_safe <- boundProbs(C_preds_bounded, bounds = c(0.01, 0.99))
+      
+      # Calculate product with stronger bounds to prevent extreme ratios
       weights[[rule]] <- clever_covariates[[rule]] / 
-        rowSums(obs.treatment[initial_model_for_Y_data$ID,] * 
-                  boundProbs(g_preds_bounded * C_preds_bounded, bounds = gbound))
+        pmax(0.01, rowSums(obs.treatment[initial_model_for_Y_data$ID,] * 
+                             (g_preds_bounded_safe * C_preds_bounded_safe)))
     }
     
     # Apply weight normalization and trimming for stability

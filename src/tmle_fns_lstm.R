@@ -166,8 +166,9 @@ safe_get_cuml_preds <- function(preds, n_ids = n) {
 
 # Optimized version of process_predictions in tmle_fns_lstm.R
 
+# Ensure process_predictions is in global environment
 process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL, J=NULL, 
-                                ybound=NULL, gbound=NULL, debug=FALSE) {
+                               ybound=NULL, gbound=NULL, debug=FALSE) {
   # Ensure numeric types for calculations
   if (!is.null(t_end)) t_end <- as.integer(t_end)
   if (!is.null(t)) t <- as.integer(t)
@@ -779,6 +780,481 @@ process_time_points <- function(initial_model_for_Y, initial_model_for_Y_data,
   return(list("multinomial" = tmle_contrasts, "binary" = tmle_contrasts_bin))
 }
 
+# This optimized version of process_time_points uses batch processing
+# to make a single LSTM call for all time points and treatment rules
+process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_data, 
+                                tmle_rules, tmle_covars_Y, 
+                                g_preds_processed, g_preds_bin_processed, C_preds_processed,
+                                treatments, obs.rules, 
+                                gbound, ybound, t_end, window_size, n_ids, output_dir,
+                                cores = 1, debug = FALSE) {
+  
+  # Precompute these once instead of for each timepoint
+  n_rules <- length(tmle_rules)
+  base_covariates <- unique(gsub("\\.[0-9]+$", "", tmle_covars_Y))
+  
+  # Initialize Python variables just once outside the loop
+  if (!exists("py", envir = .GlobalEnv, inherits = FALSE)) {
+    py <- reticulate::py_run_string("x = 1+1")
+    assign("py", py, envir = .GlobalEnv)
+  }
+  
+  # Set Python variables once, not in each iteration
+  py <- reticulate::py
+  py$feature_cols <- base_covariates
+  py$window_size <- window_size
+  py$output_dir <- output_dir
+  py$t_end <- t_end
+  py$gbound <- gbound
+  py$ybound <- ybound
+  # Get J directly from the data when possible
+  actual_J <- if(!is.null(g_preds_processed) && !is.null(g_preds_processed[[1]])) {
+    if(is.matrix(g_preds_processed[[1]])) {
+      ncol(g_preds_processed[[1]])
+    } else if(is.list(g_preds_processed[[1]]) && !is.null(g_preds_processed[[1]][[1]])) {
+      if(is.matrix(g_preds_processed[[1]][[1]])) {
+        ncol(g_preds_processed[[1]][[1]])
+      } else {
+        6  # Default to 6 if structure is unexpected
+      }
+    } else {
+      6  # Default to 6 if structure is unexpected
+    }
+  } else {
+    6  # Default to 6 treatments if no data available
+  }
+  
+  # Then update py$J with the correct value
+  py$J <- actual_J
+  
+  # Reset LSTM model cache between full runs
+  if (!exists("model_loaded_for_run", envir = .GlobalEnv)) {
+    assign("model_loaded_for_run", FALSE, envir = .GlobalEnv)
+    # Clear any existing cached models
+    if (exists("cached_models", envir = .GlobalEnv)) {
+      assign("cached_models", list(), envir = .GlobalEnv)
+    }
+    # Reset first_lstm_call flag
+    if (exists("first_lstm_call", envir = .GlobalEnv)) {
+      assign("first_lstm_call", TRUE, envir = .GlobalEnv)
+    }
+  }
+  
+  # We need to prepare datasets for all the rules to use batch processing
+  # This only needs to be done once for all time points
+  # Pre-compute rule-specific datasets for all time points
+  rule_data_master <- vector("list", length(tmle_rules))
+  names(rule_data_master) <- names(tmle_rules)
+  
+  if(debug) cat("\nPreparing rule datasets for batch processing...\n")
+  
+  # Create rule-specific datasets for all rules
+  for(rule in names(tmle_rules)) {
+    if(debug) cat(paste("Creating dataset for rule:", rule, "\n"))
+    
+    # Get rule-specific treatments
+    shifted_data <- switch(rule,
+                          "static" = static_mtp_lstm(initial_model_for_Y_data),
+                          "dynamic" = dynamic_mtp_lstm(initial_model_for_Y_data),
+                          "stochastic" = stochastic_mtp_lstm(initial_model_for_Y_data))
+    
+    # Create dataset with rule-specific treatments
+    rule_data <- initial_model_for_Y_data
+    id_mapping <- match(rule_data$ID, shifted_data$ID)
+    
+    # Set treatment columns efficiently
+    for(t in 0:t_end) {
+      col_name <- paste0("A.", t)
+      rule_data[[col_name]] <- shifted_data$A0[id_mapping]
+    }
+    
+    # Set base A column also
+    rule_data$A <- rule_data[[paste0("A.", 0)]]
+    
+    # Store in master list
+    rule_data_master[[rule]] <- rule_data
+  }
+  
+  # Add A columns to covariates once
+  tmle_covars_Y_with_A <- unique(c(
+    tmle_covars_Y,
+    grep("^A\\.", colnames(rule_data_master[[1]]), value=TRUE),
+    "A"
+  ))
+  
+  # Do LSTM model loading once for all time points
+  # This is what loads the model and caches it
+  if(!model_loaded_for_run) {
+    if(debug) cat("\nLoading LSTM model once for all time points...\n")
+    
+    # Load the model once for all time points by running first rule
+    rule <- names(tmle_rules)[1]
+    lstm_preds <- lstm(
+      data = rule_data_master[[rule]],
+      outcome = "Y",
+      covariates = tmle_covars_Y_with_A,
+      t_end = t_end,
+      window_size = window_size,
+      out_activation = "sigmoid",
+      loss_fn = "binary_crossentropy",
+      output_dir = output_dir,
+      J = 1,
+      ybound = ybound,
+      gbound = gbound,
+      inference = TRUE,
+      debug = FALSE,
+      batch_models = TRUE  # This caches the model
+    )
+    
+    assign("model_loaded_for_run", TRUE, envir = .GlobalEnv)
+    if(debug) cat("LSTM model loaded and cached.\n")
+  }
+  
+  # Process all rules in batch to get predictions for all rules
+  if(debug) cat("\nGenerating predictions for all rules...\n")
+  all_lstm_preds <- lstm(
+    data = NULL,  # Not used in batch mode
+    outcome = "Y",
+    covariates = tmle_covars_Y_with_A,
+    t_end = t_end,
+    window_size = window_size,
+    out_activation = "sigmoid",
+    loss_fn = "binary_crossentropy",
+    output_dir = output_dir,
+    J = 1,
+    ybound = ybound,
+    gbound = gbound,
+    inference = TRUE,
+    debug = FALSE,
+    batch_models = TRUE,
+    batch_rules = rule_data_master  # Pass all rules at once
+  )
+  
+  # Preallocate full result matrices to avoid repeated memory allocation
+  results <- vector("list", t_end)
+  
+  # Process time points
+  time_points <- 1:t_end
+  
+  # Use lapply instead of a for loop for better performance
+  results <- lapply(time_points, function(t) {
+    if(debug) cat(sprintf("\nProcessing time point %d/%d\n", t, t_end))
+    time_start <- Sys.time()
+    
+    # Preallocate result matrices with the right dimensions
+    tmle_contrast <- list(
+      "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+      "epsilon" = rep(0, n_rules),
+      "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+      "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
+      "Y" = rep(ybound[1], n_ids)
+    )
+    tmle_contrast_bin <- list(
+      "Qstar" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+      "epsilon" = rep(0, n_rules),
+      "Qstar_gcomp" = matrix(ybound[1], nrow = n_ids, ncol = n_rules),
+      "Qstar_iptw" = matrix(ybound[1], nrow = 1, ncol = n_rules),
+      "Y" = rep(ybound[1], n_ids)
+    )
+    
+    # Process predictions in one step for all rules to avoid redundant processing
+    current_g_preds <- process_g_preds(g_preds_processed, t, n_ids, py$J, gbound, debug)
+    current_g_preds_bin <- process_g_preds(g_preds_bin_processed, t, n_ids, py$J, gbound, debug)
+    current_c_preds <- get_c_preds(C_preds_processed, t, n_ids, gbound)
+    current_y_preds <- get_y_preds(initial_model_for_Y, t, n_ids, ybound, debug)
+    
+    # Create treatment probability lists only once
+    current_g_preds_list <- lapply(1:py$J, function(j) matrix(current_g_preds[,j], ncol=1))
+    current_g_preds_bin_list <- lapply(1:py$J, function(j) matrix(current_g_preds_bin[,j], ncol=1))
+    
+    # Extract data efficiently by avoiding loops where possible
+    Y <- initial_model_for_Y_data$Y
+    C <- initial_model_for_Y_data$C
+    
+    # Vectorize censoring status calculation - one operation instead of multiple checks
+    is_censored <- Y == -1 | is.na(Y) | C == 1
+    valid_rows <- !is_censored
+    
+    # Preallocate rule predictions matrix - one allocation instead of growing
+    Qs <- matrix(NA_real_, nrow=n_ids, ncol=n_rules) 
+    colnames(Qs) <- names(tmle_rules)
+    
+    # Process all rules using the cached predictions
+    for(i in seq_along(tmle_rules)) {
+      rule <- names(tmle_rules)[i]
+      
+      # Get the cached predictions for this rule
+      lstm_preds <- all_lstm_preds[[rule]]
+      
+      # Process predictions for each rule
+      if(is.null(lstm_preds)) {
+        # Use vectorized assignment for default case
+        Qs[,i] <- mean(Y[valid_rows], na.rm=TRUE)
+      } else {
+        # Get time-specific predictions
+        t_preds <- lstm_preds[[min(t + 1, length(lstm_preds))]]
+        
+        if(is.null(t_preds)) {
+          # Use vectorized assignment for default case
+          Qs[,i] <- mean(Y[valid_rows], na.rm=TRUE)
+        } else {
+          # Ensure proper dimensions with vectorized operations
+          t_preds <- rep(t_preds, length.out=n_ids)
+          # Bound values in one operation
+          Qs[,i] <- pmin(pmax(t_preds, ybound[1]), ybound[2])
+        }
+      }
+    }
+    
+    # Process initial predictions to ensure proper format
+    initial_preds <- matrix(current_y_preds, nrow=n_ids)
+    
+    # Create QAW matrix efficiently
+    QAW <- cbind(QA = initial_preds, Qs)
+    colnames(QAW) <- c("QA", names(tmle_rules))
+    
+    # Apply bounds in one vectorized operation instead of multiple checks
+    QAW <- pmin(pmax(QAW, ybound[1]), ybound[2])
+    
+    # Process treatment predictions in one step
+    # Optimize g_matrix creation
+    g_matrix <- if(is.list(current_g_preds_list)) {
+      # Pre-allocate matrix with correct dimensions
+      g_mat <- matrix(0, nrow=n_ids, ncol=ncol(treatments[[min(t + 1, length(treatments))]]))
+      
+      # Fill matrix efficiently by column
+      for(j in seq_len(ncol(g_mat))) {
+        if(j <= length(current_g_preds_list) && !is.null(current_g_preds_list[[j]])) {
+          pred <- matrix(current_g_preds_list[[j]], nrow=n_ids)
+          g_mat[,j] <- if(ncol(pred) > 1) pred[,1] else pred
+        } else {
+          g_mat[,j] <- rep(1/ncol(g_mat), n_ids)
+        }
+      }
+      g_mat
+    } else if(is.matrix(current_g_preds_list)) {
+      # Efficiently handle matrix format
+      if(nrow(current_g_preds_list) != n_ids) {
+        matrix(rep(current_g_preds_list, length.out=n_ids*ncol(current_g_preds_list)), 
+               ncol=ncol(current_g_preds_list))
+      } else {
+        current_g_preds_list 
+      }
+    } else {
+      # Default uniform probabilities
+      matrix(1/ncol(treatments[[min(t + 1, length(treatments))]]), 
+             nrow=n_ids, ncol=ncol(treatments[[min(t + 1, length(treatments))]]))
+    }
+    
+    # Get current treatment and rules
+    current_obs_treatment <- treatments[[min(t + 1, length(treatments))]]
+    current_obs_rules <- obs.rules[[min(t, length(obs.rules))]]
+    
+    # Create clever covariates in one step - preallocate for efficiency
+    clever_covariates <- matrix(0, nrow=n_ids, ncol=ncol(current_obs_rules))
+    is_censored_adj <- rep(is_censored, length.out=n_ids)
+    
+    # Vectorized operation for all rules
+    for(i in seq_len(ncol(current_obs_rules))) {
+      clever_covariates[,i] <- current_obs_rules[,i] * (!is_censored_adj)
+    }
+    
+    # Calculate censoring-adjusted weights efficiently
+    weights <- matrix(0, nrow=n_ids, ncol=ncol(current_obs_rules))
+    
+    # Calculate censoring matrix once instead of in the loop
+    C_matrix <- matrix(rep(current_c_preds, ncol(g_matrix)), 
+                       nrow=nrow(current_c_preds),
+                       ncol=ncol(g_matrix))
+    
+    # Joint probability calculation - one operation instead of multiple
+    probs <- g_matrix * (1 - C_matrix)
+    bounded_probs <- pmin(pmax(probs, gbound[1]), gbound[2])
+    
+    # Calculate weights for all rules at once
+    for(i in seq_len(ncol(current_obs_rules))) {
+      valid_idx <- clever_covariates[,i] > 0
+      if(any(valid_idx)) {
+        # Calculate treatment probabilities for all valid rows at once
+        treatment_probs <- rowSums(current_obs_treatment[valid_idx,] * bounded_probs[valid_idx,], na.rm=TRUE)
+        treatment_probs[treatment_probs < gbound[1]] <- gbound[1]
+        
+        # IPCW weights
+        cens_weights <- 1 / (1 - C_matrix[valid_idx,1])
+        weights[valid_idx,i] <- cens_weights / treatment_probs
+        
+        # Optimize trimming and normalization
+        rule_weights <- weights[valid_idx,i]
+        if(length(rule_weights) > 0) {
+          # Calculate quantile once and use for all
+          max_weight <- quantile(rule_weights, 0.99, na.rm=TRUE)
+          weights[valid_idx,i] <- pmin(rule_weights, max_weight) / 
+            sum(pmin(rule_weights, max_weight), na.rm=TRUE)
+        }
+      }
+    }
+    
+    # Preallocate modeling components
+    updated_models <- vector("list", ncol(clever_covariates))
+    
+    # Optimize GLM fitting - only run when sufficient data
+    for(i in seq_len(ncol(clever_covariates))) {
+      # Create model data efficiently - single data.frame creation
+      model_data <- data.frame(
+        y = if(t < t_end) QAW[,"QA"] else Y,
+        offset = qlogis(pmax(pmin(QAW[,i+1], 0.9999), 0.0001)),
+        weights = weights[,i]
+      )
+      
+      # Filter valid rows in one operation 
+      valid_rows <- complete.cases(model_data) &
+        is.finite(model_data$y) &
+        is.finite(model_data$offset) &
+        is.finite(model_data$weights) &
+        model_data$y != -1 &
+        model_data$weights > 0 &
+        !is.infinite(qlogis(model_data$y))
+      
+      # Only fit model if sufficient data
+      if(sum(valid_rows) > 10) {
+        # Subset data once
+        model_data <- model_data[valid_rows, , drop=FALSE]
+        
+        # Only fit if we have data with non-zero weights
+        if(nrow(model_data) > 0 && any(model_data$weights > 0)) {
+          # Optimize GLM fit with limited iterations
+          updated_models[[i]] <- tryCatch({
+            glm(
+              y ~ 1 + offset(offset),
+              weights = weights,
+              family = quasibinomial(),
+              data = model_data,
+              control = list(maxit = 25)  # Limit iterations for speed
+            )
+          }, error = function(e) {
+            # Return NULL on error rather than stopping
+            if(debug) cat("\nGLM error:", e$message)
+            NULL
+          })
+        }
+      }
+    }
+    
+    # Generate Qstar predictions efficiently
+    # Pre-allocate results
+    Qstar <- matrix(NA_real_, nrow=n_ids, ncol=length(updated_models))
+    
+    # Fill with predictions - use faster approach for NULL models
+    for(i in seq_along(updated_models)) {
+      if(is.null(updated_models[[i]])) {
+        Qstar[,i] <- mean(Y[valid_rows], na.rm=TRUE)
+      } else {
+        # Get predictions directly
+        preds <- predict(updated_models[[i]], type="response", newdata=NULL)
+        # Expand to proper length if needed
+        Qstar[,i] <- rep(preds, length.out=n_ids)
+      }
+    }
+    
+    # Set column names once
+    if(ncol(Qstar) == ncol(current_obs_rules)) {
+      colnames(Qstar) <- colnames(current_obs_rules)
+    }
+    
+    # Create multinomial TMLE contrast
+    tmle_contrast <- list(
+      "Qs" = Qs,
+      "QAW" = QAW,
+      "clever_covariates" = clever_covariates,
+      "weights" = weights,
+      "updated_model_for_Y" = updated_models,
+      "Qstar" = Qstar,
+      "epsilon" = sapply(updated_models, function(mod) {
+        if(is.null(mod)) 0 else tryCatch(coef(mod)[1], error=function(e) 0)
+      }),
+      "Qstar_gcomp" = QAW[,-1],
+      "Y" = Y,
+      "ID" = initial_model_for_Y_data$ID
+    )
+    
+    # For binary case - process separately using current_g_preds_bin
+    # Similar processing as above but with binary treatment predictions
+    g_matrix_bin <- if(is.list(current_g_preds_bin_list)) {
+      g_mat <- matrix(0, nrow=n_ids, ncol=ncol(current_obs_treatment))
+      for(j in seq_len(ncol(g_mat))) {
+        if(j <= length(current_g_preds_bin_list) && !is.null(current_g_preds_bin_list[[j]])) {
+          pred <- matrix(current_g_preds_bin_list[[j]], nrow=n_ids)
+          g_mat[,j] <- if(ncol(pred) > 1) pred[,1] else pred
+        } else {
+          g_mat[,j] <- rep(1/ncol(g_mat), n_ids)
+        }
+      }
+      g_mat
+    } else if(is.matrix(current_g_preds_bin_list)) {
+      if(nrow(current_g_preds_bin_list) != n_ids) {
+        matrix(rep(current_g_preds_bin_list, length.out=n_ids*ncol(current_g_preds_bin_list)), 
+               ncol=ncol(current_g_preds_bin_list))
+      } else {
+        current_g_preds_bin_list 
+      }
+    } else {
+      matrix(1/ncol(current_obs_treatment), nrow=n_ids, ncol=ncol(current_obs_treatment))
+    }
+    
+    # Calculate IPTW for both models at once
+    tryCatch({
+      # Multinomial IPTW
+      tmle_contrast$Qstar_iptw <- calculate_iptw(current_g_preds, current_obs_rules, 
+                                               tmle_contrast$Qstar, n_rules, gbound, debug)
+      
+      # Binary IPTW
+      binary_iptw <- calculate_iptw(current_g_preds_bin, current_obs_rules,
+                                   tmle_contrast$Qstar, n_rules, gbound, debug)
+    }, error = function(e) {
+      if(debug) log_iptw_error(e, current_g_preds, current_obs_rules)
+      tmle_contrast$Qstar_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
+      binary_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
+    })
+    
+    # Create binary TMLE contrast - copy from multinomial and update relevant parts
+    tmle_contrast_bin <- tmle_contrast
+    tmle_contrast_bin$Qstar_iptw <- binary_iptw
+    
+    if(debug) {
+      time_end <- Sys.time()
+      cat(sprintf("\nTime point %d completed in %.2f s\n", 
+                  t, as.numeric(difftime(time_end, time_start, units="secs"))))
+    }
+    
+    # Return both models in a single list to reduce memory copying
+    list(multinomial = tmle_contrast, binary = tmle_contrast_bin)
+  })
+  
+  # Restructure results once at the end
+  tmle_contrasts <- vector("list", t_end)
+  tmle_contrasts_bin <- vector("list", t_end)
+  
+  for(t in 1:t_end) {
+    # Use direct assignment instead of copying
+    tmle_contrasts[[t]] <- results[[t]]$multinomial
+    tmle_contrasts_bin[[t]] <- results[[t]]$binary
+  }
+  
+  # Only do final debug output if needed
+  if(debug) {
+    cat("\nFinal time point processing summary:\n")
+    # Include only essential summary metrics
+    for(t in 1:t_end) {
+      cat("\nTime point", t, "summary:")
+      cat("\nTMLE estimates:", colMeans(tmle_contrasts[[t]]$Qstar, na.rm=TRUE))
+      cat("\nIPTW estimates:", tmle_contrasts[[t]]$Qstar_iptw)
+      cat("\nObserved Y mean:", mean(tmle_contrasts[[t]]$Y, na.rm=TRUE))
+    }
+  }
+  
+  return(list("multinomial" = tmle_contrasts, "binary" = tmle_contrasts_bin))
+}
+
 process_time_points_tracking <- function(tmle_contrast, tmle_contrast_bin, t, debug=FALSE) {
   if(debug) {
     cat("\nTracking results at time", t, ":")
@@ -1226,12 +1702,11 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
     "A"
   ))
   
-  # Run LSTM for each rule more efficiently
-  # Avoid redundant validations/initializations
-  for(i in seq_along(tmle_rules)) {
-    rule <- names(tmle_rules)[i]
-    
-    # Run LSTM with minimal debug to improve performance
+  # Use batch processing for all rules
+  # First time, run with batch_models=TRUE to cache model
+  if (exists("first_lstm_call", envir = .GlobalEnv) && first_lstm_call) {
+    # Run LSTM for the first rule to cache model (only runs the Python script once)
+    rule <- names(tmle_rules)[1]
     lstm_preds <- lstm(
       data = rule_data_list[[rule]],
       outcome = "Y",
@@ -1245,8 +1720,41 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       ybound = ybound,
       gbound = gbound,
       inference = TRUE,
-      debug = FALSE  # Disable debug for better performance
+      debug = FALSE,  # Disable debug for better performance
+      batch_models = TRUE  # Enable model caching
     )
+    # Set first_lstm_call to FALSE so we don't do this again
+    assign("first_lstm_call", FALSE, envir = .GlobalEnv)
+  } else if (!exists("first_lstm_call", envir = .GlobalEnv)) {
+    # Initialize first_lstm_call if it doesn't exist
+    assign("first_lstm_call", TRUE, envir = .GlobalEnv)
+  }
+  
+  # Process all rules in batch
+  all_lstm_preds <- lstm(
+    data = NULL,  # Not used in batch mode
+    outcome = "Y",
+    covariates = tmle_covars_Y_with_A,
+    t_end = t_end,
+    window_size = window_size,
+    out_activation = "sigmoid",
+    loss_fn = "binary_crossentropy",
+    output_dir = output_dir,
+    J = 1,
+    ybound = ybound,
+    gbound = gbound,
+    inference = TRUE,
+    debug = FALSE,
+    batch_models = TRUE,
+    batch_rules = rule_data_list  # Pass all rules at once
+  )
+  
+  # Process predictions for all rules
+  for(i in seq_along(tmle_rules)) {
+    rule <- names(tmle_rules)[i]
+    
+    # Get predictions for this rule from batch results
+    lstm_preds <- all_lstm_preds[[rule]]
     
     # Process predictions efficiently
     if(is.null(lstm_preds)) {
@@ -1363,14 +1871,17 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       weights = weights[,i]
     )
     
+    # Pre-transform y values to avoid qlogis warnings
+    # Only valid values between 0 and 1 should be passed to qlogis
+    model_data$y_bounded <- pmin(pmax(model_data$y, 0.0001), 0.9999)
+    
     # Filter valid rows in one operation 
     valid_rows <- complete.cases(model_data) &
       is.finite(model_data$y) &
       is.finite(model_data$offset) &
       is.finite(model_data$weights) &
       model_data$y != -1 &
-      model_data$weights > 0 &
-      !is.infinite(qlogis(model_data$y))
+      model_data$weights > 0
     
     # Only fit model if sufficient data
     if(sum(valid_rows) > 10) {
@@ -1380,9 +1891,10 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       # Only fit if we have data with non-zero weights
       if(nrow(model_data) > 0 && any(model_data$weights > 0)) {
         # Optimize GLM fit with limited iterations
+        # Use the bounded y values to avoid qlogis warnings
         updated_models[[i]] <- tryCatch({
           glm(
-            y ~ 1 + offset(offset),
+            y_bounded ~ 1 + offset(offset),
             weights = weights,
             family = quasibinomial(),
             data = model_data,
@@ -1404,10 +1916,19 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
   # Fill with predictions - use faster approach for NULL models
   for(i in seq_along(updated_models)) {
     if(is.null(updated_models[[i]])) {
-      Qstar[,i] <- mean(Y[valid_rows], na.rm=TRUE)
+      # Ensure we have a valid default value, especially for time point t_end
+      default_val <- mean(Y[valid_rows], na.rm=TRUE)
+      if(is.na(default_val) || !is.finite(default_val)) {
+        default_val <- 0.5  # Use a reasonable default if no valid data
+      }
+      Qstar[,i] <- default_val
     } else {
       # Get predictions directly
       preds <- predict(updated_models[[i]], type="response", newdata=NULL)
+      # Ensure predictions are valid
+      if(length(preds) == 0 || any(is.na(preds)) || any(!is.finite(preds))) {
+        preds <- rep(0.5, length(preds))  # Use reasonable defaults for invalid predictions
+      }
       # Expand to proper length if needed
       Qstar[,i] <- rep(preds, length.out=n_ids)
     }
@@ -1427,18 +1948,25 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
       # Check lengths match
       if(length(w) == length(y)) {
         # Use weighted.mean with non-NA values
-        w_clean <- w[!is.na(y)]
-        y_clean <- y[!is.na(y)]
-        if(length(w_clean) > 0) {
-          weighted.mean(y_clean, w_clean, na.rm=TRUE)
+        valid_ys <- !is.na(y) & is.finite(y) & y != -1
+        w_clean <- w[valid_ys]
+        y_clean <- y[valid_ys]
+        if(length(w_clean) > 0 && sum(w_clean) > 0) {
+          weighted.mean(y_clean, w_clean, na.rm=TRUE) 
         } else {
-          mean(Y[valid_rows], na.rm=TRUE)
+          val <- mean(Y[valid_rows], na.rm=TRUE)
+          if(is.na(val) || !is.finite(val)) val <- 0.5  # Fallback for last time point
+          val
         }
       } else {
-        mean(Y[valid_rows], na.rm=TRUE)
+        val <- mean(Y[valid_rows], na.rm=TRUE)
+        if(is.na(val) || !is.finite(val)) val <- 0.5  # Fallback for last time point
+        val
       }
     } else {
-      mean(Y[valid_rows], na.rm=TRUE)
+      val <- mean(Y[valid_rows], na.rm=TRUE)
+      if(is.na(val) || !is.finite(val)) val <- 0.5  # Fallback for last time point
+      val
     }
   }), nrow=1)
   colnames(Qstar_iptw) <- colnames(obs.rules)

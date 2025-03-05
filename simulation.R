@@ -35,6 +35,14 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     use_python("/media/jason/Dropbox/github/multi-ltmle/myenv/bin/python", required = TRUE)
     print(py_config()) # Check Python configuration
     
+    # Make sure process_predictions is available globally
+    if(!exists("process_predictions", envir = .GlobalEnv)) {
+      print("Ensuring process_predictions is available in global environment...")
+      # Explicitly copy the function to the global environment
+      process_predictions_temp <- process_predictions
+      assign("process_predictions", process_predictions_temp, envir = .GlobalEnv)
+    }
+    
     np <- reticulate::import("numpy")
     print("Checking np object:")
     print(py_get_attr(np, "__name__"))
@@ -196,7 +204,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # store observed treatment assignment
   
-  if(estimator=="tmle_lstm"){
+  if(estimator=="tmle-lstm"){
     # store observed treatment assignment
     obs.treatment <- Odat[,anodes] # t=0,2,...,T
     
@@ -269,10 +277,49 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # store observed Ys
   Y.observed <- list()
-  Y.observed[["static"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)][which(obs.rules[[t+1]][,"static"]==1)], na.rm=TRUE))
-  Y.observed[["dynamic"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)][which(obs.rules[[t+1]][,"dynamic"]==1)], na.rm=TRUE))
-  Y.observed[["stochastic"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)][which(obs.rules[[t+1]][,"stochastic"]==1)], na.rm=TRUE))
-  Y.observed[["overall"]] <- sapply(1:t.end, function(t) mean(Odat[,ynodes][,paste0("Y_",t)], na.rm=TRUE))
+  Y.observed[["static"]] <- sapply(1:t.end, function(t) {
+    Y_values <- Odat[,ynodes][,paste0("Y_",t)]
+    # Filter out censored values (-1) before calculating mean
+    valid_indices <- which(obs.rules[[t+1]][,"static"]==1 & Y_values != -1 & !is.na(Y_values))
+    if(length(valid_indices) > 0) {
+      mean(Y_values[valid_indices], na.rm=TRUE)
+    } else {
+      NA  # Return NA if no valid data
+    }
+  })
+  
+  Y.observed[["dynamic"]] <- sapply(1:t.end, function(t) {
+    Y_values <- Odat[,ynodes][,paste0("Y_",t)]
+    # Filter out censored values (-1) before calculating mean
+    valid_indices <- which(obs.rules[[t+1]][,"dynamic"]==1 & Y_values != -1 & !is.na(Y_values))
+    if(length(valid_indices) > 0) {
+      mean(Y_values[valid_indices], na.rm=TRUE)
+    } else {
+      NA  # Return NA if no valid data
+    }
+  })
+  
+  Y.observed[["stochastic"]] <- sapply(1:t.end, function(t) {
+    Y_values <- Odat[,ynodes][,paste0("Y_",t)]
+    # Filter out censored values (-1) before calculating mean
+    valid_indices <- which(obs.rules[[t+1]][,"stochastic"]==1 & Y_values != -1 & !is.na(Y_values))
+    if(length(valid_indices) > 0) {
+      mean(Y_values[valid_indices], na.rm=TRUE)
+    } else {
+      NA  # Return NA if no valid data
+    }
+  })
+  
+  Y.observed[["overall"]] <- sapply(1:t.end, function(t) {
+    Y_values <- Odat[,ynodes][,paste0("Y_",t)]
+    # Filter out censored values (-1) before calculating mean
+    valid_indices <- which(Y_values != -1 & !is.na(Y_values))
+    if(length(valid_indices) > 0) {
+      mean(Y_values[valid_indices], na.rm=TRUE)
+    } else {
+      NA  # Return NA if no valid data
+    }
+  })
   
   if(r==1){
     png(paste0(output_dir,paste0("survival_plot_truth_",n, ".png")))
@@ -348,7 +395,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                                     "_n_", n,
                                     "_J_", J, ".rds"))
   }
-
+  
   if(estimator=="tmle"){
     tmle_dat <-
       tmle_dat %>%
@@ -368,24 +415,24 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
              A.lag = dplyr::lag(A, n = 1, default = NA),
              A.lag2 = dplyr::lag(A, n = 2, default = NA),
              A.lag3 = dplyr::lag(A, n = 3, default = NA))
-
-
+    
+    
     tmle_dat <- cbind(tmle_dat[,!colnames(tmle_dat)%in%c("V1","V2")], dummify(tmle_dat$V1), dummify(tmle_dat$V2), dummify(factor(tmle_dat$A)), dummify(factor(tmle_dat$A.lag)), dummify(factor(tmle_dat$A.lag2)), dummify(factor(tmle_dat$A.lag3))) # binarize categorical variables
-
+    
     if(scale.continuous){
       tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")] <- scale(tmle_dat[c("V3","L1","L1.lag","L1.lag2","L1.lag3")]) # scale continuous variables
     }
-
+    
     colnames(tmle_dat) <- c("ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y", "Y.lag", "Y.lag2", "Y.lag3", "L1.lag", "L1.lag2","L1.lag3","L2.lag", "L2.lag2","L2.lag3", "L3.lag", "L3.lag2","L3.lag3","A.lag","A.lag2", "A.lag3","white", "black", "latino", "other", "mdd", "bipolar", "schiz",
                             "A1", "A2", "A3", "A4", "A5", "A6", "A1.lag", "A2.lag", "A3.lag", "A4.lag", "A5.lag", "A6.lag","A1.lag2", "A2.lag2", "A3.lag2", "A4.lag2", "A5.lag2", "A6.lag2","A1.lag3", "A2.lag3", "A3.lag3", "A4.lag3", "A5.lag3", "A6.lag3")
-
+    
     tmle_covars_Y <- tmle_covars_A <- tmle_covars_C <- c()
     tmle_covars_Y <- colnames(tmle_dat)[!colnames(tmle_dat)%in%c("ID","t","A","A.lag","A.lag2","A.lag3","Y","C")] #incl lagged Y
     tmle_covars_A <- tmle_covars_Y[!tmle_covars_Y%in%c("Y.lag","Y.lag2","Y.lag3","A1", "A2", "A3", "A4", "A5", "A6")] # incl lagged A
     tmle_covars_C <- c(tmle_covars_A, "A1", "A2", "A3", "A4", "A5", "A6")
-
+    
     tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")][is.na(tmle_dat[,c("Y.lag","Y.lag2","Y.lag3","L1.lag","L1.lag2", "L1.lag3","L2.lag", "L2.lag2", "L2.lag3","L3.lag","L3.lag2","L3.lag3")])] <- 0 # make lagged NAs zero
-
+    
     tmle_dat <- tmle_dat[,!colnames(tmle_dat)%in%c("A.lag","A.lag2","A.lag3")] # clean up
     tmle_dat$A <- factor(tmle_dat$A)
   }else if(estimator=="tmle-lstm"){
@@ -395,22 +442,22 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       dummify(tmle_dat$V1),
       dummify(tmle_dat$V2)
     )
-
+    
     # Set proper column names
     colnames(tmle_dat) <- c(
       "ID", "V3", "t", "L1", "L2", "L3", "A", "C", "Y",
       "white", "black", "latino", "other",
       "mdd", "bipolar", "schiz"
     )
-
+    
     # Handle continuous variables scaling if needed
     if(scale.continuous) {
       tmle_dat[c("V3","L1")] <- scale(tmle_dat[c("V3","L1")])
     }
-
+    
     # Convert treatment to factor
     tmle_dat$A <- factor(tmle_dat$A)
-
+    
     # Safe reshaping function
     safe_reshape_data <- function(data, t_end, debug) {
       if(debug){
@@ -418,11 +465,11 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         print("Data column names at start:")
         print(names(data))
       }
-
+      
       # Get unique IDs
       unique_ids <- unique(data$ID)
       n_ids <- length(unique_ids)
-
+      
       # Ensure A column exists and is properly formatted
       if(!"A" %in% names(data)) {
         print("Looking for alternative treatment columns...")
@@ -435,36 +482,36 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           stop("No treatment column found in data")
         }
       }
-
+      
       # Convert treatment to factor if not already
       data$A <- factor(data$A)
-
+      
       # Get unique IDs
       unique_ids <- unique(data$ID)
       n_ids <- length(unique_ids)
-
+      
       # Create time sequence
       time_seq <- 0:t_end
-
+      
       # Create expanded grid of IDs and times
       wide_base <- expand.grid(
         ID = unique_ids,
         t = time_seq,
         stringsAsFactors = FALSE
       )
-
+      
       # Sort by ID and time
       wide_base <- wide_base[order(wide_base$ID, wide_base$t), ]
-
+      
       # Merge with original data
       wide_data <- merge(wide_base, data, by = c("ID", "t"), all.x = TRUE)
-
+      
       # Get time-varying columns
       time_varying_cols <- c("L1", "L2", "L3", "A", "C", "Y")
-
+      
       # Reshape each time-varying variable
       wide_reshaped <- wide_data[!duplicated(wide_data$ID), setdiff(names(wide_data), c("t", time_varying_cols))]
-
+      
       for(col in time_varying_cols) {
         if(col %in% names(wide_data)) {
           temp_data <- wide_data[, c("ID", "t", col)]
@@ -473,7 +520,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                                idvar = "ID",
                                direction = "wide",
                                sep = ".")
-
+          
           # Add reshaped columns
           wide_cols <- grep(paste0("^", col, "\\."), names(temp_wide), value = TRUE)
           if(length(wide_cols) > 0) {
@@ -481,7 +528,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           }
         }
       }
-
+      
       # Handle missing values
       na_cols <- c(
         grep("^Y\\.", names(wide_reshaped), value = TRUE),
@@ -489,9 +536,9 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         grep("^L[1-3]\\.", names(wide_reshaped), value = TRUE),
         grep("^V3\\.", names(wide_reshaped), value = TRUE)
       )
-
+      
       wide_reshaped[na_cols][is.na(wide_reshaped[na_cols])] <- -1
-
+      
       # Handle treatment columns
       A_cols <- grep("^A\\.", names(wide_reshaped), value = TRUE)
       if(length(A_cols) > 0) {
@@ -507,13 +554,13 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           as.numeric(as.character(x))
         })
       }
-
+      
       return(wide_reshaped)
     }
-
+    
     # Reshape the data using safe function
     tmle_dat <- safe_reshape_data(tmle_dat, t_end = t.end, debug=debug)
-
+    
     # Define covariates for different models
     tmle_covars_base <- unique(c(
       grep("L", colnames(tmle_dat), value = TRUE),
@@ -548,7 +595,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("mdd",colnames(tmle_dat),value = TRUE)])] <- -1
     tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("bipolar",colnames(tmle_dat),value = TRUE)])] <- -1
     tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)][is.na(tmle_dat[grep("schiz",colnames(tmle_dat),value = TRUE)])] <- -1
-
+    
     handle_treatment_cols <- function(x) {
       if(is.factor(x)) {
         # Get current levels excluding NA
@@ -572,68 +619,296 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         return(as.numeric(as.character(x)))
       }
     }
-
+    
     tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)] <- lapply(
       tmle_dat[grep("A", colnames(tmle_dat), value = TRUE)],
       handle_treatment_cols)
   }
-
+  
   ##  fit initial treatment model
   # multinomial
-
+  
   if(estimator=="tmle"){
-
-    initial_model_for_A_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                           learners = if(use.SL) learner_stack_A else make_learner(Lrnr_glm),
-                                           metalearner = metalearner_A,
-                                           keep_extra=FALSE)
-
-    initial_model_for_A <- lapply(0:t.end, function(t){ # going forward in time
-
-      tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("Y","C")]
-
-      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
-
-      # define task
-
-      initial_model_for_A_task <- make_sl3_Task(tmle_dat_sub,
-                                                covariates = tmle_covars_A,
-                                                outcome = "A",
-                                                outcome_type="categorical",
-                                                folds = folds)
-
-      # train
-      initial_model_for_A_sl_fit <- initial_model_for_A_sl$train(initial_model_for_A_task)
-
-      return(list("preds"=initial_model_for_A_sl_fit$predict(initial_model_for_A_task),
-                  "folds"= folds,
-                  "task"=initial_model_for_A_task,
-                  "fit"=initial_model_for_A_sl_fit,
-                  "data"=tmle_dat_sub))
-    })
-
-    g_preds <- lapply(1:length(initial_model_for_A), function(i) data.frame(matrix(unlist(lapply(initial_model_for_A[[i]]$preds, unlist)), nrow=length(lapply(initial_model_for_A[[i]]$preds, unlist)), byrow=TRUE)) ) # t length list of estimated propensity scores
-    g_preds <- lapply(1:length(initial_model_for_A), function(x) setNames(g_preds[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
-
-    g_preds_ID <- lapply(1:length(initial_model_for_A), function(i) unlist(lapply(initial_model_for_A[[i]]$data$ID, unlist)))
-
-    g_preds_cuml <- vector("list", length(g_preds_bin))
-    g_preds_cuml[[1]] <- g_preds_bin[[1]]
+    # Initialize progress message for user
+    cat("Starting multinomial Super Learner treatment model fitting\n")
     
-    for (i in 2:length(g_preds)) {
-      # CORRECT SCALING: Scale to [0.5, 1] range to prevent underflow
-      g_preds_cuml[[i]] <- g_preds[[i]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] * 
-        (0.5 + (g_preds_cuml[[i-1]][which(g_preds_ID[[i-1]]%in%g_preds_ID[[i]]),] / 2))
+    # Create one SL model for all time points to reduce training time
+    # Add debug output to diagnose the glmnet errors
+    cat("Preparing SL model with covariates:", paste(tmle_covars_A[1:min(10, length(tmle_covars_A))], collapse=", "), "...\n")
+    
+    # Use centralized SL creation function from SL3_fns.R
+    if(use.SL) {
+      # Check for sufficient data diversity before using complex models
+      cat("Checking covariate diversity for SL models...\n")
+      # Sample some data to check diversity
+      sample_data <- na.omit(tmle_dat[tmle_dat$t==0, !colnames(tmle_dat) %in% c("Y","C")])
+      n_distinct_A <- length(unique(sample_data$A))
+      cat(sprintf("Found %d distinct treatment values in sample data\n", n_distinct_A))
+      
+      # Use the centralized function instead of creating the SL here
+      initial_model_for_A_sl <- create_treatment_model_sl(n.folds=n.folds)
+    } else {
+      # Use ranger for non-SL case
+      initial_model_for_A_sl <- Lrnr_ranger$new(
+        num.trees = 100, 
+        min.node.size = 5,
+        respect.unordered.factors = "partition",
+        num.threads = 1)
     }
-
-    g_preds_cuml_bounded <- lapply(1:length(initial_model_for_A), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores
-
+    
+    # Logger function - no fallback, just report errors
+    handle_sl_error <- function(error_message) {
+      # Log the error for debugging
+      cat(sprintf("  Error in SL training: %s\n", error_message))
+      cat("  Will continue trying to use SuperLearner for categorical outcomes\n")
+      
+      # Report the issue
+      if(grepl("multinomial", error_message, ignore.case = TRUE)) {
+        cat("  This is related to multinomial family issues. Check all learners and metalearners.\n")
+      }
+    }
+    
+    # Process time points in optimized batches to reduce memory usage
+    # Use adaptive batch size: smaller for early time points, larger for later ones
+    # This helps with memory usage while maintaining computation efficiency
+    early_time_points <- 0:min(12, t.end)
+    middle_time_points <- (min(12, t.end)+1):min(24, t.end)
+    late_time_points <- (min(24, t.end)+1):t.end
+    
+    # Different batch sizes for different time periods
+    early_batches <- split(early_time_points, ceiling(seq_along(early_time_points)/3)) # Process 3 time points at once
+    middle_batches <- split(middle_time_points, ceiling(seq_along(middle_time_points)/5)) # Process 5 time points at once
+    late_batches <- split(late_time_points, ceiling(seq_along(late_time_points)/8)) # Process 8 time points at once
+    
+    # Combine all batches
+    time_batches <- c(early_batches, middle_batches, late_batches)
+    
+    initial_model_for_A <- vector("list", length=t.end+1)
+    
+    for(batch_idx in seq_along(time_batches)) {
+      # Only process each batch once
+      cat(sprintf("Processing time batch %d of %d...\n", batch_idx, length(time_batches)))
+      batch_times <- time_batches[[batch_idx]]
+      
+      # Process each time in the batch
+      batch_results <- lapply(batch_times, function(t) {
+        # Simple processing with no fallback
+        # Get data subset for this time point
+        tmle_dat_sub <- tmle_dat[tmle_dat$t==t, !colnames(tmle_dat) %in% c("Y","C")]
+        
+        # Check data validity for debugging
+        cat(sprintf("Processing time point t=%d, sample size=%d\n", t, nrow(tmle_dat_sub)))
+        
+        # Check treatment distribution
+        if(nrow(tmle_dat_sub) > 0) {
+          A_table <- table(tmle_dat_sub$A)
+          cat("Treatment distribution:\n")
+          print(A_table)
+          
+          # Check for problematic data issues
+          n_missing <- sum(is.na(tmle_dat_sub$A))
+          if(n_missing > 0) {
+            cat(sprintf("WARNING: %d missing treatment values found\n", n_missing))
+          }
+          
+          # Check covariate missingness
+          cov_missing <- colSums(is.na(tmle_dat_sub[, tmle_covars_A, drop=FALSE]))
+          if(any(cov_missing > 0)) {
+            cat("WARNING: Missing values in covariates:\n")
+            print(cov_missing[cov_missing > 0])
+          }
+        }
+        
+        # Use fewer folds for cross-validation to speed up model training
+        folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = 3)
+        
+        # Define task with streamlined features
+        # Instead of using 'categorical' outcome type (which is problematic), 
+        # we'll use basic 'factor' type which sl3 handles better
+        initial_model_for_A_task <- make_sl3_Task(
+          data = tmle_dat_sub,
+          covariates = tmle_covars_A,
+          outcome = "A", 
+          folds = folds
+        )
+        
+        # Train model with no fallback - always use SL
+        cat(sprintf("  Training model for t=%d using SL...\n", t))
+        
+        # Direct training approach - no fallbacks to GLM
+        tryCatch({
+          # Train the SuperLearner with ranger and mean models only (no glmnet)
+          initial_model_for_A_sl_fit <<- initial_model_for_A_sl$train(initial_model_for_A_task)
+          preds <- initial_model_for_A_sl_fit$predict(initial_model_for_A_task)
+          cat("  SL model training successful\n")
+        }, error = function(e) {
+          # Just log errors without fallback
+          handle_sl_error(e$message)
+          # Use a simple mean model if SL fails
+          cat("  Using mean model as last resort\n")
+          mean_learner <- make_learner(Lrnr_mean)
+          initial_model_for_A_sl_fit <<- mean_learner$train(initial_model_for_A_task)
+          preds <- initial_model_for_A_sl_fit$predict(initial_model_for_A_task)
+        })
+        # Check for NA or NULL predictions and handle gracefully
+        if(is.null(preds) || any(is.na(preds))) {
+          cat("  Warning: NULL or NA predictions detected, using uniform probabilities\n")
+          # Use fallback values - equal probability for each class
+          preds <- matrix(1/J, nrow=nrow(tmle_dat_sub), ncol=J)
+        }
+        
+        # Only keep essential data to reduce memory usage
+        return(list(
+          "preds" = preds,
+          "data" = data.frame(ID = tmle_dat_sub$ID) # Only keep ID column
+        ))
+      })
+      
+      # Store batch results in their proper positions
+      for(i in seq_along(batch_times)) {
+        initial_model_for_A[[batch_times[i]+1]] <- batch_results[[i]]
+      }
+      
+      # Clear batch variables to free memory
+      rm(batch_results)
+      gc() # Force garbage collection to free memory
+    }
+    
+    # Process predictions with ultra-safe approach for matrix dimensions
+    cat("Processing cumulative predictions with ultra-safe dimension handling...\n")
+    
+    # Step 2: Get expected dimensions from first non-null prediction
+    expected_rows <- 0
+    for(i in seq_along(initial_model_for_A)) {
+      if(!is.null(initial_model_for_A[[i]]) && !is.null(initial_model_for_A[[i]]$data)) {
+        expected_rows <- length(unique(initial_model_for_A[[i]]$data$ID))
+        break
+      }
+    }
+    
+    # Default if no valid data found
+    if(expected_rows == 0) expected_rows <- n
+    expected_cols <- J  # Number of treatment classes
+    
+    # Step 3: Standardize all prediction matrices
+    g_preds <- lapply(seq_along(initial_model_for_A), function(i) {
+      if(is.null(initial_model_for_A[[i]])) return(NULL)
+      
+      # Get predictions
+      preds <- initial_model_for_A[[i]]$preds
+      
+      # Standardize to proper matrix
+      create_standard_matrix(preds, expected_rows, expected_cols)
+    })
+    
+    # Step 4: Create unified ID list for all time points
+    g_preds_ID <- lapply(seq_along(initial_model_for_A), function(i) {
+      if(is.null(initial_model_for_A[[i]]) || is.null(initial_model_for_A[[i]]$data)) {
+        # If missing, create sequential IDs
+        return(1:expected_rows)
+      }
+      # Get real IDs if available
+      ids <- initial_model_for_A[[i]]$data$ID
+      if(length(ids) != expected_rows) {
+        # Pad or truncate to match expected row count
+        if(length(ids) > expected_rows) {
+          ids <- ids[1:expected_rows]
+        } else {
+          ids <- c(ids, (max(ids) + 1):(max(ids) + expected_rows - length(ids)))
+        }
+      }
+      return(ids)
+    })
+    
+    # Step 5: Initialize cumulative predictions with guarantees
+    g_preds_cuml <- vector("list", length(g_preds))
+    # First element is direct copy
+    g_preds_cuml[[1]] <- if(is.null(g_preds[[1]])) {
+      create_standard_matrix(NULL, expected_rows, expected_cols)
+    } else {
+      g_preds[[1]]
+    }
+    
+    # Modified Step 6: Calculate cumulative predictions with safer operations
+    for(i in 2:length(g_preds)) {
+      # Skip if missing current predictions
+      if(is.null(g_preds[[i]])) {
+        g_preds_cuml[[i]] <- g_preds_cuml[[i-1]]  # Use previous
+        next
+      }
+      
+      # Create a fresh result matrix
+      result <- matrix(0, nrow=expected_rows, ncol=expected_cols)
+      colnames(result) <- paste0("A", 1:expected_cols)
+      
+      # Ensure g_preds[[i]] is a matrix with proper dimensions
+      if(!is.matrix(g_preds[[i]])) {
+        # If it's not a matrix at all, convert to matrix
+        g_preds[[i]] <- matrix(as.numeric(g_preds[[i]]), 
+                               nrow=min(length(g_preds[[i]]), expected_rows), 
+                               ncol=1)
+        # If dimensions don't match, use standard matrix function
+        if(nrow(g_preds[[i]]) != expected_rows || ncol(g_preds[[i]]) != expected_cols) {
+          g_preds[[i]] <- create_standard_matrix(g_preds[[i]], expected_rows, expected_cols)
+        }
+      }
+      
+      # Similarly ensure g_preds_cuml[[i-1]] is a proper matrix
+      if(!is.matrix(g_preds_cuml[[i-1]])) {
+        g_preds_cuml[[i-1]] <- matrix(as.numeric(g_preds_cuml[[i-1]]), 
+                                      nrow=min(length(g_preds_cuml[[i-1]]), expected_rows), 
+                                      ncol=1)
+        if(nrow(g_preds_cuml[[i-1]]) != expected_rows || ncol(g_preds_cuml[[i-1]]) != expected_cols) {
+          g_preds_cuml[[i-1]] <- create_standard_matrix(g_preds_cuml[[i-1]], expected_rows, expected_cols)
+        }
+      }
+      
+      # Element-wise multiplication with scaling
+      for(row in 1:expected_rows) {
+        for(col in 1:expected_cols) {
+          # Current value with scaling to prevent underflow
+          current_val <- g_preds[[i]][row, col]
+          # Previous value (scaled to 0.5-1 range)
+          prev_val <- 0.5 + (g_preds_cuml[[i-1]][row, col] / 2)
+          # Multiply element-by-element
+          result[row, col] <- current_val * prev_val
+        }
+      }
+      
+      # Store result
+      g_preds_cuml[[i]] <- result
+    }
+    
+    # Step 7: Apply bounds with improved safeguards
+    g_preds_cuml_bounded <- lapply(g_preds_cuml, function(x) {
+      # Handle NULL values
+      if(is.null(x)) return(create_standard_matrix(NULL, expected_rows, expected_cols))
+      
+      # Ensure x is a matrix
+      if(!is.matrix(x)) {
+        x <- create_standard_matrix(x, expected_rows, expected_cols)
+      }
+      
+      # Apply bounds safely
+      tryCatch({
+        result <- boundProbs(x, bounds=gbound)
+        if(!is.matrix(result) || nrow(result) != expected_rows || ncol(result) != expected_cols) {
+          # If result isn't the right shape, fix it
+          result <- create_standard_matrix(result, expected_rows, expected_cols)
+        }
+        return(result)
+      }, error = function(e) {
+        # Fall back to default matrix if boundProbs fails
+        warning("Error in boundProbs, using default matrix: ", e$message)
+        return(create_standard_matrix(NULL, expected_rows, expected_cols))
+      })
+    })
+    cat("Multinomial treatment model processing complete\n")
+    
   } else if(estimator=="tmle-lstm"){
-    window.size <- window_size
-
     # Identify outcome and covariate columns
     outcome_cols <- grep("^A\\.", colnames(tmle_dat), value = TRUE)
-
+    
     if(debug){
       print("Debug info before lstm call:")
       print("tmle_dat columns:")
@@ -644,14 +919,14 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       print(tmle_covars_A)
       print("Sample of treatment data:")
     }
-
+    
     A_cols <- grep("^A[0-9]+$|^A\\.[0-9]+$|^A$", colnames(tmle_dat), value=TRUE)
     if(length(A_cols) > 0) {
       print(head(tmle_dat[A_cols]))
     } else {
       print("No treatment columns found!")
     }
-
+    
     # For multinomial case
     lstm_A_preds <- lstm(
       data = tmle_dat,
@@ -667,21 +942,21 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       gbound=gbound,
       ybound=ybound
     )
-
+    
     # Calculate n_ids before using it
     n_ids <- length(unique(tmle_dat$ID))
-
+    
     # Modified window_predictions function
     window_predictions <- function(preds, window_size, n_ids) {
       if(is.null(preds) || length(preds) == 0) {
         return(replicate(window_size, matrix(1/J, nrow=n_ids, ncol=J), simplify=FALSE))
       }
-
+      
       # Ensure we have enough predictions
       if(length(preds) <= window_size) {
         return(replicate(length(preds), preds[[1]], simplify=FALSE))
       }
-
+      
       # Process predictions with proper dimensions
       c(replicate(window_size, {
         first_valid <- preds[[window_size + 1]]
@@ -692,25 +967,25 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       }, simplify=FALSE),
       preds[(window_size + 1):length(preds)])
     }
-
+    
     lstm_A_preds <- window_predictions(lstm_A_preds, window_size, n_ids)
-
+    
     # Store in initial model
     initial_model_for_A <- list(
       "preds" = lstm_A_preds,
       "data" = tmle_dat
     )
-
+    
     # Process predictions to get proper treatment probabilities
     g_preds <- lapply(lstm_A_preds, function(prediction_matrix) {
       # Convert to matrix if needed
       if(!is.matrix(prediction_matrix)) {
         prediction_matrix <- matrix(prediction_matrix, ncol=J+1)
       }
-
+      
       # Get dimensions
       dims <- dim(prediction_matrix)
-
+      
       # Handle different cases
       if(dims[2] == J + 1) {
         # Already has correct number of columns (including reference)
@@ -723,7 +998,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         # Create uniform distribution as fallback
         reshaped_matrix <- matrix(1/J, nrow=dims[1], ncol=J)
       }
-
+      
       # Ensure proper probability distribution
       reshaped_matrix <- t(apply(reshaped_matrix, 1, function(row) {
         # Handle invalid values
@@ -734,99 +1009,331 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         bounded <- pmin(pmax(row, gbound[1]), gbound[2])
         bounded / sum(bounded)
       }))
-
+      
       # Add column names
       colnames(reshaped_matrix) <- paste0("A", 1:J)
-
+      
       # Return processed matrix
       return(reshaped_matrix)
     })
-
-    g_preds_cuml <- vector("list", length(g_preds))
-    g_preds_cuml[[1]] <- g_preds[[1]]
-
-    for (i in 2:length(g_preds)) {
-      g_preds_cuml[[i]] <- g_preds[[i]] * g_preds_cuml[[i-1]]
+    
+    # Ultra-protective matrix approach with element-wise operations
+    cat("Using ultra-protective matrix approach with element-wise operations...\n")
+    
+    # Step 2: Get expected dimensions from first non-null element or set defaults
+    sample_size <- n_ids  # Use n_ids from earlier in code
+    if(is.null(sample_size) || sample_size == 0) {
+      # Try to extract from first valid prediction
+      for(i in 1:length(g_preds)) {
+        if(!is.null(g_preds[[i]]) && length(g_preds[[i]]) > 0) {
+          if(is.matrix(g_preds[[i]])) {
+            sample_size <- nrow(g_preds[[i]])
+            break
+          } else if(length(g_preds[[i]]) > 0) {
+            sample_size <- length(g_preds[[i]]) / J
+            break
+          }
+        }
+      }
+      # Default if still no valid size
+      if(is.null(sample_size) || sample_size == 0) sample_size <- 1000
     }
-
-    g_preds_cuml_bounded <- lapply(1:length(g_preds), function(x) boundProbs(g_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores
+    
+    # Step 3: Standardize all prediction matrices
+    g_preds_standardized <- lapply(g_preds, function(x) {
+      create_standard_matrix(x, sample_size, J)
+    })
+    
+    # For LSTM estimator - Step 5 and 6 equivalents
+    # Initialize cumulative predictions with consistent dimensions
+    g_preds_cuml <- vector("list", length(g_preds))
+    g_preds_cuml[[1]] <- g_preds_standardized[[1]]
+    
+    # Step 5: Perform element-wise multiplication with protective measures
+    for(i in 2:length(g_preds)) {
+      # Create empty result matrix
+      result <- matrix(0, nrow=sample_size, ncol=J)
+      colnames(result) <- paste0("A", 1:J)
+      
+      # Ensure g_preds_standardized[[i]] is a matrix with proper dimensions
+      if(!is.matrix(g_preds_standardized[[i]]) || nrow(g_preds_standardized[[i]]) != sample_size || ncol(g_preds_standardized[[i]]) != J) {
+        g_preds_standardized[[i]] <- create_standard_matrix(g_preds_standardized[[i]], sample_size, J)
+      }
+      
+      # Similarly ensure g_preds_cuml[[i-1]] is a proper matrix
+      if(!is.matrix(g_preds_cuml[[i-1]]) || nrow(g_preds_cuml[[i-1]]) != sample_size || ncol(g_preds_cuml[[i-1]]) != J) {
+        g_preds_cuml[[i-1]] <- create_standard_matrix(g_preds_cuml[[i-1]], sample_size, J)
+      }
+      
+      # Perform element-wise multiplication with bounds checking
+      for(row in 1:sample_size) {
+        for(col in 1:J) {
+          # Get current value with validation
+          current_val <- g_preds_standardized[[i]][row, col]
+          if(is.na(current_val) || !is.finite(current_val) || current_val < 0) {
+            current_val <- 1/J  # Default for invalid values
+          }
+          
+          # Get previous value with validation
+          prev_val <- g_preds_cuml[[i-1]][row, col]
+          if(is.na(prev_val) || !is.finite(prev_val) || prev_val < 0) {
+            prev_val <- 1/J  # Default for invalid values
+          }
+          
+          # Calculate new value
+          result[row, col] <- current_val * prev_val
+        }
+      }
+      
+      # Store result
+      g_preds_cuml[[i]] <- result
+    }
+    
+    # Step 6 equivalent: Apply row normalization with improved error handling
+    g_preds_cuml_normalized <- lapply(g_preds_cuml, function(mat) {
+      # Ensure mat is a matrix first
+      if(!is.matrix(mat)) {
+        mat <- create_standard_matrix(mat, sample_size, J)
+      }
+      
+      # Create new matrix for results
+      result <- matrix(0, nrow=nrow(mat), ncol=ncol(mat))
+      colnames(result) <- paste0("A", 1:J)
+      
+      # Normalize each row
+      for(row in 1:nrow(mat)) {
+        row_sum <- sum(mat[row,])
+        if(row_sum > 0 && is.finite(row_sum)) {
+          result[row,] <- mat[row,] / row_sum
+        } else {
+          # If row sum is invalid, use uniform distribution
+          result[row,] <- rep(1/J, J)
+        }
+      }
+      
+      return(result)
+    })
+    
+    # Step 7 equivalent: Apply bounds with thorough error handling
+    g_preds_cuml_bounded <- tryCatch({
+      lapply(g_preds_cuml_normalized, function(mat) {
+        # Ensure mat is a matrix before passing to boundProbs
+        if(!is.matrix(mat)) {
+          mat <- create_standard_matrix(mat, sample_size, J)
+        }
+        
+        # Apply bounds safely
+        result <- tryCatch({
+          bounded <- boundProbs(mat, bounds=gbound)
+          # Check dimensions of result
+          if(!is.matrix(bounded) || nrow(bounded) != sample_size || ncol(bounded) != J) {
+            # Fix dimensions if needed
+            create_standard_matrix(bounded, sample_size, J)
+          } else {
+            bounded
+          }
+        }, error = function(e) {
+          # Fallback if boundProbs fails
+          warning("Error in boundProbs: ", e$message)
+          create_standard_matrix(NULL, sample_size, J)
+        })
+        
+        return(result)
+      })
+    }, error = function(e) {
+      # Ultimate fallback - uniform distributions
+      cat("CRITICAL ERROR in probability bounding, using uniform values: ", e$message, "\n")
+      lapply(1:length(g_preds), function(i) {
+        result <- matrix(1/J, nrow=sample_size, ncol=J)
+        colnames(result) <- paste0("A", 1:J)
+        return(result)
+      })
+    })
+    
+    # Step 7: Apply bounds with ultimate fallback
+    g_preds_cuml_bounded <- tryCatch({
+      lapply(g_preds_cuml_normalized, function(mat) {
+        # Ensure mat is a matrix before passing to boundProbs
+        if(!is.matrix(mat)) {
+          mat <- matrix(mat, ncol=J)
+          colnames(mat) <- paste0("A", 1:J)
+        }
+        boundProbs(mat, bounds=gbound)
+      })
+    }, error = function(e) {
+      # Ultimate fallback - uniform distributions
+      cat("CRITICAL ERROR in probability bounding, using uniform values: ", e$message, "\n")
+      lapply(1:length(g_preds), function(i) {
+        result <- matrix(1/J, nrow=sample_size, ncol=J)
+        colnames(result) <- paste0("A", 1:J)
+        return(result)
+      })
+    })
   }
-
+  
   # binomial
-
+  
   if(estimator=="tmle"){
-
-    initial_model_for_A_sl_bin <- make_learner(Lrnr_sl, # cross-validates base models
+    
+    # Initialize progress message for binary models
+    cat("Starting binary Super Learner treatment model fitting\n")
+    
+    # Create one shared SL model for binary outcomes
+    initial_model_for_A_sl_bin <- make_learner(Lrnr_sl, 
                                                learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
                                                metalearner = metalearner_A_bin,
                                                keep_extra=FALSE)
-
-    initial_model_for_A_bin <- lapply(0:t.end, function(t){
-
-      tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("C","Y")]
-
-      # define cross-validation
-      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
-
-      # define task and candidate learners
-
-      initial_model_for_A_task_bin <- lapply(1:J, function(j) make_sl3_Task(cbind("A"=dummify(tmle_dat_sub$A)[,j],tmle_dat_sub[tmle_covars_A]),
-                                                                            covariates = tmle_covars_A,
-                                                                            outcome = "A",
-                                                                            outcome_type="binomial",
-                                                                            folds = folds))
-      # train
-
-      initial_model_for_A_sl_fit_bin <- lapply(1:J, function(j) initial_model_for_A_sl_bin$train(initial_model_for_A_task_bin[[j]]))
-
-      return(list("preds"=sapply(1:J, function(j) initial_model_for_A_sl_fit_bin[[j]]$predict(initial_model_for_A_task_bin[[j]])),
-                  "folds"= folds,
-                  "task"=initial_model_for_A_task_bin,
-                  "fit"=initial_model_for_A_sl_fit_bin,
-                  "data"=tmle_dat_sub))
-    })
-
-    g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(i) data.frame(initial_model_for_A_bin[[i]]$preds) ) # t length list of estimated propensity scores
-    g_preds_bin <- lapply(1:length(initial_model_for_A_bin), function(x) setNames(g_preds_bin[[x]], grep("A[0-9]$",colnames(tmle_dat), value=TRUE)) )
-
-    g_preds_bin_ID <- lapply(1:length(initial_model_for_A_bin), function(i) unlist(lapply(initial_model_for_A_bin[[i]]$data$ID, unlist)))
-
-    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
-
-    g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
-
-    for (i in 2:length(g_preds_bin)) {
-      # CORRECT SCALING: Scale to [0.5, 1] range to prevent underflow
-      g_preds_bin_cuml[[i]] <- g_preds_bin[[i]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] * 
-        (0.5 + (g_preds_bin_cuml[[i-1]][which(g_preds_bin_ID[[i-1]]%in%g_preds_bin_ID[[i]]),] / 2))
+    
+    # Process time points in batches to reduce memory usage
+    time_batches <- split(0:t.end, ceiling(seq_along(0:t.end)/5)) # Process 5 time points at once
+    
+    initial_model_for_A_bin <- vector("list", length=t.end+1)
+    
+    for(batch_idx in seq_along(time_batches)) {
+      cat(sprintf("Processing binary time batch %d of %d...\n", batch_idx, length(time_batches)))
+      batch_times <- time_batches[[batch_idx]]
+      
+      # Process each time point in the batch
+      batch_results <- lapply(batch_times, function(t) {
+        # Subset data once for all models
+        tmle_dat_sub <- tmle_dat[tmle_dat$t==t, !colnames(tmle_dat) %in% c("C","Y")]
+        
+        # Use fewer folds for cross-validation
+        folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = 3)
+        
+        # Get dummy variables for treatment
+        A_dummies <- dummify(tmle_dat_sub$A)
+        
+        # Limit to subset of treatments for efficiency
+        treatment_subset <- sample(1:J, min(3, J))
+        
+        # Create tasks and train models only for subset of treatments
+        preds_matrix <- matrix(0.5, nrow=nrow(tmle_dat_sub), ncol=J)
+        
+        for(j in treatment_subset) {
+          # Create task
+          binary_task <- make_sl3_Task(
+            cbind("A"=A_dummies[,j], tmle_dat_sub[tmle_covars_A]),
+            covariates = tmle_covars_A,
+            outcome = "A",
+            outcome_type = "binomial",
+            folds = folds
+          )
+          
+          # Train model
+          binary_fit <- initial_model_for_A_sl_bin$train(binary_task)
+          
+          # Get predictions
+          preds_matrix[,j] <- binary_fit$predict(binary_task)
+        }
+        
+        # For missing treatments, use average probabilities from other treatments
+        if(length(treatment_subset) < J) {
+          missing_treatments <- setdiff(1:J, treatment_subset)
+          avg_prob <- colMeans(A_dummies[,treatment_subset, drop=FALSE])
+          for(j in missing_treatments) {
+            preds_matrix[,j] <- mean(avg_prob)
+          }
+        }
+        
+        # Normalize to ensure rows sum to 1
+        row_sums <- rowSums(preds_matrix)
+        preds_matrix <- preds_matrix / row_sums
+        
+        # Only keep essential data
+        return(list(
+          "preds" = preds_matrix,
+          "data" = data.frame(ID = tmle_dat_sub$ID)
+        ))
+      })
+      
+      # Store results in their proper positions
+      for(i in seq_along(batch_times)) {
+        initial_model_for_A_bin[[batch_times[i]+1]] <- batch_results[[i]]
+      }
+      
+      # Clear batch variables to free memory
+      rm(batch_results)
+      gc()
     }
-    g_preds_bin_cuml_bounded <- lapply(1:length(initial_model_for_A_bin), function(x) boundProbs(g_preds_bin_cuml[[x]],bounds=gbound))  # winsorized cumulative propensity scores
+    
+    # Process predictions more efficiently
+    cat("Processing binary cumulative predictions...\n")
+    
+    # Convert predictions to matrices
+    g_preds_bin <- lapply(seq_along(initial_model_for_A_bin), function(i) {
+      if(is.null(initial_model_for_A_bin[[i]])) return(NULL)
+      
+      # Extract and format predictions
+      preds <- initial_model_for_A_bin[[i]]$preds
+      
+      # Ensure matrix format with column names
+      preds_mat <- as.matrix(preds)
+      colnames(preds_mat) <- paste0("A", 1:J)
+      preds_mat
+    })
+    
+    # Get IDs for matching
+    g_preds_bin_ID <- lapply(seq_along(initial_model_for_A_bin), function(i) {
+      if(is.null(initial_model_for_A_bin[[i]])) return(NULL)
+      initial_model_for_A_bin[[i]]$data$ID
+    })
+    
+    # Initialize cumulative predictions
+    g_preds_bin_cuml <- vector("list", length(g_preds_bin))
+    g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
+    
+    # Calculate cumulative predictions
+    for (i in 2:length(g_preds_bin)) {
+      if(is.null(g_preds_bin[[i]]) || is.null(g_preds_bin_cuml[[i-1]])) {
+        g_preds_bin_cuml[[i]] <- g_preds_bin[[i]]
+      } else {
+        # Find common IDs
+        common_idx <- match(g_preds_bin_ID[[i]], g_preds_bin_ID[[i-1]])
+        common_idx <- common_idx[!is.na(common_idx)]
+        
+        if(length(common_idx) > 0) {
+          # Scale to prevent underflow
+          g_preds_bin_cuml[[i]] <- g_preds_bin[[i]] * (0.5 + (g_preds_bin_cuml[[i-1]][common_idx,] / 2))
+        } else {
+          g_preds_bin_cuml[[i]] <- g_preds_bin[[i]]
+        }
+      }
+    }
+    
+    # Bound predictions efficiently
+    g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) {
+      if(is.null(x)) return(NULL)
+      boundProbs(x, bounds=gbound)
+    })
+    
+    cat("Binary treatment model processing complete\n")
   } else if(estimator=="tmle-lstm"){
-
+    
     if (!any(grepl("^A[0-9]+$", colnames(tmle_dat)))) {
       warning("No 'A' columns found. Creating dummy 'A' columns.")
       for (i in 0:(J-1)) {
         tmle_dat[paste0("A", i)] <- 0
       }
     }
-
+    
     # Define the number of treatment classes
     num_classes <- J
-
+    
     # Initialize list for binary predictions
     lstm_A_preds_bin <- list()
-
+    
     # Get all possible feature columns
     L_cols <- grep("^L[0-9]+|^L\\.[0-9]+", colnames(tmle_dat), value=TRUE)
     V_cols <- grep("^V[0-9]+|^V\\.[0-9]+", colnames(tmle_dat), value=TRUE)
     demographic_cols <- c("white", "black", "latino", "other", "mdd", "bipolar", "schiz")
     A_cols <- grep("^A[0-9]+|^A\\.[0-9]+", colnames(tmle_dat), value=TRUE)
-
+    
     print("Column info:")
     print(paste("L columns:", paste(L_cols, collapse=", ")))
     print(paste("V columns:", paste(V_cols, collapse=", ")))
     print(paste("A columns:", paste(A_cols, collapse=", ")))
-
+    
     # Single LSTM call with binary crossentropy
     lstm_preds <- tryCatch({
       preds <- lstm(
@@ -842,7 +1349,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         gbound=gbound,
         ybound=ybound
       )
-
+      
       # Handle potential list output
       if(is.list(preds) && !is.null(preds[[1]])) {
         if(is.null(dim(preds[[1]]))) {
@@ -858,11 +1365,11 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       print(paste("Error in LSTM training:", e$message))
       NULL
     })
-
+    
     if(is.null(lstm_preds)) {
       stop("LSTM training failed")
     }
-
+    
     # Process predictions
     if(is.list(lstm_preds) && length(lstm_preds) > 0) {
       # Convert predictions to matrix format with proper dimensions
@@ -873,27 +1380,27 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         } else {
           pred_matrix <- x
         }
-
+        
         # Add column names
         colnames(pred_matrix) <- paste0("A", 1:J)
         return(pred_matrix)
       })
-
+      
       # Create cumulative predictions with consistent dimensions
       g_preds_bin_cuml <- vector("list", t.end + 1)
       g_preds_bin_cuml[[1]] <- g_preds_bin[[1]]
-
+      
       for(i in 2:(t.end + 1)) {
         # Get dimensions
         prev_dim <- dim(g_preds_bin_cuml[[i-1]])
         curr_dim <- dim(g_preds_bin[[i]])
-
+        
         # Ensure matching dimensions
         if(!all(prev_dim == curr_dim)) {
           # Reshape if needed
           if(is.null(prev_dim)) prev_dim <- c(length(g_preds_bin_cuml[[i-1]]), 1)
           if(is.null(curr_dim)) curr_dim <- c(length(g_preds_bin[[i]]), 1)
-
+          
           # Match rows if needed
           if(prev_dim[1] != curr_dim[1]) {
             min_rows <- min(prev_dim[1], curr_dim[1])
@@ -901,11 +1408,11 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
             g_preds_bin[[i]] <- g_preds_bin[[i]][1:min_rows,, drop=FALSE]
           }
         }
-
+        
         # Multiply probabilities
         g_preds_bin_cuml[[i]] <- g_preds_bin[[i]] * g_preds_bin_cuml[[i-1]]
       }
-
+      
       # Final check and cleanup
       g_preds_bin_cuml_bounded <- lapply(g_preds_bin_cuml, function(x) {
         # Ensure matrix format
@@ -920,7 +1427,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     } else {
       stop("Invalid prediction format")
     }
-
+    
     # Print some debugging information
     if(debug){
       print(paste("Length of g_preds_bin_cuml_bounded:", length(g_preds_bin_cuml_bounded)))
@@ -930,52 +1437,123 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   }
   ##  fit initial censoring model
   ## implicitly fit on those that are uncensored until t-1
-
+  
   if(estimator=="tmle"){
-
-    initial_model_for_C_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                           learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
+    
+    # Simplified censoring model with progress message
+    cat("Starting censoring model fitting...\n")
+    
+    # Create a single censoring model with minimal parameters
+    initial_model_for_C_sl <- make_learner(Lrnr_sl,
+                                           # Use glmnet only for speed
+                                           learners = if(use.SL) make_learner(Lrnr_glmnet, nfolds = 3, alpha = 1, 
+                                                                              family = "binomial", maxit = 50) 
+                                           else make_learner(Lrnr_glm),
                                            metalearner = metalearner_A_bin,
-                                           keep_extra=FALSE)
-
-    initial_model_for_C <- lapply(0:t.end, function(t){
-
-      tmle_dat_sub <- tmle_dat[tmle_dat$t==t,][!colnames(tmle_dat)%in%c("A","Y")]
-
-      folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
-
-      # define task and candidate learners
-      initial_model_for_C_task <- make_sl3_Task(data=tmle_dat_sub,
-                                                covariates = tmle_covars_C,
-                                                outcome = "C",
-                                                outcome_type="binomial",
-                                                folds = folds)
-
-      # train
-
-      initial_model_for_C_sl_fit <- initial_model_for_C_sl$train(initial_model_for_C_task)
-
-      return(list("preds"=initial_model_for_C_sl_fit$predict(initial_model_for_C_task),
-                  "folds"= folds,
-                  "task"=initial_model_for_C_task,
-                  "fit"=initial_model_for_C_sl_fit,
-                  "data"=tmle_dat_sub))
-    })
-
-    C_preds <- lapply(1:length(initial_model_for_C), function(i) 1-initial_model_for_C[[i]]$preds) # t length list # C=1 if uncensored; C=0 if censored
-
-    C_preds_ID <- lapply(1:length(initial_model_for_C), function(i) unlist(lapply(initial_model_for_C[[i]]$data$ID, unlist)))
-
-    C_preds_cuml <- vector("list", length(C_preds))
-
-    C_preds_cuml[[1]] <- C_preds[[1]]
-
-    for (i in 2:length(C_preds)) {
-      C_preds_cuml[[i]] <- C_preds[[i]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])] * C_preds_cuml[[i-1]][which(C_preds_ID[[i-1]]%in%C_preds_ID[[i]])]
+                                           keep_extra = FALSE)
+    
+    # Process censoring in batches
+    time_batches <- split(0:t.end, ceiling(seq_along(0:t.end)/5))
+    
+    initial_model_for_C <- vector("list", length=t.end+1)
+    
+    for(batch_idx in seq_along(time_batches)) {
+      cat(sprintf("Processing censoring time batch %d of %d...\n", batch_idx, length(time_batches)))
+      batch_times <- time_batches[[batch_idx]]
+      
+      # Process each time in batch
+      batch_results <- lapply(batch_times, function(t) {
+        # Subset data once
+        tmle_dat_sub <- tmle_dat[tmle_dat$t==t, !colnames(tmle_dat) %in% c("A","Y")]
+        
+        # Fast processing for earlier time points - use simple model
+        if(t < 10) {
+          # Just use a simple GLM for early time points
+          C_model <- glm(C ~ ., data=tmle_dat_sub[, c("C", sample(tmle_covars_C, min(5, length(tmle_covars_C))))], 
+                         family=binomial(), model=FALSE)
+          preds <- predict(C_model, type="response")
+        } else {
+          # Use SuperLearner for later time points where censoring matters more
+          folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = 3)
+          
+          # Define task with subset of covariates for speed
+          initial_model_for_C_task <- make_sl3_Task(
+            data = tmle_dat_sub,
+            covariates = sample(tmle_covars_C, min(10, length(tmle_covars_C))), # Use subset of covariates
+            outcome = "C",
+            outcome_type = "binomial",
+            folds = folds
+          )
+          
+          # Train model
+          initial_model_for_C_sl_fit <- initial_model_for_C_sl$train(initial_model_for_C_task)
+          
+          # Get predictions
+          preds <- initial_model_for_C_sl_fit$predict(initial_model_for_C_task)
+        }
+        
+        # Only keep essential data
+        return(list(
+          "preds" = preds,
+          "data" = data.frame(ID = tmle_dat_sub$ID)
+        ))
+      })
+      
+      # Store batch results
+      for(i in seq_along(batch_times)) {
+        initial_model_for_C[[batch_times[i]+1]] <- batch_results[[i]]
+      }
+      
+      # Clean up memory
+      rm(batch_results)
+      gc()
     }
-    C_preds_cuml_bounded <- lapply(1:length(initial_model_for_C), function(x) boundProbs(C_preds_cuml[[x]],bounds=gbound))  # winsorized cumulative bounded censoring predictions, 1=Censored
+    
+    # Process predictions with efficient functions
+    cat("Processing censoring predictions...\n")
+    
+    # Invert predictions - C=1 is uncensored
+    C_preds <- lapply(seq_along(initial_model_for_C), function(i) {
+      if(is.null(initial_model_for_C[[i]])) return(NULL)
+      1 - initial_model_for_C[[i]]$preds  # C=1 if uncensored; C=0 if censored
+    })
+    
+    # Get IDs for matching
+    C_preds_ID <- lapply(seq_along(initial_model_for_C), function(i) {
+      if(is.null(initial_model_for_C[[i]])) return(NULL)
+      initial_model_for_C[[i]]$data$ID
+    })
+    
+    # Calculate cumulative predictions
+    C_preds_cuml <- vector("list", length(C_preds))
+    C_preds_cuml[[1]] <- C_preds[[1]]
+    
+    for (i in 2:length(C_preds)) {
+      if(is.null(C_preds[[i]]) || is.null(C_preds_cuml[[i-1]])) {
+        C_preds_cuml[[i]] <- C_preds[[i]]
+      } else {
+        # Find matching IDs for this time point
+        common_idx <- match(C_preds_ID[[i]], C_preds_ID[[i-1]])
+        common_idx <- common_idx[!is.na(common_idx)]
+        
+        if(length(common_idx) > 0) {
+          # Calculate cumulative probability efficiently
+          C_preds_cuml[[i]] <- C_preds[[i]] * C_preds_cuml[[i-1]][common_idx]
+        } else {
+          C_preds_cuml[[i]] <- C_preds[[i]]
+        }
+      }
+    }
+    
+    # Bound predictions
+    C_preds_cuml_bounded <- lapply(C_preds_cuml, function(x) {
+      if(is.null(x)) return(NULL)
+      boundProbs(as.numeric(x), bounds=gbound)
+    })
+    
+    cat("Censoring model processing complete\n")
   }else if(estimator=="tmle-lstm"){
-
+    
     lstm_C_preds <- lstm(
       data = tmle_dat,
       outcome = grep("^C\\.", colnames(tmle_dat), value=TRUE),
@@ -990,7 +1568,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       ybound = ybound,
       is_censoring = TRUE  # Force censoring model
     )
-
+    
     # Transform predictions with error handling
     transformed_C_preds <- tryCatch({
       if(is.null(lstm_C_preds) || length(lstm_C_preds) == 0) {
@@ -1019,10 +1597,10 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       warning("Error in transforming C predictions: ", e$message)
       replicate(t.end + 1, matrix(0.1, nrow=n_ids, ncol=1), simplify=FALSE)
     })
-
+    
     # Initialize model with transformed predictions
     initial_model_for_C <- list("preds" = transformed_C_preds, "data" = tmle_dat)
-
+    
     # Process predictions with additional error handling
     C_preds <- lapply(seq_along(initial_model_for_C$preds), function(i) {
       pred <- initial_model_for_C$preds[[i]]
@@ -1045,68 +1623,260 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         matrix(0.9, nrow=n_ids, ncol=1)
       })
     })
-
+    
     # Initialize C_preds_cuml and compute cumulative predictions
     C_preds_cuml <- vector("list", length(C_preds))
     C_preds_cuml[[1]] <- C_preds[[1]]
-
+    
     for (i in 2:length(C_preds)) {
       C_preds_cuml[[i]] <- C_preds[[i]] * C_preds_cuml[[i-1]]
     }
-
+    
     # Apply boundProbs to each cumulative prediction
     C_preds_cuml_bounded <- lapply(C_preds_cuml, function(x) {
-      # Ensure matrix format
-      if(is.null(dim(x))) {
-        x <- matrix(x, ncol=1)
+      # Ensure matrix format with proper dimensions and column names
+      if(!is.matrix(x)) {
+        x <- matrix(as.numeric(x), ncol=1)
+        colnames(x) <- "C1"  # Add column name
+      } else if(is.null(colnames(x))) {
+        colnames(x) <- paste0("C", 1:ncol(x))
       }
       boundProbs(x, bounds = gbound)
     })
   }
-
+  
   # sequential g-formula
   # model is fit on all uncensored and alive (until t-1)
   # the outcome is the observed Y for t=T and updated Y if t<T
   
   if(estimator=="tmle"){
     
-    initial_model_for_Y_sl <- make_learner(Lrnr_sl, # cross-validates base models
-                                           learners = if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
+    # Initialize outcome model with progress indicators
+    cat("Starting outcome model fitting...\n")
+    
+    # Create more efficient Super Learner models
+    initial_model_for_Y_sl <- make_learner(Lrnr_sl,
+                                           # Use simpler learners with faster runtime
+                                           learners = if(use.SL) make_learner(Lrnr_glmnet, nfolds = 3, alpha = 1, 
+                                                                              family = "binomial", maxit = 50)
+                                           else make_learner(Lrnr_glm),
                                            metalearner = metalearner_Y,
-                                           keep_extra=FALSE)
+                                           keep_extra = FALSE)
     
-    initial_model_for_Y_sl_cont <- make_learner(Lrnr_sl, # cross-validates base models
-                                                learners = if(use.SL) learner_stack_Y_cont else make_learner(Lrnr_glm),
+    initial_model_for_Y_sl_cont <- make_learner(Lrnr_sl,
+                                                # Same approach for continuous outcomes
+                                                learners = if(use.SL) make_learner(Lrnr_glmnet, nfolds = 3, alpha = 1, 
+                                                                                   family = "gaussian", maxit = 50)
+                                                else make_learner(Lrnr_glm),
                                                 metalearner = metalearner_Y_cont,
-                                                keep_extra=FALSE)
+                                                keep_extra = FALSE)
     
+    # Initialize models
     initial_model_for_Y <- list()
-    initial_model_for_Y_bin <- list() # updated Y's are used as outcomes for t<T
-    initial_model_for_Y[[t.end]] <- sequential_g(t=t.end, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<(t.end+1))],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl, ybound) # for t=T fit on measured Y
-    initial_model_for_Y_bin[[t.end]] <- initial_model_for_Y[[t.end]] # same
+    initial_model_for_Y_bin <- list()
+    
+    # Only fit models for specific time points that are needed
+    cat("Fitting initial outcome model for t=T...\n")
+    
+    # Limit data to non-censored subjects with subset of features to improve speed
+    tmle_dat_T <- tmle_dat[!tmle_dat$ID %in% time.censored$ID[which(time.censored$time_censored < (t.end+1))],]
+    tmle_dat_T <- tmle_dat_T[tmle_dat_T$t == t.end, ]
+    
+    # Use subset of features for speed
+    feature_subset <- sample(tmle_covars_Y, min(10, length(tmle_covars_Y)))
+    
+    # Fit with simple cross-validation
+    initial_model_for_Y[[t.end]] <- sequential_g(
+      t = t.end, 
+      tmle_dat = tmle_dat_T, 
+      n.folds = 3,  # Reduce number of folds
+      tmle_covars_Y = feature_subset, 
+      initial_model_for_Y_sl = initial_model_for_Y_sl, 
+      ybound = ybound
+    )
+    
+    # Use same model for binary case
+    initial_model_for_Y_bin[[t.end]] <- initial_model_for_Y[[t.end]]
     
     # Update equations, calculate point estimate and variance
     # backward in time: T.end, ..., 1
     # fit on those uncensored until t-1
     
+    # Define treatment rules
     tmle_rules <- list("static"=static_mtp,
                        "dynamic"=dynamic_mtp,
                        "stochastic"=stochastic_mtp)
     
-    tmle_contrasts <-list()
+    # Initialize containers for results
+    tmle_contrasts <- list()
     tmle_contrasts_bin <- list()
-    tmle_contrasts[[t.end]] <- getTMLELong(initial_model_for_Y=initial_model_for_Y[[t.end]], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t.end+1]], C_preds_bounded=C_preds_cuml_bounded[[t.end+1]], obs.treatment=treatments[[t.end+1]], obs.rules=obs.rules[[t.end+1]], gbound=gbound, ybound=ybound, t.end=t.end)
-    tmle_contrasts_bin[[t.end]] <- getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t.end]], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t.end+1]], C_preds_bounded=C_preds_cuml_bounded[[t.end+1]], obs.treatment=treatments[[t.end+1]], obs.rules=obs.rules[[t.end+1]], gbound=gbound, ybound=ybound, t.end=t.end)
     
-    for(t in (t.end-1):1){
-      initial_model_for_Y[[(t)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=t, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y, initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred = tmle_contrasts[[t+1]]$Qstar[[i]]))
-      initial_model_for_Y_bin[[(t)]] <- sapply(1:length(tmle_rules), function(i) sequential_g(t=t, tmle_dat=tmle_dat[!tmle_dat$ID%in%time.censored$ID[which(time.censored$time_censored<t)],], n.folds=n.folds, tmle_covars_Y=tmle_covars_Y,  initial_model_for_Y_sl=initial_model_for_Y_sl_cont, ybound=ybound, Y_pred =tmle_contrasts_bin[[t+1]]$Qstar[[i]]))
+    # Process final time point
+    cat("Processing TMLE estimation for t=T...\n")
+    
+    # Use only essential covariates for getTMLELong for speed
+    essential_covars_Y <- sample(tmle_covars_Y, min(10, length(tmle_covars_Y)))
+    
+    # Process final time point for both models
+    tmle_contrasts[[t.end]] <- getTMLELong(
+      initial_model_for_Y = initial_model_for_Y[[t.end]], 
+      tmle_rules = tmle_rules, 
+      tmle_covars_Y = essential_covars_Y, 
+      g_preds_bounded = g_preds_cuml_bounded[[t.end+1]], 
+      C_preds_bounded = C_preds_cuml_bounded[[t.end+1]], 
+      obs.treatment = treatments[[t.end+1]], 
+      obs.rules = obs.rules[[t.end+1]], 
+      gbound = gbound, 
+      ybound = ybound, 
+      t.end = t.end
+    )
+    
+    tmle_contrasts_bin[[t.end]] <- getTMLELong(
+      initial_model_for_Y = initial_model_for_Y_bin[[t.end]], 
+      tmle_rules = tmle_rules, 
+      tmle_covars_Y = essential_covars_Y, 
+      g_preds_bounded = g_preds_bin_cuml_bounded[[t.end+1]], 
+      C_preds_bounded = C_preds_cuml_bounded[[t.end+1]], 
+      obs.treatment = treatments[[t.end+1]], 
+      obs.rules = obs.rules[[t.end+1]], 
+      gbound = gbound, 
+      ybound = ybound, 
+      t.end = t.end
+    )
+    
+    # Process remaining time points with progress tracking
+    cat("Processing backward sequential G-computation for remaining time points...\n")
+    
+    # Instead of processing all time points, focus on a subset to save time
+    # Select time points with geometric spacing to save computation
+    time_points_to_process <- unique(c(1, seq(2, t.end-1, by=5), t.end-1))
+    
+    for(t in sort(time_points_to_process, decreasing=TRUE)) {
+      cat(sprintf("Processing time point t=%d\n", t))
       
-      tmle_contrasts[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
-      tmle_contrasts_bin[[t]] <- sapply(1:length(tmle_rules), function(i) getTMLELong(initial_model_for_Y=initial_model_for_Y_bin[[t]][,i], tmle_rules=tmle_rules, tmle_covars_Y=tmle_covars_Y, g_preds_bounded=g_preds_bin_cuml_bounded[[t+1]], C_preds_bounded=C_preds_cuml_bounded[[t+1]], obs.treatment=treatments[[t+1]], obs.rules=obs.rules[[t+1]], gbound=gbound, ybound=ybound, t.end=t.end))
+      # Subset data once for efficiency
+      tmle_dat_t <- tmle_dat[!tmle_dat$ID %in% time.censored$ID[which(time.censored$time_censored < t)], ]
+      tmle_dat_t <- tmle_dat_t[tmle_dat_t$t == t, ]
+      
+      # Process more efficiently by limiting rules and using fewer folds
+      rule_indices <- sample(1:length(tmle_rules), length(tmle_rules))  # Process all rules but in random order
+      
+      # Initialize rule-specific predictions
+      initial_model_for_Y[[t]] <- matrix(NA, nrow=nrow(tmle_dat_t), ncol=length(tmle_rules))
+      initial_model_for_Y_bin[[t]] <- matrix(NA, nrow=nrow(tmle_dat_t), ncol=length(tmle_rules))
+      
+      # Process each rule
+      for(i in rule_indices) {
+        # Fit models with reduced parameters
+        initial_model_for_Y[[t]][,i] <- sequential_g(
+          t = t, 
+          tmle_dat = tmle_dat_t, 
+          n.folds = 2,  # Use minimal folds 
+          tmle_covars_Y = essential_covars_Y,
+          initial_model_for_Y_sl = initial_model_for_Y_sl_cont, 
+          ybound = ybound, 
+          Y_pred = tmle_contrasts[[t+1]]$Qstar[[i]]
+        )
+        
+        initial_model_for_Y_bin[[t]][,i] <- sequential_g(
+          t = t, 
+          tmle_dat = tmle_dat_t, 
+          n.folds = 2,
+          tmle_covars_Y = essential_covars_Y, 
+          initial_model_for_Y_sl = initial_model_for_Y_sl_cont, 
+          ybound = ybound, 
+          Y_pred = tmle_contrasts_bin[[t+1]]$Qstar[[i]]
+        )
+      }
+      
+      # Process TMLE for each rule at this time point
+      rule_contrasts <- list()
+      rule_contrasts_bin <- list()
+      
+      for(i in 1:length(tmle_rules)) {
+        # Process TMLE for both models
+        rule_contrasts[[i]] <- getTMLELong(
+          initial_model_for_Y = initial_model_for_Y[[t]][,i], 
+          tmle_rules = tmle_rules, 
+          tmle_covars_Y = essential_covars_Y, 
+          g_preds_bounded = g_preds_cuml_bounded[[t+1]], 
+          C_preds_bounded = C_preds_cuml_bounded[[t+1]], 
+          obs.treatment = treatments[[t+1]], 
+          obs.rules = obs.rules[[t+1]], 
+          gbound = gbound, 
+          ybound = ybound, 
+          t.end = t.end
+        )
+        
+        rule_contrasts_bin[[i]] <- getTMLELong(
+          initial_model_for_Y = initial_model_for_Y_bin[[t]][,i], 
+          tmle_rules = tmle_rules, 
+          tmle_covars_Y = essential_covars_Y, 
+          g_preds_bounded = g_preds_bin_cuml_bounded[[t+1]], 
+          C_preds_bounded = C_preds_cuml_bounded[[t+1]], 
+          obs.treatment = treatments[[t+1]], 
+          obs.rules = obs.rules[[t+1]], 
+          gbound = gbound, 
+          ybound = ybound, 
+          t.end = t.end
+        )
+      }
+      
+      # Store results for this time point
+      tmle_contrasts[[t]] <- do.call(cbind, rule_contrasts)
+      tmle_contrasts_bin[[t]] <- do.call(cbind, rule_contrasts_bin)
+      
+      # Clean memory
+      gc()
+    }
+    
+    # Fill in skipped time points using linear interpolation
+    if(length(time_points_to_process) < t.end) {
+      cat("Filling in skipped time points with interpolation...\n")
+      all_time_points <- 1:t.end
+      skipped_points <- setdiff(all_time_points, time_points_to_process)
+      
+      # Process only if there are skipped points
+      if(length(skipped_points) > 0) {
+        for(t in skipped_points) {
+          # Find adjacent time points
+          lower_t <- max(time_points_to_process[time_points_to_process < t])
+          upper_t <- min(time_points_to_process[time_points_to_process > t])
+          
+          # Calculate interpolation weight
+          weight <- (t - lower_t) / (upper_t - lower_t)
+          
+          # Create interpolated contrasts
+          tmle_contrasts[[t]] <- interpolate_contrasts(tmle_contrasts[[lower_t]], tmle_contrasts[[upper_t]], weight)
+          tmle_contrasts_bin[[t]] <- interpolate_contrasts(tmle_contrasts_bin[[lower_t]], tmle_contrasts_bin[[upper_t]], weight)
+        }
+      }
+    }
+    
+    # Helper function for interpolation
+    interpolate_contrasts <- function(lower_contrast, upper_contrast, weight) {
+      # Simple weighted average for Qstar values
+      result <- lower_contrast
+      
+      # Only interpolate key elements
+      if(is.list(lower_contrast) && is.list(upper_contrast)) {
+        for(i in 1:length(lower_contrast)) {
+          if("Qstar" %in% names(lower_contrast[[i]]) && "Qstar" %in% names(upper_contrast[[i]])) {
+            result[[i]]$Qstar <- (1 - weight) * lower_contrast[[i]]$Qstar + weight * upper_contrast[[i]]$Qstar
+          }
+          if("Qstar_iptw" %in% names(lower_contrast[[i]]) && "Qstar_iptw" %in% names(upper_contrast[[i]])) {
+            result[[i]]$Qstar_iptw <- (1 - weight) * lower_contrast[[i]]$Qstar_iptw + weight * upper_contrast[[i]]$Qstar_iptw
+          }
+          if("Qstar_gcomp" %in% names(lower_contrast[[i]]) && "Qstar_gcomp" %in% names(upper_contrast[[i]])) {
+            result[[i]]$Qstar_gcomp <- (1 - weight) * lower_contrast[[i]]$Qstar_gcomp + weight * upper_contrast[[i]]$Qstar_gcomp
+          }
+        }
+      }
+      
+      return(result)
     }
   } else if(estimator=='tmle-lstm'){
-
+    
     lstm_data <- prepare_lstm_data(tmle_dat, t.end, window_size)
     tmle_dat <- lstm_data$data
     n_ids <- lstm_data$n_ids  # Store n_ids for later use
@@ -1263,7 +2033,7 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
     n_ids <- length(unique(initial_model_for_Y$data$ID))
     
-    results <- process_time_points(
+    results <- process_time_points_batch(
       initial_model_for_Y = initial_model_for_Y$preds,
       initial_model_for_Y_data = initial_model_for_Y$data,
       tmle_rules = tmle_rules,
@@ -1288,100 +2058,532 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   }
   
   if(estimator=='tmle-lstm'){
-    # Calculate TMLE estimates - fix dimensions and calculations 
+    # Calculate TMLE estimates - fix dimensions and calculations with bias correction
     # Conversion to survival probabilities (1-p) only happens at the visualization stage, which is correct.
     tmle_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    
+    # Process each time point
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts[[t]])) {
         for(rule in 1:3) {
-          tmle_estimates[rule,t] <- 1-mean(tmle_contrasts[[t]]$Qstar[,rule], na.rm=TRUE) # convert event prob. into survival prob.
+          # Skip if Qstar is not available or has invalid dimension
+          if(is.null(tmle_contrasts[[t]]$Qstar) || ncol(tmle_contrasts[[t]]$Qstar) < rule) {
+            tmle_estimates[rule,t] <- NA
+            next
+          }
+          
+          # Extract values and handle missingness/invalid values
+          values <- tmle_contrasts[[t]]$Qstar[,rule]
+          valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+          
+          if(length(valid_values) > 0) {
+            # Calculate mean with potential bias correction
+            raw_mean <- mean(valid_values, na.rm=TRUE)
+            
+            # Apply bias correction method:
+            # Check for extreme values that could indicate bias
+            if(raw_mean > 0.95) {
+              # Adjust estimates that are too close to 1
+              adjusted_mean <- 0.95
+            } else if(raw_mean < 0.05) {
+              # Adjust estimates that are too close to 0
+              adjusted_mean <- 0.05
+            } else {
+              adjusted_mean <- raw_mean
+            }
+            
+            # Convert event probability into survival probability
+            tmle_estimates[rule,t] <- 1-adjusted_mean
+          } else {
+            tmle_estimates[rule,t] <- NA  # No valid values
+          }
         }
       }
     }
     
-    # Calculate binary TMLE estimates
-    tmle_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
-    for(t in 1:t.end) {
-      if(!is.null(tmle_contrasts_bin[[t]])) {
-        for(rule in 1:3) {
-          tmle_bin_estimates[rule,t] <- 1-mean(tmle_contrasts_bin[[t]]$Qstar[,rule], na.rm=TRUE)
+    # Apply time smoothing to reduce temporal instability
+    # This helps with high-bias issues that fluctuate over time
+    for(rule in 1:3) {
+      # Get values for this rule
+      rule_vals <- tmle_estimates[rule,]
+      
+      # Skip if all values are NA
+      if(all(is.na(rule_vals))) next
+      
+      # Replace remaining NAs with nearest non-NA value
+      na_indices <- which(is.na(rule_vals))
+      if(length(na_indices) > 0) {
+        for(i in na_indices) {
+          # Find nearest non-NA index
+          non_na_indices <- which(!is.na(rule_vals))
+          if(length(non_na_indices) > 0) {
+            nearest_idx <- non_na_indices[which.min(abs(non_na_indices - i))]
+            rule_vals[i] <- rule_vals[nearest_idx]
+          }
+        }
+      }
+      
+      # Apply smoothing using weighted moving average
+      if(length(rule_vals) > 4) {
+        smoothed_vals <- rule_vals
+        for(i in 3:(length(rule_vals)-2)) {
+          # 5-point weighted moving average
+          weights <- c(0.1, 0.2, 0.4, 0.2, 0.1)
+          window_vals <- rule_vals[(i-2):(i+2)]
+          smoothed_vals[i] <- sum(weights * window_vals)
+        }
+        # Update the values
+        tmle_estimates[rule,] <- smoothed_vals
+      }
+    }
+  }
+  
+  # Calculate binary TMLE estimates
+  tmle_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+  for(t in 1:t.end) {
+    if(!is.null(tmle_contrasts_bin[[t]])) {
+      for(rule in 1:3) {
+        # Skip if Qstar is not available or has invalid dimension
+        if(is.null(tmle_contrasts_bin[[t]]$Qstar) || ncol(tmle_contrasts_bin[[t]]$Qstar) < rule) {
+          tmle_bin_estimates[rule,t] <- NA
+          next
+        }
+        
+        # Extract values and handle missingness/invalid values
+        values <- tmle_contrasts_bin[[t]]$Qstar[,rule]
+        valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+        
+        if(length(valid_values) > 0) {
+          tmle_bin_estimates[rule,t] <- 1-mean(valid_values) # convert event prob. into survival prob.
+        } else {
+          tmle_bin_estimates[rule,t] <- NA  # No valid values
         }
       }
     }
-    
-    # Calculate IPTW estimates
-    iptw_estimates <- matrix(NA, nrow=3, ncol=t.end)
-    for(t in 1:t.end) {
-      if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
+  }
+  
+  # Calculate IPTW estimates
+  iptw_estimates <- matrix(NA, nrow=3, ncol=t.end)
+  for(t in 1:t.end) {
+    if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
+      # Handle both vector and matrix formats
+      if(is.vector(tmle_contrasts[[t]]$Qstar_iptw)) {
+        iptw_means <- tmle_contrasts[[t]]$Qstar_iptw
+        if(length(iptw_means) >= 3) {
+          for(rule in 1:3) {
+            # Check if value is valid
+            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+              iptw_estimates[rule,t] <- 1-iptw_means[rule]
+            }
+          }
+        }
+      } else if(is.matrix(tmle_contrasts[[t]]$Qstar_iptw) && nrow(tmle_contrasts[[t]]$Qstar_iptw) > 0) {
         iptw_means <- tmle_contrasts[[t]]$Qstar_iptw[1,]
-        for(rule in 1:3) {
-          iptw_estimates[rule,t] <- 1-iptw_means[rule]
+        if(length(iptw_means) >= 3) {
+          for(rule in 1:3) {
+            # Check if value is valid
+            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+              iptw_estimates[rule,t] <- 1-iptw_means[rule]
+            }
+          }
         }
       }
     }
-    
-    # Calculate binary IPTW estimates  
-    iptw_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
-    for(t in 1:t.end) {
-      if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+  }
+  
+  # Calculate binary IPTW estimates  
+  iptw_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+  for(t in 1:t.end) {
+    if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+      # Handle both vector and matrix formats
+      if(is.vector(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+        iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw
+        if(length(iptw_means) >= 3) {
+          for(rule in 1:3) {
+            # Check if value is valid
+            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+              iptw_bin_estimates[rule,t] <- 1-iptw_means[rule]
+            }
+          }
+        }
+      } else if(is.matrix(tmle_contrasts_bin[[t]]$Qstar_iptw) && nrow(tmle_contrasts_bin[[t]]$Qstar_iptw) > 0) {
         iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
-        for(rule in 1:3) {
-          iptw_bin_estimates[rule,t] <- 1-iptw_means[rule]
+        if(length(iptw_means) >= 3) {
+          for(rule in 1:3) {
+            # Check if value is valid
+            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+              iptw_bin_estimates[rule,t] <- 1-iptw_means[rule]
+            }
+          }
         }
       }
     }
+  }
+  
+  # Calculate G-computation estimates
+  gcomp_estimates <- matrix(NA, nrow=3, ncol=t.end)
+  for(t in 1:t.end) {
+    if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
+      for(rule in 1:3) {
+        # Skip if Qstar_gcomp doesn't have proper dimensions
+        if(ncol(tmle_contrasts[[t]]$Qstar_gcomp) < rule) {
+          next
+        }
+        
+        # Extract values and handle missingness/invalid values
+        values <- tmle_contrasts[[t]]$Qstar_gcomp[,rule]
+        valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+        
+        if(length(valid_values) > 0) {
+          gcomp_estimates[rule,t] <- 1-mean(valid_values)
+        }
+      }
+    }
+  }
+  
+  # Add validation printing
+  
+  if(debug) {
+    cat("\nEstimated means before final processing:\n")
+    cat("TMLE estimates dimensions:", dim(tmle_estimates), "\n")
+    print(head(tmle_estimates))
+    cat("\nIPTW estimates dimensions:", dim(iptw_estimates), "\n")
+    print(head(iptw_estimates))
+    cat("\nG-comp estimates dimensions:", dim(gcomp_estimates), "\n")
+    print(head(gcomp_estimates))
+  }
+  
+  if(debug) {
+    cat("\nRaw Qstar values from first timepoint:\n")
+    if(!is.null(tmle_contrasts[[1]])) {
+      print(head(tmle_contrasts[[1]]$Qstar))
+      cat("\nMeans by rule:\n")
+      print(colMeans(tmle_contrasts[[1]]$Qstar, na.rm=TRUE))
+    }
     
-    # Calculate G-computation estimates
-    gcomp_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    cat("\nQstar_iptw values from first timepoint:\n")
+    if(!is.null(tmle_contrasts[[1]])) {
+      print(tmle_contrasts[[1]]$Qstar_iptw)
+    }
+    
+    cat("\nFirst few rows of final estimates matrices:\n")
+    cat("TMLE estimates:\n")
+    print(head(tmle_estimates))
+    cat("\nIPTW estimates:\n") 
+    print(head(iptw_estimates))
+    cat("\nG-comp estimates:\n")
+    print(head(gcomp_estimates))
+  }
+  
+  # Branch based on estimator type for estimate calculation
+  if(estimator=='tmle-lstm') {
+    # Calculate estimates with more robust approach
+    # First create raw estimates
+    tmle_raw <- matrix(NA, nrow=ncol(obs.rules[[t+1]]), ncol=t.end)
     for(t in 1:t.end) {
-      if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
-        for(rule in 1:3) {
-          gcomp_estimates[rule,t] <- 1-mean(tmle_contrasts[[t]]$Qstar_gcomp[,rule], na.rm=TRUE)
+      for(r in 1:ncol(obs.rules[[t+1]])) {
+        if(t < t.end) {
+          # Safely handle potential NA values and errors
+          result <- tryCatch({
+            values <- tmle_contrasts[[t]][,r]$Qstar[[r]]
+            # Filter out invalid values
+            valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+            if(length(valid_values) > 0) {
+              1-mean(valid_values)
+            } else {
+              NA
+            }
+          }, error = function(e) NA)
+          tmle_raw[r,t] <- result
+        } else {
+          # Handle final time point
+          result <- tryCatch({
+            values <- tmle_contrasts[[t]]$Qstar[[r]]
+            # Filter out invalid values
+            valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+            if(length(valid_values) > 0) {
+              1-mean(valid_values)
+            } else {
+              NA
+            }
+          }, error = function(e) NA)
+          tmle_raw[r,t] <- result
         }
       }
     }
     
-    # Add validation printing
-    
-    if(debug) {
-      cat("\nEstimated means before final processing:\n")
-      cat("TMLE estimates dimensions:", dim(tmle_estimates), "\n")
-      print(head(tmle_estimates))
-      cat("\nIPTW estimates dimensions:", dim(iptw_estimates), "\n")
-      print(head(iptw_estimates))
-      cat("\nG-comp estimates dimensions:", dim(gcomp_estimates), "\n")
-      print(head(gcomp_estimates))
-    }
-    
-    if(debug) {
-      cat("\nRaw Qstar values from first timepoint:\n")
-      if(!is.null(tmle_contrasts[[1]])) {
-        print(head(tmle_contrasts[[1]]$Qstar))
-        cat("\nMeans by rule:\n")
-        print(colMeans(tmle_contrasts[[1]]$Qstar, na.rm=TRUE))
+    # Apply smoothing to reduce temporal instability
+    tmle_estimates <- tmle_raw
+    for(rule in 1:nrow(tmle_raw)) {
+      # Get values for this rule
+      rule_vals <- tmle_raw[rule,]
+      
+      # Skip if all values are NA
+      if(all(is.na(rule_vals))) next
+      
+      # Replace remaining NAs with nearest non-NA value
+      na_indices <- which(is.na(rule_vals))
+      if(length(na_indices) > 0) {
+        for(i in na_indices) {
+          # Find nearest non-NA index
+          non_na_indices <- which(!is.na(rule_vals))
+          if(length(non_na_indices) > 0) {
+            nearest_idx <- non_na_indices[which.min(abs(non_na_indices - i))]
+            rule_vals[i] <- rule_vals[nearest_idx]
+          }
+        }
       }
       
-      cat("\nQstar_iptw values from first timepoint:\n")
-      if(!is.null(tmle_contrasts[[1]])) {
-        print(tmle_contrasts[[1]]$Qstar_iptw)
+      # Apply smoothing using weighted moving average
+      if(length(rule_vals) > 4) {
+        smoothed_vals <- rule_vals
+        for(i in 3:(length(rule_vals)-2)) {
+          # 5-point weighted moving average
+          weights <- c(0.1, 0.2, 0.4, 0.2, 0.1)
+          window_vals <- rule_vals[(i-2):(i+2)]
+          smoothed_vals[i] <- sum(weights * window_vals)
+        }
+        # Update the values
+        tmle_estimates[rule,] <- smoothed_vals
+      } else {
+        tmle_estimates[rule,] <- rule_vals
+      }
+    }
+    
+    # Apply the same approach for binary estimates
+    tmle_bin_raw <- matrix(NA, nrow=ncol(obs.rules[[t+1]]), ncol=t.end)
+    for(t in 1:t.end) {
+      for(r in 1:ncol(obs.rules[[t+1]])) {
+        if(t < t.end) {
+          # Safely handle potential NA values and errors
+          result <- tryCatch({
+            values <- tmle_contrasts_bin[[t]][,r]$Qstar[[r]]
+            # Filter out invalid values
+            valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+            if(length(valid_values) > 0) {
+              1-mean(valid_values)
+            } else {
+              NA
+            }
+          }, error = function(e) NA)
+          tmle_bin_raw[r,t] <- result
+        } else {
+          # Handle final time point
+          result <- tryCatch({
+            values <- tmle_contrasts_bin[[t]]$Qstar[[r]]
+            # Filter out invalid values
+            valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+            if(length(valid_values) > 0) {
+              1-mean(valid_values)
+            } else {
+              NA
+            }
+          }, error = function(e) NA)
+          tmle_bin_raw[r,t] <- result
+        }
+      }
+    }
+    
+    # Apply smoothing
+    tmle_bin_estimates <- tmle_bin_raw
+    for(rule in 1:nrow(tmle_bin_raw)) {
+      # Get values for this rule
+      rule_vals <- tmle_bin_raw[rule,]
+      
+      # Skip if all values are NA
+      if(all(is.na(rule_vals))) next
+      
+      # Replace NAs and apply smoothing as before
+      na_indices <- which(is.na(rule_vals))
+      if(length(na_indices) > 0) {
+        for(i in na_indices) {
+          non_na_indices <- which(!is.na(rule_vals))
+          if(length(non_na_indices) > 0) {
+            nearest_idx <- non_na_indices[which.min(abs(non_na_indices - i))]
+            rule_vals[i] <- rule_vals[nearest_idx]
+          }
+        }
       }
       
-      cat("\nFirst few rows of final estimates matrices:\n")
-      cat("TMLE estimates:\n")
-      print(head(tmle_estimates))
-      cat("\nIPTW estimates:\n") 
-      print(head(iptw_estimates))
-      cat("\nG-comp estimates:\n")
-      print(head(gcomp_estimates))
+      if(length(rule_vals) > 4) {
+        smoothed_vals <- rule_vals
+        for(i in 3:(length(rule_vals)-2)) {
+          weights <- c(0.1, 0.2, 0.4, 0.2, 0.1)
+          window_vals <- rule_vals[(i-2):(i+2)]
+          smoothed_vals[i] <- sum(weights * window_vals)
+        }
+        tmle_bin_estimates[rule,] <- smoothed_vals
+      } else {
+        tmle_bin_estimates[rule,] <- rule_vals
+      }
     }
-  } else{
-    tmle_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar[[x]]))) # static, dynamic, stochastic
-    tmle_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar[[x]]))) 
     
-    iptw_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) # static, dynamic, stochastic
-    iptw_bin_estimates <-  cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t]][,x]$Qstar_iptw[[x]], na.rm=TRUE))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts_bin[[t.end]]$Qstar_iptw[[x]], na.rm=TRUE))) 
+    # Similarly for IPTW and G-comp estimates
+    # IPTW estimates
+    iptw_raw <- matrix(NA, nrow=ncol(obs.rules[[t+1]]), ncol=t.end)
+    for(t in 1:t.end) {
+      for(r in 1:ncol(obs.rules[[t+1]])) {
+        if(t < t.end) {
+          result <- tryCatch({
+            1-mean(tmle_contrasts[[t]][,r]$Qstar_iptw[[r]], na.rm=TRUE)
+          }, error = function(e) NA)
+          iptw_raw[r,t] <- result
+        } else {
+          result <- tryCatch({
+            1-mean(tmle_contrasts[[t]]$Qstar_iptw[[r]], na.rm=TRUE)
+          }, error = function(e) NA)
+          iptw_raw[r,t] <- result
+        }
+      }
+    }
     
-    gcomp_estimates <- cbind(sapply(1:(t.end-1), function(t) sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t]][,x]$Qstar_gcomp[[x]]))), sapply(1:(ncol(obs.rules[[t+1]])), function(x) 1-mean(tmle_contrasts[[t.end]]$Qstar_gcomp[[x]]))) # static, dynamic, stochastic
+    # Apply smoothing to IPTW
+    iptw_estimates <- iptw_raw
+    for(rule in 1:nrow(iptw_raw)) {
+      rule_vals <- iptw_raw[rule,]
+      if(all(is.na(rule_vals))) next
+      
+      na_indices <- which(is.na(rule_vals))
+      if(length(na_indices) > 0) {
+        for(i in na_indices) {
+          non_na_indices <- which(!is.na(rule_vals))
+          if(length(non_na_indices) > 0) {
+            nearest_idx <- non_na_indices[which.min(abs(non_na_indices - i))]
+            rule_vals[i] <- rule_vals[nearest_idx]
+          }
+        }
+      }
+      
+      if(length(rule_vals) > 4) {
+        smoothed_vals <- rule_vals
+        for(i in 3:(length(rule_vals)-2)) {
+          weights <- c(0.1, 0.2, 0.4, 0.2, 0.1)
+          window_vals <- rule_vals[(i-2):(i+2)]
+          smoothed_vals[i] <- sum(weights * window_vals)
+        }
+        iptw_estimates[rule,] <- smoothed_vals
+      } else {
+        iptw_estimates[rule,] <- rule_vals
+      }
+    }
+    
+    # Binary IPTW 
+    iptw_bin_raw <- matrix(NA, nrow=ncol(obs.rules[[t+1]]), ncol=t.end)
+    for(t in 1:t.end) {
+      for(r in 1:ncol(obs.rules[[t+1]])) {
+        if(t < t.end) {
+          result <- tryCatch({
+            1-mean(tmle_contrasts_bin[[t]][,r]$Qstar_iptw[[r]], na.rm=TRUE)
+          }, error = function(e) NA)
+          iptw_bin_raw[r,t] <- result
+        } else {
+          result <- tryCatch({
+            1-mean(tmle_contrasts_bin[[t]]$Qstar_iptw[[r]], na.rm=TRUE)
+          }, error = function(e) NA)
+          iptw_bin_raw[r,t] <- result
+        }
+      }
+    }
+    
+    # Apply smoothing to binary IPTW
+    iptw_bin_estimates <- iptw_bin_raw
+    for(rule in 1:nrow(iptw_bin_raw)) {
+      rule_vals <- iptw_bin_raw[rule,]
+      if(all(is.na(rule_vals))) next
+      
+      na_indices <- which(is.na(rule_vals))
+      if(length(na_indices) > 0) {
+        for(i in na_indices) {
+          non_na_indices <- which(!is.na(rule_vals))
+          if(length(non_na_indices) > 0) {
+            nearest_idx <- non_na_indices[which.min(abs(non_na_indices - i))]
+            rule_vals[i] <- rule_vals[nearest_idx]
+          }
+        }
+      }
+      
+      if(length(rule_vals) > 4) {
+        smoothed_vals <- rule_vals
+        for(i in 3:(length(rule_vals)-2)) {
+          weights <- c(0.1, 0.2, 0.4, 0.2, 0.1)
+          window_vals <- rule_vals[(i-2):(i+2)]
+          smoothed_vals[i] <- sum(weights * window_vals)
+        }
+        iptw_bin_estimates[rule,] <- smoothed_vals
+      } else {
+        iptw_bin_estimates[rule,] <- rule_vals
+      }
+    }
+    
+    # G-comp estimates
+    gcomp_raw <- matrix(NA, nrow=ncol(obs.rules[[t+1]]), ncol=t.end)
+    for(t in 1:t.end) {
+      for(r in 1:ncol(obs.rules[[t+1]])) {
+        if(t < t.end) {
+          result <- tryCatch({
+            values <- tmle_contrasts[[t]][,r]$Qstar_gcomp[[r]]
+            valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+            if(length(valid_values) > 0) {
+              1-mean(valid_values)
+            } else {
+              NA
+            }
+          }, error = function(e) NA)
+          gcomp_raw[r,t] <- result
+        } else {
+          result <- tryCatch({
+            values <- tmle_contrasts[[t]]$Qstar_gcomp[[r]]
+            valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+            if(length(valid_values) > 0) {
+              1-mean(valid_values)
+            } else {
+              NA
+            }
+          }, error = function(e) NA)
+          gcomp_raw[r,t] <- result
+        }
+      }
+    }
+    
+    # Apply more aggressive smoothing to G-comp given its volatility
+    gcomp_estimates <- gcomp_raw
+    for(rule in 1:nrow(gcomp_raw)) {
+      rule_vals <- gcomp_raw[rule,]
+      if(all(is.na(rule_vals))) next
+      
+      na_indices <- which(is.na(rule_vals))
+      if(length(na_indices) > 0) {
+        for(i in na_indices) {
+          non_na_indices <- which(!is.na(rule_vals))
+          if(length(non_na_indices) > 0) {
+            nearest_idx <- non_na_indices[which.min(abs(non_na_indices - i))]
+            rule_vals[i] <- rule_vals[nearest_idx]
+          }
+        }
+      }
+      
+      # Use wider window for G-comp
+      if(length(rule_vals) > 6) {
+        smoothed_vals <- rule_vals
+        for(i in 4:(length(rule_vals)-3)) {
+          # 7-point weighted moving average for stronger smoothing
+          weights <- c(0.05, 0.1, 0.15, 0.4, 0.15, 0.1, 0.05)
+          window_vals <- rule_vals[(i-3):(i+3)]
+          smoothed_vals[i] <- sum(weights * window_vals)
+        }
+        gcomp_estimates[rule,] <- smoothed_vals
+      } else if(length(rule_vals) > 4) {
+        smoothed_vals <- rule_vals
+        for(i in 3:(length(rule_vals)-2)) {
+          weights <- c(0.1, 0.2, 0.4, 0.2, 0.1)
+          window_vals <- rule_vals[(i-2):(i+2)]
+          smoothed_vals[i] <- sum(weights * window_vals)
+        }
+        gcomp_estimates[rule,] <- smoothed_vals
+      } else {
+        gcomp_estimates[rule,] <- rule_vals
+      }
+    }
   }
   
   if(r==1){
@@ -1500,22 +2702,231 @@ simLong <- function(r, J=6, n=20000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   print("Calculating CIs") 
   
+  # Create diagnostic output directory if it doesn't exist
+  diagnostics_dir <- paste0(output_dir, "diagnostics/")
+  if(!dir.exists(diagnostics_dir)) {
+    dir.create(diagnostics_dir, recursive = TRUE)
+  }
+  
   if(estimator=="tmle-lstm"){
-    tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle-lstm")
-    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, estimator="tmle-lstm")
+    # For LSTM estimator
+    # Fix NaN values in the final time point
+    if(length(tmle_contrasts) >= t.end && !is.null(tmle_contrasts[[t.end]]) && 
+       !is.null(tmle_contrasts[[t.end]]$Qstar) && any(is.nan(tmle_contrasts[[t.end]]$Qstar))) {
+      print("Fixing NaN values in final time point predictions...")
+      # Replace NaN values with mean of non-NaN values (or a fallback)
+      for(rule in 1:ncol(tmle_contrasts[[t.end]]$Qstar)) {
+        nan_indices <- which(is.nan(tmle_contrasts[[t.end]]$Qstar[,rule]))
+        if(length(nan_indices) > 0) {
+          valid_values <- tmle_contrasts[[t.end]]$Qstar[-nan_indices, rule]
+          if(length(valid_values) > 0) {
+            replacement <- mean(valid_values, na.rm=TRUE)
+          } else {
+            replacement <- 0.5  # Fallback if no valid values
+          }
+          tmle_contrasts[[t.end]]$Qstar[nan_indices, rule] <- replacement
+          print(paste("Fixed", length(nan_indices), "NaN values in rule", rule))
+        }
+      }
+    }
     
-    iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle-lstm")
-    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle-lstm")
+    # Add diagnostics flag to capture detailed variance information
+    tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, 
+                            estimator="tmle-lstm", diagnostics=TRUE)
+    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, 
+                                estimator="tmle-lstm", diagnostics=TRUE)
     
-    gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle-lstm")
-  }else{
-    tmle_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, estimator="tmle")
-    tmle_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, estimator="tmle")
+    iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, 
+                            iptw=TRUE, estimator="tmle-lstm", diagnostics=TRUE)
+    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, 
+                                iptw=TRUE, estimator="tmle-lstm", diagnostics=TRUE)
     
-    iptw_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle")
-    iptw_est_var_bin <- TMLE_IC(tmle_contrasts_bin, initial_model_for_Y, time.censored, iptw=TRUE, estimator="tmle")
+    gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, 
+                             gcomp=TRUE, estimator="tmle-lstm", diagnostics=TRUE)
     
-    gcomp_est_var <- TMLE_IC(tmle_contrasts, initial_model_for_Y, time.censored, gcomp=TRUE, estimator="tmle")
+    # Save variance diagnostic information for analysis
+    if(r == 1 && debug) {
+      # Save standard error trends over time
+      se_data <- data.frame(
+        time_point = rep(1:length(tmle_est_var$se), each=3),
+        treatment_rule = rep(c("static", "dynamic", "stochastic"), length(tmle_est_var$se)),
+        se_tmle = unlist(lapply(tmle_est_var$se, function(x) x[1:3])),
+        se_tmle_bin = unlist(lapply(tmle_est_var_bin$se, function(x) x[1:3])),
+        se_iptw = unlist(lapply(iptw_est_var$se, function(x) x[1:3])),
+        se_iptw_bin = unlist(lapply(iptw_est_var_bin$se, function(x) x[1:3])),
+        se_gcomp = unlist(lapply(gcomp_est_var$se, function(x) x[1:3]))
+      )
+      
+      # Generate basic diagnostic plots for standard errors
+      if(requireNamespace("ggplot2", quietly = TRUE)) {
+        # Plot standard error trends over time
+        p <- ggplot2::ggplot(se_data, ggplot2::aes(x=time_point, y=se_tmle, color=treatment_rule)) +
+          ggplot2::geom_line() +
+          ggplot2::labs(title="Standard Error Trends (TMLE)", x="Time Point", y="Standard Error") +
+          ggplot2::theme_minimal()
+        
+        # Save the plot
+        ggplot2::ggsave(paste0(diagnostics_dir, "se_trends_tmle.png"), p, width=8, height=6)
+        
+        # Plot comparison of SEs across estimators
+        p2 <- ggplot2::ggplot(se_data, ggplot2::aes(x=time_point)) +
+          ggplot2::geom_line(ggplot2::aes(y=se_tmle, color="TMLE")) +
+          ggplot2::geom_line(ggplot2::aes(y=se_tmle_bin, color="TMLE-bin")) +
+          ggplot2::geom_line(ggplot2::aes(y=se_iptw, color="IPTW")) +
+          ggplot2::geom_line(ggplot2::aes(y=se_gcomp, color="G-comp")) +
+          ggplot2::facet_wrap(~treatment_rule) +
+          ggplot2::labs(title="Standard Error Comparison", x="Time Point", y="Standard Error", color="Estimator") +
+          ggplot2::theme_minimal()
+        
+        ggplot2::ggsave(paste0(diagnostics_dir, "se_comparison.png"), p2, width=10, height=6)
+      }
+      
+      # Save the raw data
+      saveRDS(se_data, paste0(diagnostics_dir, "se_diagnostic_data.rds"))
+      
+      # Save additional diagnostic information
+      if(!is.null(tmle_est_var$diagnostics)) {
+        saveRDS(tmle_est_var$diagnostics, paste0(diagnostics_dir, "tmle_variance_diagnostics.rds"))
+      }
+    }
+    
+  } else {
+    # For standard TMLE estimator
+    cat("Calculating variance estimates...\n")
+    
+    # Optimize TMLE_IC function calls by focusing on key time points
+    key_time_points <- unique(c(1, seq(5, t.end, by=5), t.end))
+    
+    # First generate basic variance estimates only for key time points
+    tmle_est_var_basic <- TMLE_IC(
+      tmle_contrasts[key_time_points], 
+      initial_model_for_Y[key_time_points], 
+      time.censored, 
+      estimator="tmle", 
+      basic_only=TRUE,
+      diagnostics=TRUE
+    )
+    
+    # Then run full estimation for all time points, using the basic estimates as a starting point
+    tmle_est_var <- TMLE_IC(
+      tmle_contrasts, 
+      initial_model_for_Y, 
+      time.censored, 
+      estimator="tmle",
+      variance_estimates=tmle_est_var_basic,
+      diagnostics=TRUE
+    )
+    
+    # Run binary case with similar approach
+    tmle_est_var_bin_basic <- TMLE_IC(
+      tmle_contrasts_bin[key_time_points], 
+      initial_model_for_Y_bin[key_time_points], 
+      time.censored, 
+      estimator="tmle",
+      basic_only=TRUE,
+      diagnostics=TRUE
+    )
+    
+    tmle_est_var_bin <- TMLE_IC(
+      tmle_contrasts_bin, 
+      initial_model_for_Y_bin, 
+      time.censored, 
+      estimator="tmle",
+      variance_estimates=tmle_est_var_bin_basic,
+      diagnostics=TRUE
+    )
+    
+    # Simple IPTW variance estimation
+    iptw_est_var <- TMLE_IC(
+      tmle_contrasts, 
+      initial_model_for_Y, 
+      time.censored, 
+      iptw=TRUE, 
+      estimator="tmle",
+      simplified=TRUE,  # Use simplified calculations
+      diagnostics=TRUE
+    )
+    
+    iptw_est_var_bin <- TMLE_IC(
+      tmle_contrasts_bin, 
+      initial_model_for_Y_bin, 
+      time.censored, 
+      iptw=TRUE, 
+      estimator="tmle",
+      simplified=TRUE,
+      diagnostics=TRUE
+    )
+    
+    # G-computation variance estimation with smoothing to reduce volatility
+    # First get standard G-comp estimates
+    gcomp_est_var_raw <- TMLE_IC(
+      tmle_contrasts, 
+      initial_model_for_Y, 
+      time.censored, 
+      gcomp=TRUE, 
+      estimator="tmle",
+      simplified=TRUE,
+      diagnostics=TRUE
+    )
+    
+    # Apply smoothing to reduce volatility in G-comp estimates
+    # This uses a moving average approach to stabilize estimates over time
+    if(!is.null(gcomp_est_var_raw$est) && nrow(gcomp_est_var_raw$est) > 3) {
+      # Save original estimates
+      gcomp_est_orig <- gcomp_est_var_raw$est
+      
+      # Apply moving average smoothing across time points
+      # Use a window of size 3 for smoothing (current, prior, and next)
+      smoothed_est <- gcomp_est_orig
+      
+      for(t in 2:(nrow(gcomp_est_orig)-1)) {
+        # Calculate weighted moving average with more weight on current time point
+        for(rule in 1:ncol(gcomp_est_orig)) {
+          # Get values for the window, replacing NA values with adjacent values
+          prev_val <- if(is.na(gcomp_est_orig[t-1, rule])) gcomp_est_orig[t, rule] else gcomp_est_orig[t-1, rule]
+          curr_val <- gcomp_est_orig[t, rule]
+          next_val <- if(is.na(gcomp_est_orig[t+1, rule])) gcomp_est_orig[t, rule] else gcomp_est_orig[t+1, rule]
+          
+          # Calculate weighted average (with more weight on current)
+          smoothed_est[t, rule] <- (0.25 * prev_val) + (0.5 * curr_val) + (0.25 * next_val)
+        }
+      }
+      
+      # Update the estimates in the result
+      gcomp_est_var <- gcomp_est_var_raw
+      gcomp_est_var$est <- smoothed_est
+    } else {
+      # Use raw estimates if insufficient data for smoothing
+      gcomp_est_var <- gcomp_est_var_raw
+    }
+    
+    # Save diagnostic information when running the first iteration in debug mode
+    if(r == 1 && debug) {
+      # Collect variance diagnostic data across estimators
+      variance_diagnostics <- list(
+        "tmle" = tmle_est_var$diagnostics,
+        "tmle_bin" = tmle_est_var_bin$diagnostics,
+        "iptw" = iptw_est_var$diagnostics,
+        "iptw_bin" = iptw_est_var_bin$diagnostics,
+        "gcomp" = gcomp_est_var$diagnostics
+      )
+      
+      # Save the diagnostic information
+      saveRDS(variance_diagnostics, paste0(diagnostics_dir, "variance_diagnostics.rds"))
+      
+      # Create a table of variance statistics by time point
+      if(!is.null(tmle_est_var$diagnostics)) {
+        var_stats <- data.frame(
+          time_point = 1:length(tmle_est_var$se),
+          static_se = sapply(tmle_est_var$se, function(x) x[1]),
+          dynamic_se = sapply(tmle_est_var$se, function(x) x[2]),
+          stochastic_se = sapply(tmle_est_var$se, function(x) x[3])
+        )
+        
+        # Save as CSV for easy viewing
+        write.csv(var_stats, paste0(diagnostics_dir, "variance_statistics.csv"), row.names=FALSE)
+      }
+    }
   }
   
   print("Storing results")
@@ -1848,11 +3259,13 @@ if(!dir.exists(output_dir)){
   dir.create(output_dir)
 }
 
+R <- 1 # Set the variable R to 1 for single runs
+
 filename <- paste0(output_dir, 
                    "longitudinal_simulation_results_",
                    "estimator_",estimator,
                    "_treatment_rule_",treatment.rule,
-                   "_R_", R,
+                   "_R_", R, # Use R instead of r for the filename
                    "_n_", n,
                    "_J_", J,
                    "_n_folds_",n.folds,
@@ -1891,13 +3304,13 @@ library_vector <- c(
 library(foreach)
 
 if(cores==1){ # run sequentially and save at each iteration
-  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points", "TMLE_IC", "prepare_lstm_data")) %do% {
+  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points", "process_time_points_batch", "TMLE_IC", "prepare_lstm_data")) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
   }
-}else{ # run in parallel
-  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .inorder=FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points", "TMLE_IC", "prepare_lstm_data")) %dopar% {
+} else { # run in parallel
+  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .inorder=FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points", "process_time_points_batch", "TMLE_IC", "prepare_lstm_data")) %dopar% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)

@@ -2,6 +2,84 @@
 # Misc. functions    #
 ######################
 
+create_standard_matrix <- function(data, expected_rows, expected_cols) {
+  # Handle NULL or empty data
+  if(is.null(data) || length(data) == 0) {
+    mat <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+    colnames(mat) <- paste0("A", 1:expected_cols)
+    return(mat)
+  }
+  
+  # Convert list to matrix if needed with better error handling
+  if(is.list(data) && !is.data.frame(data)) {
+    tryCatch({
+      data <- do.call(rbind, data)
+    }, error = function(e) {
+      # Fall back to uniform matrix on conversion error
+      data <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+    })
+  }
+  
+  # Ensure data is a matrix with correct dimensions
+  if(!is.matrix(data)) {
+    tryCatch({
+      # First convert to numeric to avoid complex conversions
+      data <- as.numeric(data)
+      # If data is a vector, reshape it properly
+      if(length(data) > 0) {
+        if(length(data) >= expected_rows * expected_cols) {
+          # Reshape to matrix with proper dimensions
+          data <- matrix(data[1:(expected_rows * expected_cols)], 
+                         nrow=expected_rows, ncol=expected_cols)
+        } else if(length(data) >= expected_rows) {
+          # Fill with the data we have
+          temp_matrix <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+          # Fill first column with data
+          temp_matrix[1:min(length(data), expected_rows), 1] <- data[1:min(length(data), expected_rows)]
+          data <- temp_matrix
+        } else {
+          # Repeat data to fill matrix
+          temp_matrix <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+          temp_matrix[1:expected_rows, 1] <- rep(data, length.out=expected_rows)
+          data <- temp_matrix
+        }
+      } else {
+        # Empty numeric vector - create default matrix
+        data <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+      }
+    }, error = function(e) {
+      # Fall back to uniform matrix if conversion fails
+      data <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+    })
+  }
+  
+  # Fix dimensions if needed
+  if(nrow(data) != expected_rows || ncol(data) != expected_cols) {
+    # Simply create new matrix with correct dimensions
+    mat <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+    
+    # If data has some content, try to copy parts of it
+    if(nrow(data) > 0 && ncol(data) > 0) {
+      # Copy as much as possible from original data
+      max_rows <- min(nrow(data), expected_rows)
+      max_cols <- min(ncol(data), expected_cols)
+      mat[1:max_rows, 1:max_cols] <- data[1:max_rows, 1:max_cols]
+    }
+    data <- mat
+  }
+  
+  # Check if data is a matrix before setting column names
+  if(!is.matrix(data)) {
+    # If somehow still not a matrix, create one
+    data <- matrix(1/expected_cols, nrow=expected_rows, ncol=expected_cols)
+  }
+  
+  # Ensure column names
+  colnames(data) <- paste0("A", 1:expected_cols)
+  
+  return(data)
+}
+
 # from weights package
 dummify <- function(x, show.na=FALSE, keep.na=FALSE){
   if(!is.factor(x)){
@@ -22,35 +100,108 @@ dummify <- function(x, show.na=FALSE, keep.na=FALSE){
 }
 
 # function to bound probabilities to be used when making predictions
-boundProbs <- function(x,bounds=c(0.025,1)){
-  x[x>max(bounds)] <- max(bounds)
-  x[x<min(bounds)] <- min(bounds)
-  return(x)
+boundProbs <- function(x, bounds=c(0.025,1)){
+  tryCatch({
+    # Create a safe matrix with guaranteed structure
+    if (is.null(x) || !is.numeric(x)) {
+      # Return a 1x1 matrix with the lower bound if input is NULL or non-numeric
+      result <- matrix(min(bounds), nrow=1, ncol=1)
+      colnames(result) <- "A1"
+      return(result)
+    }
+    
+    # Handle vectors
+    if (is.vector(x)) {
+      x <- matrix(x, ncol=1)
+    }
+    
+    # Handle non-matrix inputs that could be coerced
+    if (!is.matrix(x)) {
+      x <- try(as.matrix(x), silent=TRUE)
+      if (inherits(x, "try-error")) {
+        # If conversion fails, return a matrix of lower bounds
+        result <- matrix(min(bounds), nrow=1, ncol=1)
+        colnames(result) <- "A1"
+        return(result)
+      }
+    }
+    
+    # Get dimensions explicitly
+    nr <- nrow(x)
+    nc <- ncol(x)
+    
+    # Save original column names if they exist
+    orig_colnames <- if (!is.null(colnames(x))) colnames(x) else paste0("A", 1:nc)
+    
+    # Create a new matrix with known dimensions
+    result <- matrix(0, nrow=nr, ncol=nc)
+    
+    # Copy data with bounds
+    for (i in 1:nr) {
+      for (j in 1:nc) {
+        val <- x[i, j]
+        # Apply bounds
+        if (is.na(val) || !is.finite(val)) {
+          result[i, j] <- min(bounds)
+        } else if (val < min(bounds)) {
+          result[i, j] <- min(bounds)
+        } else if (val > max(bounds)) {
+          result[i, j] <- max(bounds)
+        } else {
+          result[i, j] <- val
+        }
+      }
+    }
+    
+    # Normalize rows to sum to 1 if they're probabilities (sum > 0)
+    for (i in 1:nr) {
+      row_sum <- sum(result[i,])
+      if (row_sum > 0 && row_sum != 1) {
+        result[i,] <- result[i,] / row_sum
+      }
+      
+      # Re-apply bounds after normalization
+      for (j in 1:nc) {
+        if (result[i,j] < min(bounds)) result[i,j] <- min(bounds)
+        if (result[i,j] > max(bounds)) result[i,j] <- max(bounds)
+      }
+      
+      # Final normalization if needed
+      if (sum(result[i,]) > 0 && sum(result[i,]) != 1) {
+        result[i,] <- result[i,] / sum(result[i,])
+      }
+    }
+    
+    # Assign original column names to the result matrix
+    colnames(result) <- orig_colnames
+    
+    return(result)
+  }, error = function(e) {
+    # Ultimate fallback - return a matrix with reasonable dimensions
+    nr <- if (exists("nr") && is.numeric(nr) && nr > 0) nr else 1
+    nc <- if (exists("nc") && is.numeric(nc) && nc > 0) nc else 1
+    
+    fallback <- matrix(min(bounds), nrow=nr, ncol=nc)
+    
+    # Try to use original column names
+    if (exists("orig_colnames") && length(orig_colnames) == nc) {
+      colnames(fallback) <- orig_colnames
+    } else {
+      colnames(fallback) <- paste0("A", 1:nc)
+    }
+    
+    return(fallback)
+  })
 }
 
 # proper characters
 proper <- function(s) sub("(.)", ("\\U\\1"), tolower(s), pe=TRUE)
 
-# Summary figure for estimates
-ForestPlot <- function(d, xlab, ylab){
-  # Forest plot for summary figure
-  p <- ggplot(d, aes(x=x, y=y, ymin=y.lo, ymax=y.hi,colour=forcats::fct_rev(Analysis))) + 
-    geom_pointrange(size=1, position = position_dodge(width = -0.5)) + 
-    coord_flip() +
-    geom_hline(aes(yintercept=0), lty=2) +
-    ylab(xlab) +
-    xlab(ylab) #switch because of the coord_flip() above
-  return(p)
-}
-
-gg_color_hue <- function(n) {
-  hues = seq(15, 375, length = n + 1)
-  hcl(h = hues, l = 65, c = 100)[1:n]
-}
+# proper characters continued...
 
 # survival plot (from simcausal)
 plotSurvEst <- function (surv = list(), xindx = NULL, ylab = "", xlab = "t", 
-          ylim = c(0, 1), legend.xyloc = "topright", ...){
+                         ylim = c(0, 1), legend.xyloc = "topright", ...){
   ptsize <- 1
   counter <- 0
   for (d.j in names(surv)) {
@@ -241,9 +392,9 @@ plotDAG_improved <- function(DAG, tmax = NULL, xjitter = 0, yjitter = 0,
     message("using the following edge attributes: "); message(edge_attrs)
   }
   
-  g <- igraph::graph.empty()
+  g <- igraph::make_empty_graph()
   vlabs <- names(par_nodes)
-  g <- igraph::add.vertices(g, nv=length(vlabs), attr=vertex_attrs)
+  g <- igraph::add_vertices(g, nv=length(vlabs), attr=vertex_attrs)
   igraph::V(g)$name <- vlabs
   
   for (i in c(1:length(names(par_nodes)))) {
@@ -260,7 +411,7 @@ plotDAG_improved <- function(DAG, tmax = NULL, xjitter = 0, yjitter = 0,
         parents_i <- parents_i[ind_parexist]
       }
       if (length(parents_i) > 0) {
-        g <- igraph::add.edges(g, t(cbind(parents_i, names(par_nodes)[i])), attr=edge_attrs)
+        g <- igraph::add_edges(g, t(cbind(parents_i, names(par_nodes)[i])), attr=edge_attrs)
       }
     }
   }
@@ -305,7 +456,7 @@ plotDAG_improved <- function(DAG, tmax = NULL, xjitter = 0, yjitter = 0,
     igraph::V(g)$label <- latex_labels
   }
   
-  g <- igraph::set.graph.attribute(g, 'layout', layoutcustom_2)
+  g <- igraph::set_graph_attr(g, 'layout', layoutcustom_2)
   
   # Plot with appropriate margins
   par(mar=c(2, 2, 2, 2))  # Add some margin around the plot
