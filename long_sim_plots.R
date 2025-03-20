@@ -12,7 +12,7 @@ library(gtable)
 
 # Define parameters
 J <- 6
-n <- 12500
+n <- 10000
 R <- 325
 t.end <- 36
 

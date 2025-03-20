@@ -250,6 +250,32 @@ def test_model():
             logger.info(f"Mean: {np.mean(preds_test)}, Std: {np.std(preds_test)}")
             logger.info(f"Min: {np.min(preds_test)}, Max: {np.max(preds_test)}")
             
+            # Diagnostic output about predictions but don't modify them
+            is_Y_model = ('is_Y_outcome' in globals() and is_Y_outcome) or (
+                'output_dim' in globals() and output_dim == 1 and 
+                'loss_fn' in globals() and loss_fn == "binary_crossentropy" and
+                not ('is_censoring' in globals() and is_censoring)
+            )
+            
+            if is_Y_model:
+                # Just log info - let the R code handle any needed conversion
+                mean_pred = np.mean(preds_test)
+                logger.info("=" * 80)
+                logger.info("Y model prediction diagnostics:")
+                logger.info(f"Mean: {mean_pred:.6f}")
+                logger.info(f"Range: [{np.min(preds_test):.6f}, {np.max(preds_test):.6f}]")
+                
+                # Distribution analysis
+                bins = [0, 0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.999, 1.0]
+                for i in range(len(bins)-1):
+                    count = np.sum((preds_test >= bins[i]) & (preds_test < bins[i+1]))
+                    logger.info(f"  {bins[i]:.3f}-{bins[i+1]:.3f}: {count} ({count/len(preds_test)*100:.2f}%)")
+                
+                if mean_pred > 0.7:
+                    logger.warning(f"NOTE: High mean prediction value ({mean_pred:.4f}) detected.")
+                    logger.warning(f"If these should be event probabilities, conversion may be needed in R.")
+                logger.info("=" * 80)
+            
             # Use last few valid predictions to initialize padding
             k = min(50, len(preds_test))
             last_valid = preds_test[-k:]
@@ -300,17 +326,35 @@ def test_model():
         if loss_fn == "binary_crossentropy":
             logger.info("\nBinary prediction analysis:")
             logger.info(f"Prediction shape: {preds_test.shape}")
+            
+            # Final diagnostic check - do not modify values
+            is_Y_model = ('is_Y_outcome' in globals() and is_Y_outcome) or (
+                'output_dim' in globals() and output_dim == 1 and 
+                'loss_fn' in globals() and loss_fn == "binary_crossentropy" and
+                not ('is_censoring' in globals() and is_censoring)
+            )
+            
+            # Just log information, don't change the values
+            if is_Y_model and np.mean(preds_test) > 0.7:
+                logger.warning("=" * 80)
+                logger.warning("FINAL CHECK: Y model has high probability values!")
+                logger.warning(f"Mean: {np.mean(preds_test):.6f}")
+                logger.warning(f"Range: [{np.min(preds_test):.6f}, {np.max(preds_test):.6f}]")
+                logger.warning("If needed, conversion will be handled in R code")
+                logger.warning("=" * 80)
+            
             logger.info(f"Mean predictions per class:")
             for i in range(J):
-                mean_pred = np.mean(preds_test[:, i])
+                mean_pred = np.mean(preds_test[:, i]) if preds_test.ndim > 1 else np.mean(preds_test)
                 logger.info(f"Class {i}: {mean_pred:.4f}")
             
-            # Calculate class predictions
-            class_preds = np.argmax(preds_test, axis=1)
-            logger.info("\nPredicted class distribution:")
-            for i in range(J):
-                count = np.sum(class_preds == i)
-                logger.info(f"Class {i}: {count} ({count/len(class_preds)*100:.2f}%)")
+            # Calculate class predictions only for multi-class models
+            if preds_test.ndim > 1 and preds_test.shape[1] > 1:
+                class_preds = np.argmax(preds_test, axis=1)
+                logger.info("\nPredicted class distribution:")
+                for i in range(J):
+                    count = np.sum(class_preds == i)
+                    logger.info(f"Class {i}: {count} ({count/len(class_preds)*100:.2f}%)")
         else:
             logger.info("\nCategorical prediction analysis:")
             logger.info(f"Prediction shape: {preds_test.shape}")

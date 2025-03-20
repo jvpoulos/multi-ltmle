@@ -531,6 +531,32 @@ def main():
     logger.info(f"Min: {np.min(predictions)}")
     logger.info(f"Max: {np.max(predictions)}")
     
+    # Diagnostic information about prediction distribution for Y outcomes
+    is_Y_model = (is_Y_outcome if 'is_Y_outcome' in globals() else 
+                 (output_dim == 1 and loss_fn == "binary_crossentropy" and 
+                  not is_censoring))
+    
+    if is_Y_model:
+        # Just log diagnostic info but don't modify the values - let R handle conversion if needed
+        mean_pred = np.mean(predictions)
+        logger.info("=" * 80)
+        logger.info(f"Y model prediction diagnostics:")
+        logger.info(f"Mean: {mean_pred:.6f}")
+        logger.info(f"Range: [{np.min(predictions):.6f}, {np.max(predictions):.6f}]")
+        
+        # Provide a distribution analysis
+        bins = [0, 0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.999, 1.0]
+        hist = np.zeros(len(bins)-1)
+        for i in range(len(bins)-1):
+            count = np.sum((predictions >= bins[i]) & (predictions < bins[i+1]))
+            hist[i] = count
+            logger.info(f"  {bins[i]:.3f}-{bins[i+1]:.3f}: {count} ({count/len(predictions)*100:.2f}%)")
+            
+        if mean_pred > 0.7:
+            logger.warning(f"NOTE: High mean prediction value ({mean_pred:.4f}) detected.")
+            logger.warning(f"If these should be event probabilities, conversion may be needed in R.")
+        logger.info("=" * 80)
+    
 
     # Check if predictions match original order
     logger.info("\nOrder Analysis:")

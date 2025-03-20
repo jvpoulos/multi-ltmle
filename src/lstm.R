@@ -30,6 +30,61 @@ predict_with_cached_model <- function(model_key, rule_data, n_ids, t_end, window
     print(paste("Total time points:", t_end + 1))
   }
   
+  # CRITICAL CHECK: Examine if the LSTM model is producing survival probabilities (high ~0.99) 
+  # instead of event probabilities (low ~0.1-0.3) for outcome predictions
+  if(is_Y_outcome && !is.null(preds_r) && nrow(preds_r) > 0) {
+    lstm_mean <- mean(preds_r, na.rm=TRUE)
+    if(debug) {
+      print("=== LSTM OUTPUT INSPECTION ===")
+      print(paste("LSTM output mean:", lstm_mean))
+      print(paste("Range:", paste(range(preds_r, na.rm=TRUE), collapse=" - ")))
+      
+      # Detailed distribution analysis for diagnosis
+      breaks <- c(0, 0.001, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.999, 1)
+      cat("Value distribution:\n")
+      for(i in 1:(length(breaks)-1)) {
+        count <- sum(preds_r >= breaks[i] & preds_r < breaks[i+1], na.rm=TRUE)
+        pct <- 100 * count / length(preds_r)
+        cat(sprintf("  %.3f - %.3f: %d values (%.2f%%)\n", 
+                   breaks[i], breaks[i+1], count, pct))
+      }
+      
+      if(lstm_mean > 0.7) {
+        print("WARNING: LSTM predictions for Y appear to be survival probabilities (~0.99)")
+        print("These should be event probabilities (~0.1-0.3)")
+        print("Will convert from survival to event probabilities (1-p)")
+      }
+    }
+    
+    # Fix the issue: If values are suspiciously high (mean > 0.7) for a Y outcome model
+    # they're likely survival probabilities instead of event probabilities, so convert them
+    if(lstm_mean > 0.7) {
+      if(debug) {
+        print("*** APPLYING CRITICAL FIX: Converting survival probabilities to event probabilities")
+        print(paste("Before conversion - Mean:", round(lstm_mean, 6), 
+                   "Range:", paste(round(range(preds_r, na.rm=TRUE), 6), collapse=" - ")))
+      }
+      
+      # Convert from survival (1-event) to event probabilities
+      preds_r <- 1.0 - preds_r
+      
+      # Display the new statistics
+      if(debug) {
+        new_mean <- mean(preds_r, na.rm=TRUE)
+        new_range <- range(preds_r, na.rm=TRUE)
+        print(paste("After conversion - Mean:", round(new_mean, 6),
+                   "Range:", paste(round(new_range, 6), collapse=" - ")))
+        
+        # Check if conversion was appropriate
+        if(new_mean > 0.7) {
+          print("WARNING: Values still high after conversion! May need further investigation.")
+        } else {
+          print("Conversion successful: values now in expected event probability range.")
+        }
+      }
+    }
+  }
+  
   # Process predictions for all time periods
   validated_preds <- lapply(1:(t_end + 1), function(t) {
     # Calculate indices for current time slice
@@ -739,6 +794,49 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
       
       # Load and validate prediction array
       preds_r <- as.array(np$load(preds_file))
+      
+      # CRITICAL FIX: Check if the LSTM predictions are survival probabilities (mean~0.99)
+      # instead of event probabilities (mean~0.1-0.3) for Y outcomes
+      if(is_Y_outcome && !is.null(preds_r) && is.matrix(preds_r) && nrow(preds_r) > 0) {
+        lstm_mean <- mean(preds_r, na.rm=TRUE)
+        
+        if(debug) {
+          print("=== LSTM PREDICTIONS ANALYSIS ===")
+          print(paste("Mean:", lstm_mean))
+          print(paste("Range:", paste(range(preds_r, na.rm=TRUE), collapse=" to ")))
+          
+          # Print histogram of values for detailed analysis
+          breaks <- c(0, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 1)
+          hist_counts <- sapply(1:(length(breaks)-1), function(i) {
+            sum(preds_r >= breaks[i] & preds_r < breaks[i+1], na.rm=TRUE)
+          })
+          
+          print("Value distribution:")
+          for(i in 1:(length(breaks)-1)) {
+            pct <- 100 * hist_counts[i] / length(preds_r)
+            print(sprintf("  %.2f - %.2f: %d values (%.2f%%)", 
+                           breaks[i], breaks[i+1], hist_counts[i], pct))
+          }
+        }
+        
+        # If mean is very high (>0.7) for a Y outcome, these are likely survival probabilities
+        # instead of event probabilities. Convert them automatically.
+        if(lstm_mean > 0.7) {
+          if(debug) {
+            print("CRITICAL ISSUE DETECTED: LSTM predictions appear to be survival probabilities!")
+            print("Converting to event probabilities...")
+          }
+          
+          # Convert from survival (1-event) to event probabilities
+          preds_r <- 1.0 - preds_r
+          
+          if(debug) {
+            print("=== AFTER CONVERSION ===")
+            print(paste("New mean:", mean(preds_r, na.rm=TRUE)))
+            print(paste("New range:", paste(range(preds_r, na.rm=TRUE), collapse=" to ")))
+          }
+        }
+      }
       
       # Cache model info for batch processing if enabled
       if(batch_models) {

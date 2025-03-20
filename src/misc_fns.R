@@ -2,6 +2,106 @@
 # Misc. functions    #
 ######################
 
+# Safe reshaping function
+safe_reshape_data <- function(data, t_end, debug) {
+  if(debug){
+    # Debug output
+    print("Data column names at start:")
+    print(names(data))
+  }
+  
+  # Get unique IDs
+  unique_ids <- unique(data$ID)
+  n_ids <- length(unique_ids)
+  
+  # Ensure A column exists and is properly formatted
+  if(!"A" %in% names(data)) {
+    print("Looking for alternative treatment columns...")
+    A_cols <- grep("^A[0-9]$", names(data), value=TRUE)
+    if(length(A_cols) > 0) {
+      print(paste("Found treatment columns:", paste(A_cols, collapse=", ")))
+      # Use first treatment column if multiple exist
+      data$A <- data[[A_cols[1]]]
+    } else {
+      stop("No treatment column found in data")
+    }
+  }
+  
+  # Convert treatment to factor if not already
+  data$A <- factor(data$A)
+  
+  # Get unique IDs
+  unique_ids <- unique(data$ID)
+  n_ids <- length(unique_ids)
+  
+  # Create time sequence
+  time_seq <- 0:t_end
+  
+  # Create expanded grid of IDs and times
+  wide_base <- expand.grid(
+    ID = unique_ids,
+    t = time_seq,
+    stringsAsFactors = FALSE
+  )
+  
+  # Sort by ID and time
+  wide_base <- wide_base[order(wide_base$ID, wide_base$t), ]
+  
+  # Merge with original data
+  wide_data <- merge(wide_base, data, by = c("ID", "t"), all.x = TRUE)
+  
+  # Get time-varying columns
+  time_varying_cols <- c("L1", "L2", "L3", "A", "C", "Y")
+  
+  # Reshape each time-varying variable
+  wide_reshaped <- wide_data[!duplicated(wide_data$ID), setdiff(names(wide_data), c("t", time_varying_cols))]
+  
+  for(col in time_varying_cols) {
+    if(col %in% names(wide_data)) {
+      temp_data <- wide_data[, c("ID", "t", col)]
+      temp_wide <- reshape(temp_data,
+                           timevar = "t",
+                           idvar = "ID",
+                           direction = "wide",
+                           sep = ".")
+      
+      # Add reshaped columns
+      wide_cols <- grep(paste0("^", col, "\\."), names(temp_wide), value = TRUE)
+      if(length(wide_cols) > 0) {
+        wide_reshaped[wide_cols] <- temp_wide[, wide_cols]
+      }
+    }
+  }
+  
+  # Handle missing values
+  na_cols <- c(
+    grep("^Y\\.", names(wide_reshaped), value = TRUE),
+    grep("^C\\.", names(wide_reshaped), value = TRUE),
+    grep("^L[1-3]\\.", names(wide_reshaped), value = TRUE),
+    grep("^V3\\.", names(wide_reshaped), value = TRUE)
+  )
+  
+  wide_reshaped[na_cols][is.na(wide_reshaped[na_cols])] <- -1
+  
+  # Handle treatment columns
+  A_cols <- grep("^A\\.", names(wide_reshaped), value = TRUE)
+  if(length(A_cols) > 0) {
+    wide_reshaped[A_cols] <- lapply(wide_reshaped[A_cols], function(x) {
+      if(is.factor(x)) {
+        x <- addNA(x)
+        levels(x) <- c("0", levels(x)[-length(levels(x))])
+      } else {
+        x <- factor(x)
+        x <- addNA(x)
+        levels(x) <- c("0", levels(x)[-length(levels(x))])
+      }
+      as.numeric(as.character(x))
+    })
+  }
+  
+  return(wide_reshaped)
+}
+
 create_standard_matrix <- function(data, expected_rows, expected_cols) {
   # Handle NULL or empty data
   if(is.null(data) || length(data) == 0) {
