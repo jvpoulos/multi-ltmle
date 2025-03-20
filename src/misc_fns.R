@@ -236,7 +236,7 @@ boundProbs <- function(x, bounds=c(0.025,1)){
     # Create a new matrix with known dimensions
     result <- matrix(0, nrow=nr, ncol=nc)
     
-    # Copy data with bounds
+    # Copy data with bounds - simply apply bounds regardless of column count
     for (i in 1:nr) {
       for (j in 1:nc) {
         val <- x[i, j]
@@ -253,22 +253,24 @@ boundProbs <- function(x, bounds=c(0.025,1)){
       }
     }
     
-    # Normalize rows to sum to 1 if they're probabilities (sum > 0)
-    for (i in 1:nr) {
-      row_sum <- sum(result[i,])
-      if (row_sum > 0 && row_sum != 1) {
-        result[i,] <- result[i,] / row_sum
-      }
-      
-      # Re-apply bounds after normalization
-      for (j in 1:nc) {
-        if (result[i,j] < min(bounds)) result[i,j] <- min(bounds)
-        if (result[i,j] > max(bounds)) result[i,j] <- max(bounds)
-      }
-      
-      # Final normalization if needed
-      if (sum(result[i,]) > 0 && sum(result[i,]) != 1) {
-        result[i,] <- result[i,] / sum(result[i,])
+    # Only perform row normalization for multi-column matrices (treatment probabilities)
+    if (nc > 1) {
+      for (i in 1:nr) {
+        row_sum <- sum(result[i,])
+        if (row_sum > 0 && row_sum != 1) {
+          result[i,] <- result[i,] / row_sum
+        }
+        
+        # Re-apply bounds after normalization
+        for (j in 1:nc) {
+          if (result[i,j] < min(bounds)) result[i,j] <- min(bounds)
+          if (result[i,j] > max(bounds)) result[i,j] <- max(bounds)
+        }
+        
+        # Final normalization if needed
+        if (sum(result[i,]) > 0 && sum(result[i,]) != 1) {
+          result[i,] <- result[i,] / sum(result[i,])
+        }
       }
     }
     

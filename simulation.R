@@ -378,14 +378,30 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
 
   tmle_estimates <- matrix(NA, nrow=3, ncol=t.end)
   rownames(tmle_estimates) <- c("static", "dynamic", "stochastic")
-  tmle_estimates_bin <- matrix(NA, nrow=3, ncol=t.end)
-  rownames(tmle_estimates_bin) <- c("static", "dynamic", "stochastic")
+  
+  # Similarly for other estimate matrices:
+  tmle_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+  rownames(tmle_bin_estimates) <- c("static", "dynamic", "stochastic")
+  
   iptw_estimates <- matrix(NA, nrow=3, ncol=t.end)
   rownames(iptw_estimates) <- c("static", "dynamic", "stochastic")
+  
   iptw_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
   rownames(iptw_bin_estimates) <- c("static", "dynamic", "stochastic")
+  
   gcomp_estimates <- matrix(NA, nrow=3, ncol=t.end)
   rownames(gcomp_estimates) <- c("static", "dynamic", "stochastic")
+  
+  # Code to check and display the dimensions of the estimate matrices
+  if(debug) {
+    cat("\nEstimated means before final processing:\n")
+    cat("TMLE estimates dimensions:", dim(tmle_estimates), "\n")
+    print(tmle_estimates)
+    cat("\nIPTW estimates dimensions:", dim(iptw_estimates), "\n")
+    print(iptw_estimates)
+    cat("\nG-comp estimates dimensions:", dim(gcomp_estimates), "\n")
+    print(gcomp_estimates)
+  }
   
   Ahat_tmle <- list()
   prob_share <- list()
@@ -2382,54 +2398,138 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   print("Calculating share of cumulative probabilities of continuing to receive treatment according to the assigned treatment rule which are smaller than 0.025")
   
-  if(estimator == "tmle-lstm") {
-    prob_share <- vector("list", t.end + 1)
-    prob_share_bin <- vector("list", t.end + 1)
+  if(estimator == "tmle") {
+    # Create g_preds_processed correctly from g_preds_cuml_bounded
+    g_preds_processed <- g_preds_cuml_bounded
     
-    for(t in 1:(t.end+1)) {
-      # Get predictions and ensure matrix format
-      g_preds_t <- g_preds_processed[[t]]
-      g_preds_bin_t <- g_preds_bin_processed[[t]]
-      
-      # Force matrix format with proper dimensions
-      if(!is.matrix(g_preds_t)) {
-        g_preds_t <- matrix(g_preds_t, ncol=6)  # J=6 treatments
-      }
-      if(!is.matrix(g_preds_bin_t)) {
-        g_preds_bin_t <- matrix(g_preds_bin_t, ncol=6)
-      }
-      
-      # Get current rules and ensure matrix format
-      current_rules <- obs.rules[[t]]
-      if(!is.matrix(current_rules)) {
-        current_rules <- matrix(current_rules, ncol=3)  # 3 rules: static, dynamic, stochastic
-      }
-      
-      # Calculate shares with proper dimension handling
-      prob_share[[t]] <- matrix(0, nrow=ncol(g_preds_t), ncol=ncol(current_rules))
-      for(i in seq_len(ncol(current_rules))) {
-        rule_indices <- which(current_rules[,i] == 1)
-        if(length(rule_indices) > 0) {
-          g_preds_subset <- g_preds_t[rule_indices,, drop=FALSE]
-          prob_share[[t]][,i] <- colMeans(g_preds_subset < 0.025, na.rm=TRUE)
-        }
-      }
-      colnames(prob_share[[t]]) <- c("static", "dynamic", "stochastic")
-      
-      # Same for binary predictions
-      prob_share_bin[[t]] <- matrix(0, nrow=ncol(g_preds_bin_t), ncol=ncol(current_rules))
-      for(i in seq_len(ncol(current_rules))) {
-        rule_indices <- which(current_rules[,i] == 1)
-        if(length(rule_indices) > 0) {
-          g_preds_subset <- g_preds_bin_t[rule_indices,, drop=FALSE]
-          prob_share_bin[[t]][,i] <- colMeans(g_preds_subset < 0.025, na.rm=TRUE)
-        }
-      }
-      colnames(prob_share_bin[[t]]) <- c("static", "dynamic", "stochastic")
-    }
+    # Also create g_preds_bin_processed from g_preds_bin_cuml_bounded
+    g_preds_bin_processed <- g_preds_bin_cuml_bounded
     
-    # Add names to list elements
+    prob_share <- lapply(1:(t.end+1), function(t) {
+      # Check that g_preds_processed exists and has data for this time point
+      if(is.null(g_preds_processed) || length(g_preds_processed) < t || is.null(g_preds_processed[[t]])) {
+        # Return NA matrix if no data
+        result <- matrix(NA, nrow=6, ncol=3)  # Assuming 6 treatments and 3 rules
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      }
+      
+      # Check obs.rules also exists
+      if(is.null(obs.rules) || length(obs.rules) < t || is.null(obs.rules[[t]])) {
+        # Return NA matrix if no data
+        result <- matrix(NA, nrow=6, ncol=3)
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      }
+      
+      # Safe calculation with error handling
+      tryCatch({
+        # Get the tmle_dat IDs at time t
+        t_ids <- na.omit(tmle_dat[tmle_dat$t==(t-1),])$ID
+        
+        # Calculate safely with dimension checking
+        if(length(t_ids) > 0 && ncol(obs.rules[[t]]) > 0) {
+          result <- sapply(1:ncol(obs.rules[[t]]), function(i) {
+            rule_rows <- which(obs.rules[[t]][t_ids, i] == 1)
+            if(length(rule_rows) > 0) {
+              # Check dimensions and use appropriate subsetting
+              if(is.matrix(g_preds_processed[[t]])) {
+                vals <- g_preds_processed[[t]][rule_rows, , drop=FALSE]
+                # Calculate column means safely
+                colMeans(vals < 0.025, na.rm=TRUE)
+              } else {
+                # If not a matrix, create a safer fallback
+                rep(NA, 6)  # Assuming 6 treatments
+              }
+            } else {
+              # No matching rows
+              rep(NA, 6)  # Assuming 6 treatments
+            }
+          })
+          
+          # Ensure proper column names
+          colnames(result) <- colnames(obs.rules[[t]])
+          return(result)
+        } else {
+          # Return NA matrix if no data
+          result <- matrix(NA, nrow=6, ncol=3)
+          colnames(result) <- c("static", "dynamic", "stochastic")
+          return(result)
+        }
+      }, error = function(e) {
+        # Return NA matrix on error
+        message("Error calculating prob_share for time ", t, ": ", e$message)
+        result <- matrix(NA, nrow=6, ncol=3)
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      })
+    })
+    
+    # Set names for list elements
     names(prob_share) <- paste0("t=", seq(0, t.end))
+    
+    # Same approach for binary predictions
+    prob_share_bin <- lapply(1:(t.end+1), function(t) {
+      # Check that g_preds_bin_processed exists and has data for this time point
+      if(is.null(g_preds_bin_processed) || length(g_preds_bin_processed) < t || is.null(g_preds_bin_processed[[t]])) {
+        # Return NA matrix if no data
+        result <- matrix(NA, nrow=6, ncol=3)
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      }
+      
+      # Check obs.rules also exists
+      if(is.null(obs.rules) || length(obs.rules) < t || is.null(obs.rules[[t]])) {
+        # Return NA matrix if no data
+        result <- matrix(NA, nrow=6, ncol=3)
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      }
+      
+      # Safe calculation with error handling
+      tryCatch({
+        # Get the tmle_dat IDs at time t
+        t_ids <- na.omit(tmle_dat[tmle_dat$t==(t-1),])$ID
+        
+        # Calculate safely with dimension checking
+        if(length(t_ids) > 0 && ncol(obs.rules[[t]]) > 0) {
+          result <- sapply(1:ncol(obs.rules[[t]]), function(i) {
+            rule_rows <- which(obs.rules[[t]][t_ids, i] == 1)
+            if(length(rule_rows) > 0) {
+              # Check dimensions and use appropriate subsetting
+              if(is.matrix(g_preds_bin_processed[[t]])) {
+                vals <- g_preds_bin_processed[[t]][rule_rows, , drop=FALSE]
+                # Calculate column means safely
+                colMeans(vals < 0.025, na.rm=TRUE)
+              } else {
+                # If not a matrix, create a safer fallback
+                rep(NA, 6)  # Assuming 6 treatments
+              }
+            } else {
+              # No matching rows
+              rep(NA, 6)  # Assuming 6 treatments
+            }
+          })
+          
+          # Ensure proper column names
+          colnames(result) <- colnames(obs.rules[[t]])
+          return(result)
+        } else {
+          # Return NA matrix if no data
+          result <- matrix(NA, nrow=6, ncol=3)
+          colnames(result) <- c("static", "dynamic", "stochastic")
+          return(result)
+        }
+      }, error = function(e) {
+        # Return NA matrix on error
+        message("Error calculating prob_share_bin for time ", t, ": ", e$message)
+        result <- matrix(NA, nrow=6, ncol=3)
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      })
+    })
+    
+    # Set names for list elements
     names(prob_share_bin) <- paste0("t=", seq(0, t.end))
   }else{
     prob_share <- lapply(1:(t.end+1), function(t) sapply(1:ncol(obs.rules[[(t)]]), function(i) colMeans(g_preds_processed[[(t)]][which(obs.rules[[(t)]][na.omit(tmle_dat[tmle_dat$t==(t),])$ID,][,i]==1),]<0.025, na.rm=TRUE)))
