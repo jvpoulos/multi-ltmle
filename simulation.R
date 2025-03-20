@@ -2639,7 +2639,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
   } else {
     # For standard TMLE estimator
-    # For standard TMLE estimator
     cat("Calculating variance estimates...\n")
     
     # Optimize TMLE_IC function calls by focusing on key time points
@@ -2752,12 +2751,20 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   print("Calculating bias, CP, CIW wrt to est at each t")
   
-  bias_tmle  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - tmle_est_var$est[[t]])
+  # Fixed code - Convert Y.true to survival probabilities first:
+  bias_tmle  <- lapply(2:t.end, function(t) (1 - sapply(Y.true,"[[",t)) - tmle_est_var$est[[t]])
   names(bias_tmle) <- paste0("t=",2:t.end)
   
-  CP_tmle <- lapply(1:(t.end-1), function(t) as.numeric((tmle_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & 
-                                                          (tmle_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
-  names(CP_tmle) <- paste0("t=",2:t.end)
+  # Corrected coverage probability calculations - convert Y.true to survival probabilities
+  CP_tmle <- lapply(1:(t.end-1), function(t) {
+    # Convert Y.true from event probabilities to survival probabilities
+    y_true_surv <- 1 - sapply(Y.true, "[[", t)
+    
+    # Check if confidence intervals cover the true survival probabilities
+    as.numeric((tmle_est_var$CI[[t]][1,] < y_true_surv) & 
+                 (tmle_est_var$CI[[t]][2,] > y_true_surv))
+  })
+  names(CP_tmle) <- paste0("t=", 2:t.end)
   
   for(t in 1:(t.end-1)){
     names(CP_tmle[[t]]) <- names(bias_tmle[[t]])
@@ -2772,15 +2779,15 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # binomial version
   
-  bias_tmle_bin  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - tmle_est_var_bin$est[[t]])
+  bias_tmle_bin  <- lapply(2:t.end, function(t) (1 - sapply(Y.true,"[[",t)) - tmle_est_var_bin$est[[t]])
   names(bias_tmle_bin) <- paste0("t=",2:t.end)
   
-  CP_tmle_bin <- lapply(1:(t.end-1), function(t) as.numeric((tmle_est_var_bin$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (tmle_est_var_bin$CI[[t]][2,] > sapply(Y.true,"[[",t))))
-  names(CP_tmle_bin) <- paste0("t=",2:t.end)
-  
-  for(t in 1:(t.end-1)){
-    names(CP_tmle_bin[[t]]) <- names(bias_tmle_bin[[t]])
-  }
+  CP_tmle_bin <- lapply(1:(t.end-1), function(t) {
+    y_true_surv <- 1 - sapply(Y.true, "[[", t)
+    as.numeric((tmle_est_var_bin$CI[[t]][1,] < y_true_surv) & 
+                 (tmle_est_var_bin$CI[[t]][2,] > y_true_surv))
+  })
+  names(CP_tmle_bin) <- paste0("t=", 2:t.end)
   
   CIW_tmle_bin  <- lapply(1:(t.end-1), function(t) tmle_est_var_bin$CI[[t]][2,]- tmle_est_var_bin$CI[[t]][1,])
   names(CIW_tmle_bin) <- paste0("t=",2:t.end)
@@ -2790,15 +2797,15 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   }
   
   # gcomp metrics
-  bias_gcomp  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - gcomp_est_var$est[[t]])
+  bias_gcomp  <- lapply(2:t.end, function(t) (1 - sapply(Y.true,"[[",t)) - gcomp_est_var$est[[t]])
   names(bias_gcomp) <- paste0("t=",2:t.end)
   
-  CP_gcomp <- lapply(1:(t.end-1), function(t) as.numeric((gcomp_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (gcomp_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
-  names(CP_gcomp) <- paste0("t=",2:t.end)
-  
-  for(t in 1:(t.end-1)){
-    names(CP_gcomp[[t]]) <- names(bias_gcomp[[t]])
-  }
+  CP_gcomp <- lapply(1:(t.end-1), function(t) {
+    y_true_surv <- 1 - sapply(Y.true, "[[", t)
+    as.numeric((gcomp_est_var$CI[[t]][1,] < y_true_surv) & 
+                 (gcomp_est_var$CI[[t]][2,] > y_true_surv))
+  })
+  names(CP_gcomp) <- paste0("t=", 2:t.end)
   
   CIW_gcomp  <- lapply(1:(t.end-1), function(t) gcomp_est_var$CI[[t]][2,]- gcomp_est_var$CI[[t]][1,])
   names(CIW_gcomp) <- paste0("t=",2:t.end)
@@ -2808,15 +2815,15 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   }
   
   # IPTW metrics
-  bias_iptw  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - iptw_est_var$est[[t]])
+  bias_iptw  <- lapply(2:t.end, function(t) (1 - sapply(Y.true,"[[",t)) - iptw_est_var$est[[t]])
   names(bias_iptw) <- paste0("t=",2:t.end)
   
-  CP_iptw <- lapply(1:(t.end-1), function(t) as.numeric((iptw_est_var$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (iptw_est_var$CI[[t]][2,] > sapply(Y.true,"[[",t))))
-  names(CP_iptw) <- paste0("t=",2:t.end)
-  
-  for(t in 1:(t.end-1)){
-    names(CP_iptw[[t]]) <- names(bias_iptw[[t]])
-  }
+  CP_iptw <- lapply(1:(t.end-1), function(t) {
+    y_true_surv <- 1 - sapply(Y.true, "[[", t)
+    as.numeric((iptw_est_var$CI[[t]][1,] < y_true_surv) & 
+                 (iptw_est_var$CI[[t]][2,] > y_true_surv))
+  })
+  names(CP_iptw) <- paste0("t=", 2:t.end)
   
   CIW_iptw  <- lapply(1:(t.end-1), function(t) iptw_est_var$CI[[t]][2,]- iptw_est_var$CI[[t]][1,])
   names(CIW_iptw) <- paste0("t=",2:t.end)
@@ -2827,15 +2834,15 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   # binomial version
   
-  bias_iptw_bin  <- lapply(2:t.end, function(t) sapply(Y.true,"[[",t) - iptw_est_var_bin$est[[t]])
+  bias_iptw_bin  <- lapply(2:t.end, function(t) (1 - sapply(Y.true,"[[",t)) - iptw_est_var_bin$est[[t]])
   names(bias_iptw_bin) <- paste0("t=",2:t.end)
   
-  CP_iptw_bin <- lapply(1:(t.end-1), function(t) as.numeric((iptw_est_var_bin$CI[[t]][1,] < sapply(Y.true,"[[",t)) & (iptw_est_var_bin$CI[[t]][2,] > sapply(Y.true,"[[",t))))
-  names(CP_iptw_bin) <- paste0("t=",2:t.end)
-  
-  for(t in 1:(t.end-1)){
-    names(CP_iptw_bin[[t]]) <- names(bias_iptw_bin[[t]])
-  }
+  CP_iptw_bin <- lapply(1:(t.end-1), function(t) {
+    y_true_surv <- 1 - sapply(Y.true, "[[", t)
+    as.numeric((iptw_est_var_bin$CI[[t]][1,] < y_true_surv) & 
+                 (iptw_est_var_bin$CI[[t]][2,] > y_true_surv))
+  })
+  names(CP_iptw_bin) <- paste0("t=", 2:t.end)
   
   CIW_iptw_bin  <- lapply(1:(t.end-1), function(t) iptw_est_var_bin$CI[[t]][2,]- iptw_est_var_bin$CI[[t]][1,])
   names(CIW_iptw_bin) <- paste0("t=",2:t.end)
