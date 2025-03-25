@@ -513,6 +513,12 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
   # First create a safe subset of data without missing Y values
   tmle_dat_sub <- tmle_dat[tmle_dat$t==t & !is.na(tmle_dat$Y),] # drop rows with missing Y
   
+  # Add an early check for empty data
+  if(nrow(tmle_dat_sub) == 0) {
+    warning("No non-missing Y values for time point t=", t, ", using default prediction")
+    return(rep(0.5, nrow(tmle_dat[tmle_dat$t==t,])))
+  }
+  
   # Special handling for Y_pred when t<T
   if(!is.null(Y_pred)){ 
     # Convert Y_pred to numeric vector if it's a list
@@ -531,14 +537,6 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
     }
   }
   
-  # Early exit if no data after filtering
-  if(nrow(tmle_dat_sub) == 0) {
-    warning("No data available after filtering at time t=", t)
-    # Return default results - use numeric vector instead of list
-    default_val <- 0.5
-    return(rep(default_val, nrow(tmle_dat[tmle_dat$t==t,])))
-  }
-  
   # Validate that all covariates exist in the data
   missing_covars <- setdiff(tmle_covars_Y, colnames(tmle_dat_sub))
   if(length(missing_covars) > 0) {
@@ -553,25 +551,21 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
   folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = n.folds)
   
   # More robust determination of outcome type
-  # First check values in the data
   y_values <- tmle_dat_sub$Y[!is.na(tmle_dat_sub$Y)]
-  
   if(length(y_values) > 0) {
     # Check if all values are binary (0/1)
     if(all(y_values %in% c(0,1))) {
-      # Binary outcome detected - BUT always use continuous for better stability
-      # The "binomial" family often fails to converge with binary outcomes in SL
-      message("Binary outcome detected - using continuous outcome type for better stability")
-      outcome_type <- "continuous"
+      # For binary outcomes, explicitly use binomial
+      outcome_type <- "binomial"
+      message("Binary outcome detected - using binomial family")
     } else {
-      # Non-binary outcome detected
-      message("Continuous outcome detected - using continuous outcome type")
       outcome_type <- "continuous"
+      message("Continuous outcome detected")
     }
   } else {
-    # No data available to determine type
-    message("No valid outcome values detected - defaulting to continuous outcome type")
+    # Default to continuous if we can't determine
     outcome_type <- "continuous"
+    message("No valid outcome values - defaulting to continuous")
   }
   
   # Check for constant Y values early
@@ -1202,7 +1196,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
           weights = weights,
           family = binomial(),
           data = fit_data,
-          control = list(maxit = 25)
+          control = list(maxit = 50, epsilon = 1e-8) # Increased iterations and tighter tolerance
         )
       }, error = function(e) {
         # Use fallback approach
