@@ -11,27 +11,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   lstm_debug_enabled <- debug
   assign("lstm_debug_enabled", lstm_debug_enabled, envir = .GlobalEnv)
   
-  # Optimize TMLE processing by enabling parallel processing
-  if(estimator == "tmle") {
-    # Force parallel processing for TMLE to make regular TMLE processing faster
-    library(parallel)
-    library(doParallel)
-    
-    message("Optimizing TMLE processing with parallel computation...")
-    if(cores == 1) {
-      # If user didn't set cores, use at least 4 for faster processing
-      message("Increasing cores from 1 to 4 for faster TMLE processing")
-      cores <- 4
-    }
-    
-    # Set up parallel backend for TMLE to improve performance
-    cl <- parallel::makeCluster(cores)
-    doParallel::registerDoParallel(cl)
-    on.exit(if(exists("cl") && inherits(cl, "cluster")) parallel::stopCluster(cl))
-    
-    message(paste("Registered parallel processing with", cores, "cores for TMLE"))
-  }
-  
   # libraries
   library(simcausal)
   options(simcausal.verbose=FALSE)
@@ -128,6 +107,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         pointsize=12, bg="white")
     
     # Call the improved plotting function
+    source('./src/plotDAG_improved.R')
     dag_graph <- plotDAG_improved(
       Dset, 
       excludeattrs=c("C_0","Y_0"), 
@@ -2116,13 +2096,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     print(paste("Number of IDs:", n_ids))
     print(paste("Number of time points:", n_times))
     
-    # Process g predictions
-    g_preds_processed <- safe_get_cuml_preds(g_preds, n_ids)
-    g_preds_bin_processed <- safe_get_cuml_preds(g_preds_bin, n_ids)
+    # Process g predictions - add t_end parameter here
+    g_preds_processed <- safe_get_cuml_preds(g_preds, n_ids, t.end)
+    g_preds_bin_processed <- safe_get_cuml_preds(g_preds_bin, n_ids, t.end)
     print("G predictions processed")
     
-    # Process C predictions
-    C_preds_processed <- safe_get_cuml_preds(C_preds, n_ids)
+    # Process C predictions - add t_end parameter here
+    C_preds_processed <- safe_get_cuml_preds(C_preds, n_ids, t.end)
     print("C predictions processed")
     
     n_ids <- length(unique(initial_model_for_Y$data$ID))
@@ -2153,12 +2133,139 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   cat("CHECKPOINT: Starting bias and confidence interval calculation\n")
   
-  if(estimator=='tmle-lstm'){
-    # Calculate TMLE estimates - fix dimensions and calculations with bias correction
-    # Conversion to survival probabilities (1-p) only happens at the visualization stage, which is correct.
-    tmle_estimates <- matrix(NA, nrow=3, ncol=t.end)
+  if(estimator=='tmle') {
+    cat("Calculating final estimates using TMLE approach\n")
     
-    # Process each time point
+    # Process TMLE estimates - convert from Qstar event probabilities to survival probabilities
+    tmle_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(tmle_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]]) && !is.null(tmle_contrasts[[t]]$Qstar)) {
+        # Extract Qstar values (these are event probabilities)
+        qstar_values <- tmle_contrasts[[t]]$Qstar
+        
+        # Check format and dimensions
+        if(is.matrix(qstar_values) && ncol(qstar_values) >= 3) {
+          # Calculate column means (event probabilities)
+          event_probs <- colMeans(qstar_values, na.rm=TRUE)
+          
+          # Convert event probabilities to survival probabilities (1 - event_prob)
+          for(rule in 1:3) {
+            tmle_estimates[rule,t] <- 1 - event_probs[rule]
+          }
+        }
+      }
+    }
+    
+    # Process Binary TMLE estimates
+    tmle_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(tmle_bin_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts_bin[[t]]) && !is.null(tmle_contrasts_bin[[t]]$Qstar)) {
+        # Extract Qstar values (these are event probabilities)
+        qstar_values <- tmle_contrasts_bin[[t]]$Qstar
+        
+        # Check format and dimensions
+        if(is.matrix(qstar_values) && ncol(qstar_values) >= 3) {
+          # Calculate column means (event probabilities)
+          event_probs <- colMeans(qstar_values, na.rm=TRUE)
+          
+          # Convert event probabilities to survival probabilities (1 - event_prob)
+          for(rule in 1:3) {
+            tmle_bin_estimates[rule,t] <- 1 - event_probs[rule]
+          }
+        }
+      }
+    }
+    
+    # Process IPTW estimates
+    iptw_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(iptw_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]]) && !is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
+        # Extract IPTW values
+        if(is.vector(tmle_contrasts[[t]]$Qstar_iptw)) {
+          # Vector format
+          iptw_values <- tmle_contrasts[[t]]$Qstar_iptw
+          if(length(iptw_values) >= 3) {
+            # Convert event probabilities to survival probabilities
+            for(rule in 1:3) {
+              iptw_estimates[rule,t] <- 1 - iptw_values[rule]
+            }
+          }
+        } else if(is.matrix(tmle_contrasts[[t]]$Qstar_iptw) && nrow(tmle_contrasts[[t]]$Qstar_iptw) > 0) {
+          # Matrix format (typically first row)
+          iptw_values <- tmle_contrasts[[t]]$Qstar_iptw[1,]
+          if(length(iptw_values) >= 3) {
+            # Convert event probabilities to survival probabilities
+            for(rule in 1:3) {
+              iptw_estimates[rule,t] <- 1 - iptw_values[rule]
+            }
+          }
+        }
+      }
+    }
+    
+    # Process Binary IPTW estimates
+    iptw_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(iptw_bin_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts_bin[[t]]) && !is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+        # Extract IPTW values
+        if(is.vector(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+          # Vector format
+          iptw_values <- tmle_contrasts_bin[[t]]$Qstar_iptw
+          if(length(iptw_values) >= 3) {
+            # Convert event probabilities to survival probabilities
+            for(rule in 1:3) {
+              iptw_bin_estimates[rule,t] <- 1 - iptw_values[rule]
+            }
+          }
+        } else if(is.matrix(tmle_contrasts_bin[[t]]$Qstar_iptw) && nrow(tmle_contrasts_bin[[t]]$Qstar_iptw) > 0) {
+          # Matrix format (typically first row)
+          iptw_values <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
+          if(length(iptw_values) >= 3) {
+            # Convert event probabilities to survival probabilities
+            for(rule in 1:3) {
+              iptw_bin_estimates[rule,t] <- 1 - iptw_values[rule]
+            }
+          }
+        }
+      }
+    }
+    
+    # Process G-computation estimates
+    gcomp_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(gcomp_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]]) && !is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
+        # Extract G-comp values
+        if(is.matrix(tmle_contrasts[[t]]$Qstar_gcomp) && ncol(tmle_contrasts[[t]]$Qstar_gcomp) >= 3) {
+          # Matrix format - calculate column means
+          gcomp_values <- colMeans(tmle_contrasts[[t]]$Qstar_gcomp, na.rm=TRUE)
+          
+          # Convert event probabilities to survival probabilities
+          for(rule in 1:3) {
+            gcomp_estimates[rule,t] <- 1 - gcomp_values[rule]
+          }
+        }
+      }
+    }
+    
+    cat("Final estimate matrices populated successfully\n")
+  } 
+  else if(estimator=='tmle-lstm') {
+    if(debug) cat("\nCalculating final estimates using LSTM approach\n")
+    
+    # Process each time point for TMLE estimates
+    tmle_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(tmle_estimates) <- c("static", "dynamic", "stochastic")
+    
     for(t in 1:t.end) {
       if(!is.null(tmle_contrasts[[t]])) {
         for(rule in 1:3) {
@@ -2173,154 +2280,118 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
           valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
           
           if(length(valid_values) > 0) {
-            # Calculate mean with potential bias correction
-            raw_mean <- mean(valid_values, na.rm=TRUE)
-            
-            # No bias correction - use raw values without artificial adjustments
-            # Convert event probability into survival probability directly
-            tmle_estimates[rule,t] <- 1-raw_mean
-          } else {
-            tmle_estimates[rule,t] <- NA  # No valid values
+            # Convert event probability into survival probability
+            tmle_estimates[rule,t] <- 1 - mean(valid_values, na.rm=TRUE)
           }
         }
       }
     }
     
-    # Apply time smoothing to reduce temporal instability
-    # This helps with high-bias issues that fluctuate over time
-    for(rule in 1:3) {
-      # Get values for this rule
-      rule_vals <- tmle_estimates[rule,]
-      
-      # Skip if all values are NA
-      if(all(is.na(rule_vals))) next
-      
-      # Replace remaining NAs with nearest non-NA value
-      na_indices <- which(is.na(rule_vals))
-      if(length(na_indices) > 0) {
-        for(i in na_indices) {
-          # Find nearest non-NA index
-          non_na_indices <- which(!is.na(rule_vals))
-          if(length(non_na_indices) > 0) {
-            nearest_idx <- non_na_indices[which.min(abs(non_na_indices - i))]
-            rule_vals[i] <- rule_vals[nearest_idx]
+    # Process each time point for binary TMLE estimates
+    tmle_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(tmle_bin_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts_bin[[t]])) {
+        for(rule in 1:3) {
+          # Skip if Qstar is not available or has invalid dimension
+          if(is.null(tmle_contrasts_bin[[t]]$Qstar) || ncol(tmle_contrasts_bin[[t]]$Qstar) < rule) {
+            tmle_bin_estimates[rule,t] <- NA
+            next
+          }
+          
+          # Extract values and handle missingness/invalid values
+          values <- tmle_contrasts_bin[[t]]$Qstar[,rule]
+          valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+          
+          if(length(valid_values) > 0) {
+            tmle_bin_estimates[rule,t] <- 1 - mean(valid_values, na.rm=TRUE)
           }
         }
       }
-      
-      # Apply smoothing using weighted moving average
-      if(length(rule_vals) > 4) {
-        smoothed_vals <- rule_vals
-        for(i in 3:(length(rule_vals)-2)) {
-          # 5-point weighted moving average
-          weights <- c(0.1, 0.2, 0.4, 0.2, 0.1)
-          window_vals <- rule_vals[(i-2):(i+2)]
-          smoothed_vals[i] <- sum(weights * window_vals)
-        }
-        # Update the values
-        tmle_estimates[rule,] <- smoothed_vals
-      }
     }
-  }
-  
-  # Calculate binary TMLE estimates
-  tmle_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
-  for(t in 1:t.end) {
-    if(!is.null(tmle_contrasts_bin[[t]])) {
-      for(rule in 1:3) {
-        # Skip if Qstar is not available or has invalid dimension
-        if(is.null(tmle_contrasts_bin[[t]]$Qstar) || ncol(tmle_contrasts_bin[[t]]$Qstar) < rule) {
-          tmle_bin_estimates[rule,t] <- NA
-          next
-        }
-        
-        # Extract values and handle missingness/invalid values
-        values <- tmle_contrasts_bin[[t]]$Qstar[,rule]
-        valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
-        
-        if(length(valid_values) > 0) {
-          tmle_bin_estimates[rule,t] <- 1-mean(valid_values) # convert event prob. into survival prob.
-        } else {
-          tmle_bin_estimates[rule,t] <- NA  # No valid values
-        }
-      }
-    }
-  }
-  
-  # Calculate IPTW estimates
-  iptw_estimates <- matrix(NA, nrow=3, ncol=t.end)
-  for(t in 1:t.end) {
-    if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
-      # Handle both vector and matrix formats
-      if(is.vector(tmle_contrasts[[t]]$Qstar_iptw)) {
-        iptw_means <- tmle_contrasts[[t]]$Qstar_iptw
-        if(length(iptw_means) >= 3) {
-          for(rule in 1:3) {
-            # Check if value is valid
-            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
-              iptw_estimates[rule,t] <- 1-iptw_means[rule]
+    
+    # Process IPTW estimates
+    iptw_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(iptw_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]]$Qstar_iptw)) {
+        # Handle both vector and matrix formats
+        if(is.vector(tmle_contrasts[[t]]$Qstar_iptw)) {
+          iptw_means <- tmle_contrasts[[t]]$Qstar_iptw
+          if(length(iptw_means) >= 3) {
+            for(rule in 1:3) {
+              # Check if value is valid
+              if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+                iptw_estimates[rule,t] <- 1 - iptw_means[rule]
+              }
             }
           }
-        }
-      } else if(is.matrix(tmle_contrasts[[t]]$Qstar_iptw) && nrow(tmle_contrasts[[t]]$Qstar_iptw) > 0) {
-        iptw_means <- tmle_contrasts[[t]]$Qstar_iptw[1,]
-        if(length(iptw_means) >= 3) {
-          for(rule in 1:3) {
-            # Check if value is valid
-            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
-              iptw_estimates[rule,t] <- 1-iptw_means[rule]
+        } else if(is.matrix(tmle_contrasts[[t]]$Qstar_iptw) && nrow(tmle_contrasts[[t]]$Qstar_iptw) > 0) {
+          iptw_means <- tmle_contrasts[[t]]$Qstar_iptw[1,]
+          if(length(iptw_means) >= 3) {
+            for(rule in 1:3) {
+              # Check if value is valid
+              if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+                iptw_estimates[rule,t] <- 1 - iptw_means[rule]
+              }
             }
           }
         }
       }
     }
-  }
-  
-  # Calculate binary IPTW estimates  
-  iptw_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
-  for(t in 1:t.end) {
-    if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
-      # Handle both vector and matrix formats
-      if(is.vector(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
-        iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw
-        if(length(iptw_means) >= 3) {
-          for(rule in 1:3) {
-            # Check if value is valid
-            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
-              iptw_bin_estimates[rule,t] <- 1-iptw_means[rule]
+    
+    # Process binary IPTW estimates
+    iptw_bin_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(iptw_bin_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+        # Handle both vector and matrix formats
+        if(is.vector(tmle_contrasts_bin[[t]]$Qstar_iptw)) {
+          iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw
+          if(length(iptw_means) >= 3) {
+            for(rule in 1:3) {
+              # Check if value is valid
+              if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+                iptw_bin_estimates[rule,t] <- 1 - iptw_means[rule]
+              }
             }
           }
-        }
-      } else if(is.matrix(tmle_contrasts_bin[[t]]$Qstar_iptw) && nrow(tmle_contrasts_bin[[t]]$Qstar_iptw) > 0) {
-        iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
-        if(length(iptw_means) >= 3) {
-          for(rule in 1:3) {
-            # Check if value is valid
-            if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
-              iptw_bin_estimates[rule,t] <- 1-iptw_means[rule]
+        } else if(is.matrix(tmle_contrasts_bin[[t]]$Qstar_iptw) && nrow(tmle_contrasts_bin[[t]]$Qstar_iptw) > 0) {
+          iptw_means <- tmle_contrasts_bin[[t]]$Qstar_iptw[1,]
+          if(length(iptw_means) >= 3) {
+            for(rule in 1:3) {
+              # Check if value is valid
+              if(!is.na(iptw_means[rule]) && !is.nan(iptw_means[rule]) && is.finite(iptw_means[rule])) {
+                iptw_bin_estimates[rule,t] <- 1 - iptw_means[rule]
+              }
             }
           }
         }
       }
     }
-  }
-  
-  # Calculate G-computation estimates
-  gcomp_estimates <- matrix(NA, nrow=3, ncol=t.end)
-  for(t in 1:t.end) {
-    if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
-      for(rule in 1:3) {
-        # Skip if Qstar_gcomp doesn't have proper dimensions
-        if(ncol(tmle_contrasts[[t]]$Qstar_gcomp) < rule) {
-          next
-        }
-        
-        # Extract values and handle missingness/invalid values
-        values <- tmle_contrasts[[t]]$Qstar_gcomp[,rule]
-        valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
-        
-        if(length(valid_values) > 0) {
-          gcomp_estimates[rule,t] <- 1-mean(valid_values)
+    
+    # Process G-computation estimates
+    gcomp_estimates <- matrix(NA, nrow=3, ncol=t.end)
+    rownames(gcomp_estimates) <- c("static", "dynamic", "stochastic")
+    
+    for(t in 1:t.end) {
+      if(!is.null(tmle_contrasts[[t]]$Qstar_gcomp)) {
+        for(rule in 1:3) {
+          # Skip if Qstar_gcomp doesn't have proper dimensions
+          if(is.null(tmle_contrasts[[t]]$Qstar_gcomp) || ncol(tmle_contrasts[[t]]$Qstar_gcomp) < rule) {
+            next
+          }
+          
+          # Extract values and handle missingness/invalid values
+          values <- tmle_contrasts[[t]]$Qstar_gcomp[,rule]
+          valid_values <- values[!is.na(values) & !is.nan(values) & is.finite(values) & values != -1]
+          
+          if(length(valid_values) > 0) {
+            gcomp_estimates[rule,t] <- 1 - mean(valid_values, na.rm=TRUE)
+          }
         }
       }
     }
@@ -2360,7 +2431,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     print(head(gcomp_estimates))
   }
   
-  # CORRECT VERSION: Raw values are event probabilities, convert to survival only at output
+  # Raw values are event probabilities, convert to survival only at output
   if(estimator=='tmle-lstm') {
     if(debug) cat("\nCalculating final estimates using LSTM approach\n")
     
@@ -2575,84 +2646,105 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     # Set names for list elements
     names(prob_share_bin) <- paste0("t=", seq(0, t.end))
   }else{
-    prob_share_bin <- lapply(1:(t.end+1), function(t) {
-      # Additional validation
-      if(is.null(g_preds_bin_processed) || t > length(g_preds_bin_processed) || is.null(g_preds_bin_processed[[t]])) {
-        return(matrix(NA, nrow=J, ncol=3))
+    prob_share <- lapply(1:(t.end+1), function(t) {
+      # Check that g_preds_processed exists and has data for this time point
+      if(is.null(g_preds_processed) || length(g_preds_processed) < t || is.null(g_preds_processed[[t]])) {
+        # Return matrix with default values instead of NA
+        result <- matrix(0, nrow=J, ncol=3)  # Using zeros instead of NA
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
       }
       
-      # Get the actual IDs at time t
-      t_ids <- unique(tmle_dat$ID[tmle_dat$t == (t-1)])
+      # Check obs.rules also exists
+      if(is.null(obs.rules) || length(obs.rules) < t || is.null(obs.rules[[t]])) {
+        # Return matrix with default values
+        result <- matrix(0, nrow=J, ncol=3)
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      }
       
-      # Process each rule separately with explicit dimension handling
-      result <- sapply(1:ncol(obs.rules[[t]]), function(i) {
-        # Get rows that follow rule i
-        rule_indices <- which(obs.rules[[t]][, i] == 1)
-        if(length(rule_indices) == 0) return(rep(NA, J))
-        
-        # Extract g_preds for these indices - handle matrix or vector
-        if(is.matrix(g_preds_bin_processed[[t]])) {
-          # Ensure dimensions match
-          if(nrow(g_preds_bin_processed[[t]]) >= length(t_ids)) {
-            vals <- g_preds_bin_processed[[t]][1:length(t_ids), , drop=FALSE]
-            vals <- vals[rule_indices, , drop=FALSE]
-            # Calculate share of predictions < 0.025
-            return(colMeans(vals < 0.025, na.rm=TRUE))
+      # Safe calculation with error handling
+      tryCatch({
+        # Calculate prob_share with proper dimension checking
+        result <- sapply(1:ncol(obs.rules[[t]]), function(i) {
+          rule_rows <- which(obs.rules[[t]][, i] == 1)
+          if(length(rule_rows) > 0 && nrow(g_preds_processed[[t]]) >= max(rule_rows)) {
+            # Extract relevant probabilities
+            vals <- g_preds_processed[[t]][rule_rows, , drop=FALSE]
+            # Calculate proportion < 0.025 safely
+            if(is.matrix(vals) && nrow(vals) > 0) {
+              return(colMeans(vals < 0.025, na.rm=TRUE))
+            }
           }
-        }
-        return(rep(NA, J))
+          return(rep(0, J))  # Default to 0 instead of NA
+        })
+        
+        # Ensure proper column names
+        colnames(result) <- colnames(obs.rules[[t]])
+        return(result)
+      }, error = function(e) {
+        message("Error calculating prob_share for time ", t, ": ", e$message)
+        result <- matrix(0, nrow=J, ncol=3)  # Default values
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
       })
-      
-      # Properly label columns and rows
-      if(ncol(result) == 3) colnames(result) <- c("static", "dynamic", "stochastic")
-      result
     })
     
     # Set column names safely
     for(t in 1:(t.end+1)){
-      if(t <= length(prob_share_bin) && !is.null(prob_share_bin[[t]]) && 
+      if(t <= length(prob_share) && !is.null(prob_share[[t]]) && 
          t.end <= length(obs.rules) && !is.null(obs.rules[[t.end]])) {
-        if(is.matrix(prob_share_bin[[t]]) && ncol(prob_share_bin[[t]]) == ncol(obs.rules[[t.end]])) {
-          colnames(prob_share_bin[[t]]) <- colnames(obs.rules[[t.end]])
+        if(is.matrix(prob_share[[t]]) && ncol(prob_share[[t]]) == ncol(obs.rules[[t.end]])) {
+          colnames(prob_share[[t]]) <- colnames(obs.rules[[t.end]])
         }
       }
     }
     
     # Set list names
-    names(prob_share_bin) <- paste0("t=", seq(0, t.end))
+    names(prob_share) <- paste0("t=", seq(0, t.end))
     
-    # Apply same approach for prob_share_bin
     prob_share_bin <- lapply(1:(t.end+1), function(t) {
-      # Additional validation
-      if(is.null(g_preds_processed) || t > length(g_preds_processed) || is.null(g_preds_processed[[t]])) {
-        return(matrix(NA, nrow=J, ncol=3))
+      # Check that g_preds_bin_processed exists and has data for this time point
+      if(is.null(g_preds_bin_processed) || length(g_preds_bin_processed) < t || is.null(g_preds_bin_processed[[t]])) {
+        # Return matrix with default values instead of NA
+        result <- matrix(0, nrow=J, ncol=3)  # Using zeros instead of NA
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
       }
       
-      # Get the actual IDs at time t
-      t_ids <- unique(tmle_dat$ID[tmle_dat$t == (t-1)])
+      # Check obs.rules also exists
+      if(is.null(obs.rules) || length(obs.rules) < t || is.null(obs.rules[[t]])) {
+        # Return matrix with default values
+        result <- matrix(0, nrow=J, ncol=3)
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
+      }
       
-      # Process each rule separately with explicit dimension handling
-      result <- sapply(1:ncol(obs.rules[[t]]), function(i) {
-        # Get rows that follow rule i
-        rule_indices <- which(obs.rules[[t]][, i] == 1)
-        if(length(rule_indices) == 0) return(rep(NA, J))
-        
-        # Extract g_preds for these indices - handle matrix or vector
-        if(is.matrix(g_preds_processed[[t]])) {
-          # Ensure dimensions match
-          if(nrow(g_preds_processed[[t]]) >= length(t_ids)) {
-            vals <- g_preds_processed[[t]][1:length(t_ids), , drop=FALSE]
-            vals <- vals[rule_indices, , drop=FALSE]
-            # Calculate share of predictions < 0.025
-            return(colMeans(vals < 0.025, na.rm=TRUE))
+      # Safe calculation with error handling
+      tryCatch({
+        # Calculate prob_share with proper dimension checking
+        result <- sapply(1:ncol(obs.rules[[t]]), function(i) {
+          rule_rows <- which(obs.rules[[t]][, i] == 1)
+          if(length(rule_rows) > 0 && nrow(g_preds_bin_processed[[t]]) >= max(rule_rows)) {
+            # Extract relevant probabilities
+            vals <- g_preds_bin_processed[[t]][rule_rows, , drop=FALSE]
+            # Calculate proportion < 0.025 safely
+            if(is.matrix(vals) && nrow(vals) > 0) {
+              return(colMeans(vals < 0.025, na.rm=TRUE))
+            }
           }
-        }
-        return(rep(NA, J))
+          return(rep(0, J))  # Default to 0 instead of NA
+        })
+        
+        # Ensure proper column names
+        colnames(result) <- colnames(obs.rules[[t]])
+        return(result)
+      }, error = function(e) {
+        message("Error calculating prob_share for time ", t, ": ", e$message)
+        result <- matrix(0, nrow=J, ncol=3)  # Default values
+        colnames(result) <- c("static", "dynamic", "stochastic")
+        return(result)
       })
-      
-      # Properly label columns and rows
-      if(ncol(result) == 3) colnames(result) <- c("static", "dynamic", "stochastic")
-      result
     })
     
     # Set column names safely
@@ -3048,6 +3140,15 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   })
   
   print("Returning list")
+  if(estimator=='tmle-lstm'){
+    # Ensure all matrices have proper dimensions before returning
+    tmle_estimates <- ensure_matrix_dimensions(tmle_estimates, nrow=3, ncol=t.end)
+    tmle_bin_estimates <- ensure_matrix_dimensions(tmle_bin_estimates, nrow=3, ncol=t.end)
+    iptw_estimates <- ensure_matrix_dimensions(iptw_estimates, nrow=3, ncol=t.end)
+    iptw_bin_estimates <- ensure_matrix_dimensions(iptw_bin_estimates, nrow=3, ncol=t.end)
+    gcomp_estimates <- ensure_matrix_dimensions(gcomp_estimates, nrow=3, ncol=t.end)
+  }
+  
   return(list("obs_rules"= obs.rules, "Y_true" = Y.true, "Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
               "bias_tmle"= bias_tmle,"CP_tmle"= CP_tmle,"CIW_tmle"=CIW_tmle,"tmle_est_var"=tmle_est_var,
@@ -3246,18 +3347,64 @@ library_vector <- c(
 
 library(foreach)
 
+# Modify the parallel execution section of the code (around line 9755)
 if(cores==1){ # run sequentially and save at each iteration
-  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points_batch", "TMLE_IC", "prepare_lstm_data")) %do% {
+  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
   }
 } else { # run in parallel
-  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE, .inorder=FALSE, .export = c("output_dir", "simLong", "lstm", "process_time_points_batch", "TMLE_IC", "prepare_lstm_data")) %dopar% {
-    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
-            cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
-            use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
-  }
+  # Create cluster with appropriate initialization based on estimator type
+  cl <- parallel::makeCluster(cores, outfile="")
+  doParallel::registerDoParallel(cl)
+  
+  # Export all simulation parameters to cluster
+  clusterExport(cl, c("estimator", "n", "J", "t.end", "gbound", "ybound", "n.folds", 
+                      "treatment.rule", "use.SL", "scale.continuous", "debug", 
+                      "window_size", "output_dir"))
+  
+  # Set up worker nodes with appropriate packages based on estimator type
+  clusterEvalQ(cl, {
+    # Load common packages for all estimator types
+    for (pkg in c("simcausal", "purrr", "origami", "sl3", "nnet", "ranger", 
+                  "glmnet", "MASS", "data.table", "gtools", "dplyr", "readr", "tidyr")) {
+      suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+    }
+    
+    # Source common files
+    source('./src/tmle_IC.R')
+    source('./src/misc_fns.R')
+    
+    # Load estimator-specific files
+    if(estimator == "tmle") {
+      source('./src/tmle_fns.R')
+      source('./src/SL3_fns.R')
+    } else if(estimator == "tmle-lstm") {
+      tryCatch({
+        library(reticulate)
+        library(tensorflow)
+        library(keras)
+        source('./src/tmle_fns_lstm.R')
+        source('./src/lstm.R')
+      }, error = function(e) {
+        warning("Error loading LSTM dependencies: ", e$message)
+      })
+    }
+    
+    # Return package loading status
+    sessionInfo()$loadedOnly
+  })
+  
+  # Run the parallel execution with minimal exports
+  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", 
+                         .packages=library_vector, .verbose = TRUE, 
+                         .inorder=FALSE) %dopar% {
+                           # Use simLong with cores=1 to avoid nested parallelism
+                           simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
+                                   cores=1, estimator=estimator, treatment.rule=treatment.rule, 
+                                   use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
+                         }
 }
 
 saveRDS(sim.results, filename)

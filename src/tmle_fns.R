@@ -1288,14 +1288,6 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
 # Other helper functions                                         #
 ###################################################################
 
-# This function no longer performs interpolation - it returns NULL to ensure no artificial values
-interpolate_contrasts <- function(lower_contrast, upper_contrast, weight) {
-  # Return NULL to indicate no interpolation should be performed
-  # This ensures time points without data remain as NULL/NA
-  warning("Interpolation is disabled to avoid artificial values")
-  return(NULL)
-}
-
 # More robust empty list check for the clever covariates
 safe_array <- function(arr, default_dims = c(1, 1)) {
   if(is.null(arr) || length(arr) == 0) {

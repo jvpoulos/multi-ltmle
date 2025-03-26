@@ -21,6 +21,12 @@ predict_with_cached_model <- function(model_key, rule_data, n_ids, t_end, window
   # Determine prediction type
   prediction_type <- if(is_Y_outcome) "Y" else if(is_censoring_model) "C" else "A"
   
+  # CRITICAL CHECK: Make sure we set t_end consistently
+  if (!is.numeric(t_end) || t_end <= 0) {
+    warning("Invalid t_end value: ", t_end, ", defaulting to 36")
+    t_end <- 36  # Always default to 36 time points, not 37
+  }
+  
   # Calculate samples per time
   n_total_samples <- nrow(preds_r)
   samples_per_time <- ceiling(n_total_samples / (t_end + 1))
@@ -672,7 +678,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     # Set Python variables
     py$window_size <- as.integer(window_size)
     py$output_dir <- output_dir
-    py$epochs <- as.integer(2) # 100
+    py$epochs <- as.integer(100)
     py$n_hidden <- as.integer(256)
     py$hidden_activation <- 'tanh'
     py$out_activation <- out_activation

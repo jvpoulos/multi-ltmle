@@ -94,6 +94,9 @@ Contents
 ### **src/simcausal_dgp.R**
 - Defines the data-generating process for the *simcausal* software.
 
+### **src/plotDAG_improved.R**
+- Improved DAG plotting function from the *simcausal* software.
+
 ### **src/tmle_fns.R**
 - Defines treatment rule functions used for Targeted Maximum Likelihood Estimation (TMLE).
 
@@ -205,23 +208,23 @@ Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
 
 #### Arguments:
 - **`[arg1]`**: Specifies the estimator. Options:
-  - `"tmle"`: Targeted Maximum Likelihood Estimation.
-  - `"tmle-lstm"`: Targeted Maximum Likelihood Estimation with Long Short-Term Memory.
-- **`[arg2]`**: Logical flag to indicate whether super learner estimation should be used:
+  - `"tmle"`: Targeted Maximum Likelihood Estimation ('tmle').
+  - `"tmle-lstm"`: Targeted Maximum Likelihood Estimation with Long Short-Term Memory ('tmle-lstm').
+- **`[arg2]`**: Number of cores to use (>1 for parallel computation)
+- **`[arg3]`**: Logical flag to indicate whether super learner estimation should be used:
   - `"TRUE"` or `"FALSE"`.
-- **`[arg3]`**: Number of cores to use (>1 for parallel computation)
 - **`[arg4]`**: Logical flag for enabling MPI parallel programming:
   - `"TRUE"` or `"FALSE"`.
 
 #### Examples:
-1. Using the `"tmle"` estimator with super learner enabled and no MPI:
+1. Using the `"tmle"` estimator with super learner enabled and no MPI, using 4 cores for parallel computation:
    ```bash
-   Rscript simulation.R 'tmle' 1 'TRUE' 'FALSE'
+   Rscript simulation.R 'tmle' 4 'TRUE' 'FALSE'
    ```
 
-2. Using the `"tmle-lstm"` estimator without super learner or MPI:
+2. Using the `"tmle-lstm"` estimator, using 4 cores for parallel computation:
    ```bash
-   Rscript simulation.R 'tmle-lstm' 1 'FALSE' 'FALSE'
+   Rscript simulation.R 'tmle-lstm' 4 'FALSE' 'FALSE'
    ```
 
 ---

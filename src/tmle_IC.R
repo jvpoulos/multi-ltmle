@@ -394,7 +394,6 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
     se_vals
   })
   
-  # Compute confidence intervals only when both estimates and SEs are available
   CI <- lapply(1:length(se_list), function(t) {
     ci_mat <- matrix(NA, nrow=2, ncol=ncol(est))
     colnames(ci_mat) <- colnames(est)
@@ -402,8 +401,21 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
     for(i in 1:ncol(est)) {
       # Only compute CI when both estimate and SE are valid
       if(!is.na(est[t,i]) && !is.na(se_list[[t]][i])) {
-        ci_mat[1,i] <- est[t,i] - 1.96 * se_list[[t]][i]  # Lower bound
-        ci_mat[2,i] <- est[t,i] + 1.96 * se_list[[t]][i]  # Upper bound
+        # Calculate unbounded CI first
+        lower_bound <- est[t,i] - 1.96 * se_list[[t]][i]  # Lower bound
+        upper_bound <- est[t,i] + 1.96 * se_list[[t]][i]  # Upper bound
+        
+        # Apply bounds to ensure survival probabilities stay within [0,1]
+        ci_mat[1,i] <- max(0, min(1, lower_bound))  # Bound lower CI to [0,1]
+        ci_mat[2,i] <- max(0, min(1, upper_bound))  # Bound upper CI to [0,1]
+        
+        # Log if bounds were applied (helps with debugging)
+        if(lower_bound < 0 || upper_bound > 1) {
+          if(diagnostics) {
+            message(sprintf("Bounded CI for t=%d, rule=%d: [%.4f,%.4f] -> [%.4f,%.4f]", 
+                            t, i, lower_bound, upper_bound, ci_mat[1,i], ci_mat[2,i]))
+          }
+        }
       }
       # Otherwise leave as NA
     }
