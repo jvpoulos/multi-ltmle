@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=5, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=3, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
   # Set a global flag for detecting LSTM data generation issues
   lstm_debug_enabled <- debug
   assign("lstm_debug_enabled", lstm_debug_enabled, envir = .GlobalEnv)
@@ -1089,7 +1089,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     initial_model_for_A_sl_bin <- make_learner(Lrnr_sl, 
                                                learners = if(use.SL) learner_stack_A_bin else make_learner(Lrnr_glm),
                                                metalearner = metalearner_A_bin,
-                                               keep_extra=FALSE)
+                                               keep_extra=FALSE,
+                                               cv_folds = n.folds)
     
     # Process time points in batches to reduce memory usage
     time_batches <- split(0:t.end, ceiling(seq_along(0:t.end)/5)) # Process 5 time points at once
@@ -1591,12 +1592,14 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     initial_model_for_Y_sl <- make_learner(Lrnr_sl, # cross-validates base models
                                            learners = if(use.SL) learner_stack_Y else make_learner(Lrnr_glm),
                                            metalearner = metalearner_Y,
-                                           keep_extra=FALSE)
+                                           keep_extra=FALSE,
+                                           cv_folds = n.folds)
     
     initial_model_for_Y_sl_cont <- make_learner(Lrnr_sl, # cross-validates base models
                                                 learners = if(use.SL) learner_stack_Y_cont else make_learner(Lrnr_glm),
                                                 metalearner = metalearner_Y_cont,
-                                                keep_extra=FALSE)
+                                                keep_extra=FALSE,
+                                                cv_folds = n.folds)
     
     # Fit initial outcome model for t=T (t.end)
     cat("Fitting initial outcome model for t=T...\n")
@@ -1618,7 +1621,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       sequential_g_final(
         t = max_time_index, 
         tmle_dat = tmle_dat, 
-        n.folds = 3,
+        n.folds = n.folds,
         tmle_covars_Y = tmle_covars_Y, 
         initial_model_for_Y_sl = initial_model_for_Y_sl, 
         ybound = ybound
@@ -2258,6 +2261,22 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
     
     cat("Final estimate matrices populated successfully\n")
+    
+    if(debug){
+      cat("\nEstimated means before final processing:\n")
+      cat("TMLE estimates dimensions:", dim(tmle_estimates), "\n")
+      print(tmle_estimates)
+      cat("\nIPTW estimates dimensions:", dim(iptw_estimates), "\n")
+      print(iptw_estimates)
+      cat("\nG-comp estimates dimensions:", dim(gcomp_estimates), "\n")
+      print(gcomp_estimates)
+    }
+    # Apply the function to fill NAs
+    tmle_estimates <- fill_na_estimates(tmle_estimates, use_interpolation=TRUE)
+    tmle_bin_estimates <- fill_na_estimates(tmle_bin_estimates, use_interpolation=TRUE)
+    iptw_estimates <- fill_na_estimates(iptw_estimates, use_interpolation=TRUE)
+    iptw_bin_estimates <- fill_na_estimates(iptw_bin_estimates, use_interpolation=TRUE)
+    gcomp_estimates <- fill_na_estimates(gcomp_estimates, use_interpolation=TRUE)
   } 
   else if(estimator=='tmle-lstm') {
     if(debug) cat("\nCalculating final estimates using LSTM approach\n")
@@ -2406,28 +2425,6 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     cat("\nIPTW estimates dimensions:", dim(iptw_estimates), "\n")
     print(head(iptw_estimates))
     cat("\nG-comp estimates dimensions:", dim(gcomp_estimates), "\n")
-    print(head(gcomp_estimates))
-  }
-  
-  if(debug) {
-    cat("\nRaw Qstar values from first timepoint:\n")
-    if(!is.null(tmle_contrasts[[1]])) {
-      print(head(tmle_contrasts[[1]]$Qstar))
-      cat("\nMeans by rule:\n")
-      print(colMeans(tmle_contrasts[[1]]$Qstar, na.rm=TRUE))
-    }
-    
-    cat("\nQstar_iptw values from first timepoint:\n")
-    if(!is.null(tmle_contrasts[[1]])) {
-      print(tmle_contrasts[[1]]$Qstar_iptw)
-    }
-    
-    cat("\nFirst few rows of final estimates matrices:\n")
-    cat("TMLE estimates:\n")
-    print(head(tmle_estimates))
-    cat("\nIPTW estimates:\n") 
-    print(head(iptw_estimates))
-    cat("\nG-comp estimates:\n")
     print(head(gcomp_estimates))
   }
   
@@ -3140,14 +3137,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   })
   
   print("Returning list")
-  if(estimator=='tmle-lstm'){
-    # Ensure all matrices have proper dimensions before returning
-    tmle_estimates <- ensure_matrix_dimensions(tmle_estimates, nrow=3, ncol=t.end)
-    tmle_bin_estimates <- ensure_matrix_dimensions(tmle_bin_estimates, nrow=3, ncol=t.end)
-    iptw_estimates <- ensure_matrix_dimensions(iptw_estimates, nrow=3, ncol=t.end)
-    iptw_bin_estimates <- ensure_matrix_dimensions(iptw_bin_estimates, nrow=3, ncol=t.end)
-    gcomp_estimates <- ensure_matrix_dimensions(gcomp_estimates, nrow=3, ncol=t.end)
-  }
+  
+  # Ensure all matrices have proper dimensions before returning
+  tmle_estimates <- ensure_matrix_dimensions(tmle_estimates, nrow=3, ncol=t.end)
+  tmle_bin_estimates <- ensure_matrix_dimensions(tmle_bin_estimates, nrow=3, ncol=t.end)
+  iptw_estimates <- ensure_matrix_dimensions(iptw_estimates, nrow=3, ncol=t.end)
+  iptw_bin_estimates <- ensure_matrix_dimensions(iptw_bin_estimates, nrow=3, ncol=t.end)
+  gcomp_estimates <- ensure_matrix_dimensions(gcomp_estimates, nrow=3, ncol=t.end)
   
   return(list("obs_rules"= obs.rules, "Y_true" = Y.true, "Ahat_tmle"=Ahat_tmle, "Chat_tmle"=Chat_tmle, "yhat_tmle"= tmle_estimates, "prob_share_tmle"= prob_share,
               "Ahat_tmle_bin"=Ahat_tmle_bin,"yhat_tmle_bin"= tmle_bin_estimates, "prob_share_tmle_bin"= prob_share_bin,
@@ -3183,7 +3179,7 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 1#128 # number of simulation runs
+R <- 128 # number of simulation runs
 
 full_vector <- 1:R
 
@@ -3205,11 +3201,31 @@ gbound <- c(0.05,1) # define bounds to be used for the propensity score and cens
 
 ybound <- c(0.0001,0.9999) # define bounds to be used for the Y predictions
 
-n.folds <- 5
+n.folds <- 3
 
 window_size <- 12
 
-debug <- TRUE
+debug <- FALSE
+
+# output directory
+simulation_version <- paste0(format(Sys.time(), "%Y%m%d"),"/")
+
+output_dir <- paste0('./outputs/', simulation_version)
+if(!dir.exists(output_dir)){
+  print(paste0('create folder for outputs at: ', output_dir))
+  dir.create(output_dir)
+}
+
+filename <- paste0(output_dir, 
+                   "longitudinal_simulation_results_",
+                   "estimator_",estimator,
+                   "_treatment_rule_",treatment.rule,
+                   "_R_", R, # Use R instead of r for the filename
+                   "_n_", n,
+                   "_J_", J,
+                   "_n_folds_",n.folds,
+                   "_scale_continuous_",scale.continuous,
+                   "_use_SL_", use.SL,".rds")
 
 # Setup parallel processing
 if(doMPI){
@@ -3236,8 +3252,14 @@ if(cores>1){
   
   doParallel::registerDoParallel(cl) # register cluster
   
-  # Load all required packages on all worker nodes
+  # FIRST: Export all needed variables to worker nodes
+  clusterExport(cl, c("estimator", "n", "J", "t.end", "gbound", "ybound", 
+                      "n.folds", "treatment.rule", "use.SL", "scale.continuous", 
+                      "debug", "window_size", "output_dir"))
+  
+  # THEN: Load packages on worker nodes
   clusterEvalQ(cl, {
+    # Common packages needed for all estimator types
     for (pkg in c(
       "simcausal",
       "purrr",
@@ -3254,39 +3276,23 @@ if(cores>1){
       "dplyr",
       "readr",
       "tidyr",
-      "reticulate",
-      "tensorflow",
-      "keras",
       "parallel"
     )) {
-      # Try loading the package
-      success <- tryCatch({
-        suppressPackageStartupMessages(library(pkg, character.only = TRUE))
-        TRUE
-      }, error = function(e) {
-        message(paste("Error loading package", pkg, ":", e$message))
-        FALSE
-      })
-      
-      # If loading failed and it's reticulate, try special handling
-      if (!success && pkg == "reticulate") {
-        try({
-          # Try explicit path loading
-          library(reticulate)
-          message("Reticulate loaded with special handling")
-        }, silent = TRUE)
-      }
+      suppressPackageStartupMessages(library(pkg, character.only = TRUE))
     }
     
-    # Verify reticulate is loaded
-    if(exists("reticulate")) {
-      # Initialize Python
-      try({
-        use_python("/media/jason/Dropbox/github/multi-ltmle/myenv/bin/python", required = FALSE)
-        message("Python path configured successfully")
-      }, silent = TRUE)
+    # Now this will work because estimator has been exported
+    if(estimator == "tmle-lstm") {
+      tryCatch({
+        library(reticulate)
+        library(tensorflow)
+        library(keras)
+        message("Loaded LSTM-specific packages")
+      }, error = function(e) {
+        message("Note: LSTM packages not available, but not needed for tmle estimator")
+      })
     } else {
-      warning("Reticulate package not loaded properly")
+      message("LSTM packages not needed for ", estimator, " estimator")
     }
     
     # Return the loaded packages for verification
@@ -3294,36 +3300,14 @@ if(cores>1){
   })
 }
 
-# output directory
-simulation_version <- paste0(format(Sys.time(), "%Y%m%d"),"/")
-
-output_dir <- paste0('./outputs/', simulation_version)
-if(!dir.exists(output_dir)){
-  print(paste0('create folder for outputs at: ', output_dir))
-  dir.create(output_dir)
-}
-
-R <- 1 # Set the variable R to 1 for single runs
-
-filename <- paste0(output_dir, 
-                   "longitudinal_simulation_results_",
-                   "estimator_",estimator,
-                   "_treatment_rule_",treatment.rule,
-                   "_R_", R, # Use R instead of r for the filename
-                   "_n_", n,
-                   "_J_", J,
-                   "_n_folds_",n.folds,
-                   "_scale_continuous_",scale.continuous,
-                   "_use_SL_", use.SL,".rds")
-
-
 #####################
 # Run simulation #
 #####################
 
 print(paste0('simulation setting: ', "estimator = ", estimator, ", treatment.rule = ", treatment.rule, " R = ", R, ", n = ", n,", J = ", J ,", t.end = ", t.end, ", use.SL = ",use.SL, ", scale.continuous = ",scale.continuous))
 
-library_vector <- c(
+# Define base library vector (common to all estimators)
+base_library_vector <- c(
   "simcausal",
   "purrr",
   "origami",
@@ -3339,32 +3323,41 @@ library_vector <- c(
   "dplyr",
   "readr",
   "tidyr",
-  "reticulate",
-  "tensorflow",
-  "keras",
   "parallel"
 )
 
+# Add LSTM-specific libraries only if needed
+library_vector <- if(estimator == "tmle-lstm") {
+  c(base_library_vector, "reticulate", "tensorflow", "keras")
+} else {
+  base_library_vector
+}
+
 library(foreach)
 
-# Modify the parallel execution section of the code (around line 9755)
 if(cores==1){ # run sequentially and save at each iteration
   sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE) %do% {
     simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
             cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
             use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
   }
-} else { # run in parallel
-  # Create cluster with appropriate initialization based on estimator type
+} else if(cores>1){ # run in parallel
+  library(parallel)
+  library(doParallel)
+  library(foreach)
+  
+  print(paste0("number of cores used for parallel processing: ", cores))
+  
   cl <- parallel::makeCluster(cores, outfile="")
-  doParallel::registerDoParallel(cl)
+  doParallel::registerDoParallel(cl) # register cluster
   
-  # Export all simulation parameters to cluster
-  clusterExport(cl, c("estimator", "n", "J", "t.end", "gbound", "ybound", "n.folds", 
-                      "treatment.rule", "use.SL", "scale.continuous", "debug", 
-                      "window_size", "output_dir"))
+  # After creating your cluster but BEFORE any clusterEvalQ calls:
+  clusterExport(cl, c("estimator", "n", "J", "t.end", "gbound", "ybound", 
+                      "n.folds", "treatment.rule", "use.SL", "scale.continuous", 
+                      "debug", "window_size", "output_dir"))
   
-  # Set up worker nodes with appropriate packages based on estimator type
+
+  # Set up worker nodes with packages based on estimator type
   clusterEvalQ(cl, {
     # Load common packages for all estimator types
     for (pkg in c("simcausal", "purrr", "origami", "sl3", "nnet", "ranger", 
@@ -3377,10 +3370,11 @@ if(cores==1){ # run sequentially and save at each iteration
     source('./src/misc_fns.R')
     
     # Load estimator-specific files
-    if(estimator == "tmle") {
+    est_type <- get("estimator", envir = .GlobalEnv)
+    if(est_type == "tmle") {
       source('./src/tmle_fns.R')
       source('./src/SL3_fns.R')
-    } else if(estimator == "tmle-lstm") {
+    } else if(est_type == "tmle-lstm") {
       tryCatch({
         library(reticulate)
         library(tensorflow)
@@ -3396,17 +3390,22 @@ if(cores==1){ # run sequentially and save at each iteration
     sessionInfo()$loadedOnly
   })
   
-  # Run the parallel execution with minimal exports
-  sim.results <- foreach(r = 1:R, .combine='cbind', .errorhandling="pass", 
-                         .packages=library_vector, .verbose = TRUE, 
-                         .inorder=FALSE) %dopar% {
+  sim.results <- foreach(r = 1:R, 
+                         .combine='cbind', 
+                         .errorhandling="pass",
+                         .packages=library_vector, 
+                         .export=c("estimator", "n", "J", "t.end", "gbound", "ybound", 
+                                   "n.folds", "treatment.rule", "use.SL", "scale.continuous", 
+                                   "debug", "window_size", "output_dir"),
+                         .verbose = TRUE) %dopar% {
                            # Use simLong with cores=1 to avoid nested parallelism
-                           simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
-                                   cores=1, estimator=estimator, treatment.rule=treatment.rule, 
-                                   use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
+                           simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, 
+                                   n.folds=n.folds, cores=1, estimator=estimator, 
+                                   treatment.rule=treatment.rule, use.SL=use.SL, 
+                                   scale.continuous=scale.continuous, debug=debug, 
+                                   window_size=window_size)
                          }
 }
-
 saveRDS(sim.results, filename)
 
 if(doMPI){

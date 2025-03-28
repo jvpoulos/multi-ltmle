@@ -2,6 +2,62 @@
 # Misc. functions    #
 ######################
 
+# Function to fill NA values in estimate matrices
+fill_na_estimates <- function(est_matrix, use_interpolation=TRUE) {
+  # Check if the matrix has any NA values
+  if (!any(is.na(est_matrix))) {
+    return(est_matrix)  # No NAs, return as is
+  }
+  
+  # Process each row (treatment rule)
+  for (i in 1:nrow(est_matrix)) {
+    row_vals <- est_matrix[i,]
+    na_indices <- which(is.na(row_vals))
+    
+    # Skip if no NAs in this row
+    if (length(na_indices) == 0) next
+    
+    # If all values are NA, use default value
+    if (length(na_indices) == length(row_vals)) {
+      est_matrix[i,] <- 0.5  # Default value
+      next
+    }
+    
+    # Handle partial NAs with interpolation as fallback
+    if (use_interpolation) {
+      non_na_indices <- which(!is.na(row_vals))
+      
+      for (j in na_indices) {
+        # Find nearest non-NA values
+        left_idx <- max(non_na_indices[non_na_indices < j], -Inf)
+        right_idx <- min(non_na_indices[non_na_indices > j], Inf)
+        
+        if (left_idx == -Inf && right_idx == Inf) {
+          # No non-NA values found, use default
+          est_matrix[i,j] <- 0.5
+        } else if (left_idx == -Inf) {
+          # Only right value available, use nearest neighbor
+          est_matrix[i,j] <- est_matrix[i,right_idx]
+        } else if (right_idx == Inf) {
+          # Only left value available, use nearest neighbor
+          est_matrix[i,j] <- est_matrix[i,left_idx]
+        } else {
+          # Both left and right values available, interpolate
+          # Calculate weights based on distance
+          left_weight <- 1 - (j - left_idx) / (right_idx - left_idx)
+          right_weight <- 1 - (right_idx - j) / (right_idx - left_idx)
+          
+          # Linear interpolation
+          est_matrix[i,j] <- left_weight * est_matrix[i,left_idx] + 
+            right_weight * est_matrix[i,right_idx]
+        }
+      }
+    }
+  }
+  
+  return(est_matrix)
+}
+
 # Add this function to ensure proper matrix dimensions
 ensure_matrix_dimensions <- function(mat, nrow=3, ncol=36) {
   if(is.null(mat)) {

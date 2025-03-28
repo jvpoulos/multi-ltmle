@@ -47,21 +47,21 @@ create_treatment_model_sl <- function(n.folds = 5) {
 # Standard learner stacks for binary outcomes
 learner_stack_A_bin <- make_learner_stack(
   list("Lrnr_ranger", num.trees = 100),
-  list("Lrnr_glmnet", nfolds = 3, alpha = 1, family = "binomial"),
+  list("Lrnr_glmnet", nfolds = 3, nlambda = 10, alpha = 1, family = "binomial"),
   list("Lrnr_glm", family = binomial()), # Use binomial() function, not strin
   list("Lrnr_mean")
 )
 
 learner_stack_Y <- make_learner_stack(
   list("Lrnr_ranger", num.trees = 100),
-  list("Lrnr_glmnet", nfolds = 3, alpha = 1, family = "binomial"),
+  list("Lrnr_glmnet", nfolds = 3, nlambda = 10, alpha = 1, family = "binomial"),
   list("Lrnr_glm", family = binomial()), # Use binomial() function, not string
   list("Lrnr_mean")
 )
 
 learner_stack_Y_cont <- make_learner_stack(
   list("Lrnr_ranger", num.trees = 100),
-  list("Lrnr_glmnet", nfolds = 3, alpha = 1, family = "gaussian"),
+  list("Lrnr_glmnet", nfolds = 3, nlambda = 10, alpha = 1, family = "gaussian"),
   list("Lrnr_glm", family = gaussian()), # Use gaussian() function
   list("Lrnr_mean")
 )
