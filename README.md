@@ -222,18 +222,19 @@ Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
    Rscript simulation.R 'tmle' 4 'TRUE' 'FALSE'
    ```
 
-2. Using the `"tmle-lstm"` estimator, using 4 cores for parallel computation:
+2. Using the `"tmle-lstm"` estimator, using 2 cores for parallel computation:
    ```bash
-   Rscript simulation.R 'tmle-lstm' 4 'FALSE' 'FALSE'
+   Rscript simulation.R 'tmle-lstm' 2 'FALSE' 'FALSE'
    ```
 
 ---
 
 ### 3. Plot Simulation Results
-To summarize and plot results from simulations saved in `intermediate_results_lstm.rds`:
+To create tables and plot results from simulations:
 ```bash
-Rscript long_sim_plots.R 'outputs/20240215'
+Rscript long_sim_plots.R 'outputs/20250328' 'outputs/20250329'
 ```
+Latex tables are saved to `tables/` and plots to `plots/`.
 
 ---
 
@@ -245,29 +246,27 @@ This section outlines the model weights, intermediate results, and visualization
 #### Key Files and Descriptions:
 
 1. **Simulated Dataset**
-   - Long format dataset: `tmle_dat_long_R_1_n_12500_J_6.rds`
+   - Long format dataset: `tmle_dat_long_R_1_n_10000_J_6.rds`
 
 2. **Intermediate Simulation Results**
-   <!-- - LTMLE-SL: `final_results.rds`  -->
-    <!-- Rscript process_matrix.R 'outputs/20240215/longitudinal_simulation_results_estimator_tmle_treatment_rule_all_R_325_n_12500_J_6_n_folds_5_scale_continuous_FALSE_use_SL_TRUE.rds' -->
+   - LTMLE-SL: `intermediate_results_sl.rds`
    - LTMLE-RNN: `intermediate_results_lstm.rds` 
-   <!-- Rscript combine_lstm_results.R outputs/20250202 outputs/20250203/-->
 
 3. **Validation Predictions**
-   - Multiple binary and categorical treatments:
-     - Binary `C` predictions: `lstm_bin_C_preds.npy`, `lstm_bin_C_preds_info.npz`
-     - Categorical `A` predictions: `lstm_cat_A_preds.npy`, `lstm_cat_A_preds_info.npz`
-     - Binary `A` predictions: `lstm_bin_A_preds.npy`, `lstm_bin_A_preds_info.npz`
+   - Binary `C` predictions: `lstm_bin_C_preds.npy`, `lstm_bin_C_preds_info.npz`
+   - Categorical `A` predictions: `lstm_cat_A_preds.npy`, `lstm_cat_A_preds_info.npz`
+   - Binary `A` predictions: `lstm_bin_A_preds.npy`, `lstm_bin_A_preds_info.npz`
+   - Binary `Y` predictions: `lstm_bin_Y_preds.npy`, `lstm_bin_Y_preds_info.npz`
 
 4. **Test Predictions**
-   - Binary and categorical treatments:
-     - Binary `C` predictions: `test_bin_C_preds.npy`, `test_bin_C_preds_info.npz`
-     - Categorical `A` predictions: `test_cat_A_preds.npy`, `test_cat_A_preds_info.npz`
-     - Binary `A` predictions: `test_bin_A_preds.npy`, `test_bin_A_preds_info.npz`
+   - Binary `C` predictions: `test_bin_C_preds.npy`, `test_bin_C_preds_info.npz`
+   - Categorical `A` predictions: `test_cat_A_preds.npy`, `test_cat_A_preds_info.npz`
+   - Binary `A` predictions: `test_bin_A_preds.npy`, `test_bin_A_preds_info.npz`
+   - Binary `Y` predictions: `test_bin_Y_preds.npy`, `test_bin_Y_preds_info.npz`
 
 5. **Model Weights**
-   - Weights for RNN models with multiple binary and categorical treatments:
-     - `lstm_bin_A_model.h5`
+   - Model info. and weights for RNN models with multiple binary and categorical treatments:
+     - `lstm_bin_A_model.json`, `lstm_bin_A_model.meta.json`, `lstm_bin_A_model.weights.h5`
      - `lstm_cat_A_model.h5`
      - `lstm_bin_C_model.h5`
      - `lstm_bin_Y_model.h5`
@@ -277,13 +276,11 @@ This section outlines the model weights, intermediate results, and visualization
      - Directed Acyclic Graph (DAG):  
        ![DAG Plot](./ex_outputs/DAG_plot_latex_cropped.png)
      - Treatment adherence:  
-       ![Adherence Plot](./ex_outputs/treatment_adherence_20000.png)
+       ![Adherence Plot](./ex_outputs/treatment_adherence_10000.png)
      - Survival plots:
        - Observed:  
-         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_20000.png)
+         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_10000.png)
        - Truth:  
-         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_20000.png)
-       - LTMLE-SL (multi.) estimates:  
-         ![LTMLE-SL (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle.png)
+         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_10000.png)
         - LTMLE-RNN (multi.) estimates:  
-         ![LTMLE-RNN (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_12500_tmle-lstm.png)
+         ![LTMLE-RNN (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_10000_tmle-lstm.png)

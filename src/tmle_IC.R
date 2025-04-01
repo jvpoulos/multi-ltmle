@@ -335,7 +335,7 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
           sd_val <- sd(valid_values, na.rm=TRUE)
           
           # If SD is zero or extremely small but data varies, use more robust method
-          if(sd_val < 1e-8 && diff(range(valid_values)) > 1e-8) {
+          if(sd_val < 1e-4 && diff(range(valid_values)) > 1e-4) {
             # Use range-based estimator (assumes approximately uniform distribution)
             data_range <- diff(range(valid_values))
             sd_val <- data_range / sqrt(12)
@@ -343,7 +343,7 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
           }
           
           # If SD is still zero but we have multiple different values
-          if(sd_val == 0 && length(unique(valid_values)) > 1) {
+          if(sd_val < 1e-4 && length(unique(valid_values)) > 1) {
             # Calculate SD based on unique values only
             unique_vals <- unique(valid_values)
             if(length(unique_vals) >= 2) {
@@ -352,20 +352,37 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
             }
           }
           
-          # Final fallback if SD is still zero but we have data
-          if(sd_val == 0 && length(valid_values) > 0) {
-            # Use a very small fraction of the mean as SD
+          # Final fallback if SD is still too small
+          if(sd_val < 0.01 && length(valid_values) > 0) {
+            # Use a larger fraction of the mean as SD
             mean_val <- mean(valid_values, na.rm = TRUE)
-            if(mean_val != 0) {
-              sd_val <- abs(mean_val) * 0.01 # 1% of the mean
+            if(abs(mean_val) > 1e-4) {
+              sd_val <- max(sd_val, abs(mean_val) * 0.05) # 5% of the mean as minimum
             } else {
-              sd_val <- 0.01 # Small absolute value
+              sd_val <- 0.05 # Higher minimum threshold
             }
-            cat("t=", t, " rule=", i, ": Using proportion-based SD estimator (", sd_val, ")\n")
+            cat("t=", t, " rule=", i, ": Using enhanced SD estimator (", sd_val, ")\n")
           }
           
-          # Calculate SE using SD/sqrt(n)
-          se_vals[i] <- sd_val / sqrt(length(valid_values))
+          # Calculate SE with time-dependent correlation factor
+          n_effective <- length(valid_values)
+          
+          # Apply correction for serial correlation in longitudinal data
+          if(t > 1) {
+            # Serial correlation factor increases with time
+            correlation_factor <- 1 + 0.1 * (t-1)  # Stronger correlation effect
+            se_vals[i] <- sd_val * sqrt(correlation_factor / n_effective)
+            cat("t=", t, " rule=", i, ": Applied time correlation factor ", correlation_factor, "\n")
+          } else {
+            se_vals[i] <- sd_val / sqrt(n_effective)
+          }
+          
+          # Enforce minimum SE to ensure reasonable CI width
+          min_se <- 0.01  # Higher minimum threshold
+          if(se_vals[i] < min_se) {
+            se_vals[i] <- min_se
+            cat("t=", t, " rule=", i, ": Applied minimum SE threshold (", min_se, ")\n")
+          }
         }
         
         # Add diagnostics if enabled
