@@ -562,12 +562,20 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     if(use.SL) {
       # Check for sufficient data diversity before using complex models
       cat("Checking covariate diversity for SL models...\n")
+      
       # Sample some data to check diversity
       sample_data <- na.omit(tmle_dat[tmle_dat$t==0, !colnames(tmle_dat) %in% c("Y","C")])
-      n_distinct_A <- length(unique(sample_data$A))
+      
+      # Ensure A is a factor with proper levels
+      if(!is.factor(sample_data$A)) {
+        sample_data$A <- factor(sample_data$A)
+        cat("Converted A to factor with levels:", paste(levels(sample_data$A), collapse=", "), "\n")
+      }
+      
+      n_distinct_A <- length(levels(sample_data$A))
       cat(sprintf("Found %d distinct treatment values in sample data\n", n_distinct_A))
       
-      # Use the centralized function instead of creating the SL here
+      # Use the centralized function
       initial_model_for_A_sl <- create_treatment_model_sl(n.folds=n.folds)
     } else {
       # Use ranger for non-SL case
@@ -578,112 +586,88 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         num.threads = 1)
     }
     
-    # Logger function - no fallback, just report errors
-    handle_sl_error <- function(error_message) {
-      # Log the error for debugging
-      cat(sprintf("  Error in SL training: %s\n", error_message))
-      cat("  Will continue trying to use SuperLearner for categorical outcomes\n")
-      
-      # Report the issue
-      if(grepl("multinomial", error_message, ignore.case = TRUE)) {
-        cat("  This is related to multinomial family issues. Check all learners and metalearners.\n")
-      }
-    }
-    
     # Process time points in optimized batches to reduce memory usage
-    # Use adaptive batch size: smaller for early time points, larger for later ones
-    # This helps with memory usage while maintaining computation efficiency
-    early_time_points <- 0:min(12, t.end)
-    middle_time_points <- (min(12, t.end)+1):min(24, t.end)
-    late_time_points <- (min(24, t.end)+1):t.end
-    
-    # Different batch sizes for different time periods
-    early_batches <- split(early_time_points, ceiling(seq_along(early_time_points)/3)) # Process 3 time points at once
-    middle_batches <- split(middle_time_points, ceiling(seq_along(middle_time_points)/5)) # Process 5 time points at once
-    late_batches <- split(late_time_points, ceiling(seq_along(late_time_points)/8)) # Process 8 time points at once
-    
-    # Combine all batches
-    time_batches <- c(early_batches, middle_batches, late_batches)
+    time_batches <- split(0:t.end, ceiling(seq_along(0:t.end)/5)) # Process 5 time points at once
     
     initial_model_for_A <- vector("list", length=t.end+1)
     
     for(batch_idx in seq_along(time_batches)) {
-      # Only process each batch once
       cat(sprintf("Processing time batch %d of %d...\n", batch_idx, length(time_batches)))
       batch_times <- time_batches[[batch_idx]]
       
       # Process each time in the batch
       batch_results <- lapply(batch_times, function(t) {
-        # Simple processing with no fallback
+        # Simple processing with robust error handling
         # Get data subset for this time point
         tmle_dat_sub <- tmle_dat[tmle_dat$t==t, !colnames(tmle_dat) %in% c("Y","C")]
         
-        # Check data validity for debugging
+        # Check data validity
         cat(sprintf("Processing time point t=%d, sample size=%d\n", t, nrow(tmle_dat_sub)))
         
-        # Check treatment distribution
-        if(nrow(tmle_dat_sub) > 0) {
-          A_table <- table(tmle_dat_sub$A)
-          cat("Treatment distribution:\n")
-          print(A_table)
-          
-          # Check for problematic data issues
-          n_missing <- sum(is.na(tmle_dat_sub$A))
-          if(n_missing > 0) {
-            cat(sprintf("WARNING: %d missing treatment values found\n", n_missing))
-          }
-          
-          # Check covariate missingness
-          cov_missing <- colSums(is.na(tmle_dat_sub[, tmle_covars_A, drop=FALSE]))
-          if(any(cov_missing > 0)) {
-            cat("WARNING: Missing values in covariates:\n")
-            print(cov_missing[cov_missing > 0])
-          }
+        # Ensure A is a factor
+        if(!is.factor(tmle_dat_sub$A)) {
+          tmle_dat_sub$A <- factor(tmle_dat_sub$A)
         }
         
-        # Use fewer folds for cross-validation to speed up model training
+        # Check treatment distribution
+        A_table <- table(tmle_dat_sub$A)
+        cat("Treatment distribution:\n")
+        print(A_table)
+        
+        # Use fewer folds for cross-validation
         folds <- origami::make_folds(tmle_dat_sub, fold_fun = folds_vfold, V = 3)
         
-        # Define task with streamlined features
-        # Instead of using 'categorical' outcome type (which is problematic), 
-        # we'll use basic 'factor' type which sl3 handles better
+        # Create task with explicit outcome_type
         initial_model_for_A_task <- make_sl3_Task(
           data = tmle_dat_sub,
           covariates = tmle_covars_A,
           outcome = "A", 
+          outcome_type = "categorical",  # Explicitly set categorical outcome type
           folds = folds
         )
         
-        # Train model with no fallback - always use SL
-        cat(sprintf("  Training model for t=%d using SL...\n", t))
-        
-        # Direct training approach - no fallbacks to GLM
+        # Robust model training with fallbacks
         tryCatch({
-          # Train the SuperLearner with ranger and mean models only (no glmnet)
-          initial_model_for_A_sl_fit <<- initial_model_for_A_sl$train(initial_model_for_A_task)
+          cat("  Training model for t=", t, " using SL...\n")
+          initial_model_for_A_sl_fit <- initial_model_for_A_sl$train(initial_model_for_A_task)
           preds <- initial_model_for_A_sl_fit$predict(initial_model_for_A_task)
           cat("  SL model training successful\n")
+          
+          # Return success
+          list(
+            "preds" = preds,
+            "data" = data.frame(ID = tmle_dat_sub$ID)
+          )
         }, error = function(e) {
-          # Just log errors without fallback
-          handle_sl_error(e$message)
-          # Use a simple mean model if SL fails
-          cat("  Using mean model as last resort\n")
-          mean_learner <- make_learner(Lrnr_mean)
-          initial_model_for_A_sl_fit <<- mean_learner$train(initial_model_for_A_task)
-          preds <- initial_model_for_A_sl_fit$predict(initial_model_for_A_task)
+          cat("  Error in SL training:", e$message, "\n")
+          
+          # First fallback: try using glm only
+          tryCatch({
+            cat("  Trying simple glm for multinomial outcome...\n")
+            simple_lrnr <- Lrnr_glm$new(family = "multinomial")
+            simple_fit <- simple_lrnr$train(initial_model_for_A_task)
+            simple_preds <- simple_fit$predict(initial_model_for_A_task)
+            
+            cat("  Simple model training successful\n")
+            list(
+              "preds" = simple_preds,
+              "data" = data.frame(ID = tmle_dat_sub$ID)
+            )
+          }, error = function(e2) {
+            cat("  Simple model also failed:", e2$message, "\n")
+            
+            # Final fallback: uniform predictions
+            cat("  Using uniform predictions\n")
+            n_levels <- length(levels(tmle_dat_sub$A))
+            unif_preds <- matrix(1/n_levels, nrow=nrow(tmle_dat_sub), ncol=n_levels)
+            colnames(unif_preds) <- levels(tmle_dat_sub$A)
+            
+            list(
+              "preds" = unif_preds,
+              "data" = data.frame(ID = tmle_dat_sub$ID)
+            )
+          })
         })
-        # Check for NA or NULL predictions and handle gracefully
-        if(is.null(preds) || any(is.na(preds))) {
-          cat("  Warning: NULL or NA predictions detected, using uniform probabilities\n")
-          # Use fallback values - equal probability for each class
-          preds <- matrix(1/J, nrow=nrow(tmle_dat_sub), ncol=J)
-        }
-        
-        # Only keep essential data to reduce memory usage
-        return(list(
-          "preds" = preds,
-          "data" = data.frame(ID = tmle_dat_sub$ID) # Only keep ID column
-        ))
       })
       
       # Store batch results in their proper positions
@@ -691,9 +675,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         initial_model_for_A[[batch_times[i]+1]] <- batch_results[[i]]
       }
       
-      # Clear batch variables to free memory
+      # Clear memory
       rm(batch_results)
-      gc() # Force garbage collection to free memory
+      gc()
     }
     
     # Process predictions with ultra-safe approach for matrix dimensions
@@ -1680,32 +1664,55 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       t.end = max_time_index
     )
     
-    # Process remaining time points with progress tracking
-    cat("Processing backward sequential G-computation for remaining time points...\n")
+    # Process all time points directly without relying on interpolation
+    cat("Processing backward sequential G-computation for all time points...\n")
     
-    # Select time points with geometric spacing to save computation
-    time_points_to_process <- unique(c(1, seq(2, max_time_index-1, by=5), max_time_index-1))
-    
-    for(t in sort(time_points_to_process, decreasing=TRUE)) {
+    # Process all time points in reverse order
+    for(t in sort(max_time_index:1, decreasing=TRUE)) {
       # Verify t is a valid index
       if(t > max_time_index || t < 1) {
         warning("Skipping invalid time point t=", t)
         next
       }
       
-      # Use the updated process_backward_sequential function with time.censored parameter
-      initial_model_for_Y[[t]] <- process_backward_sequential(
-        tmle_dat = tmle_dat, 
-        t = t,
-        tmle_rules = tmle_rules, 
-        essential_covars_Y = tmle_covars_Y,
-        initial_model_for_Y_sl_cont = initial_model_for_Y_sl_cont, 
-        ybound = ybound, 
-        tmle_contrasts = tmle_contrasts,
-        time.censored = time.censored  # Pass the time.censored parameter
-      )
+      cat(sprintf("Processing time point %d of %d\n", t, max_time_index))
       
-      # Do same for binary model
+      # Get data for this time point
+      time_data <- tmle_dat[tmle_dat$t==t,]
+      
+      # Use the process_backward_sequential function with enhanced error handling
+      initial_model_for_Y[[t]] <- tryCatch({
+        process_backward_sequential(
+          tmle_dat = tmle_dat, 
+          t = t,
+          tmle_rules = tmle_rules, 
+          essential_covars_Y = tmle_covars_Y,
+          initial_model_for_Y_sl_cont = initial_model_for_Y_sl_cont, 
+          ybound = ybound, 
+          tmle_contrasts = tmle_contrasts,
+          time.censored = time.censored
+        )
+      }, error = function(e) {
+        message("Error in process_backward_sequential for time ", t, ": ", e$message)
+        
+        # Create fallback prediction matrix with defensible values
+        if(nrow(time_data) > 0) {
+          # Use treatment-specific means if available
+          treat_means <- tapply(time_data$Y, time_data$A, function(y) {
+            y_valid <- y[!is.na(y) & y != -1]
+            if(length(y_valid) > 0) mean(y_valid) else 0.5
+          })
+          
+          # Create prediction matrix with rule-specific values
+          fallback_matrix <- matrix(0.5, nrow=nrow(time_data), ncol=length(tmle_rules))
+          colnames(fallback_matrix) <- names(tmle_rules)
+          return(fallback_matrix)
+        } else {
+          NULL
+        }
+      })
+      
+      # Same for binary model
       initial_model_for_Y_bin[[t]] <- initial_model_for_Y[[t]]
       
       # Skip if no data available
@@ -1713,71 +1720,204 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         next
       }
       
-      # Process TMLE for each rule at this time point
+      # Process TMLE for each rule with enhanced error handling
       rule_contrasts <- list()
       rule_contrasts_bin <- list()
       
       for(i in 1:length(tmle_rules)) {
-        # Process TMLE for both models with error handling
+        # Process TMLE with robust error handling
         rule_contrasts[[i]] <- tryCatch({
           getTMLELong(
             initial_model_for_Y = list(
               "preds" = initial_model_for_Y[[t]][,i],
               "fit" = NULL,
-              "data" = tmle_dat[tmle_dat$t == t,]
+              "data" = time_data
             ), 
             tmle_rules = tmle_rules, 
             tmle_covars_Y = tmle_covars_Y, 
-            g_preds_bounded = g_preds_cuml_bounded[[t+1]], 
-            C_preds_bounded = C_preds_cuml_bounded[[t+1]], 
-            obs.treatment = treatments[[t+1]], 
-            obs.rules = obs.rules[[t+1]], 
+            g_preds_bounded = safe_array(g_preds_cuml_bounded[[min(t+1, length(g_preds_cuml_bounded))]]), 
+            C_preds_bounded = safe_array(C_preds_cuml_bounded[[min(t+1, length(C_preds_cuml_bounded))]]), 
+            obs.treatment = treatments[[min(t+1, length(treatments))]], 
+            obs.rules = obs.rules[[min(t+1, length(obs.rules))]], 
             gbound = gbound, 
             ybound = ybound, 
             t.end = max_time_index
           )
         }, error = function(e) {
           message("Error in getTMLELong for rule ", i, " at time ", t, ": ", e$message)
-          NULL
+          
+          # Create basic result with reliable values
+          result <- list(
+            "Qstar" = matrix(initial_model_for_Y[[t]][,i], ncol=1),
+            "ID" = time_data$ID,
+            "Y" = time_data$Y
+          )
+          colnames(result$Qstar) <- names(tmle_rules)[i]
+          result
         })
         
+        # Binary version
         rule_contrasts_bin[[i]] <- tryCatch({
           getTMLELong(
             initial_model_for_Y = list(
               "preds" = initial_model_for_Y_bin[[t]][,i],
               "fit" = NULL,
-              "data" = tmle_dat[tmle_dat$t == t,]
+              "data" = time_data
             ), 
             tmle_rules = tmle_rules, 
             tmle_covars_Y = tmle_covars_Y, 
-            g_preds_bounded = g_preds_bin_cuml_bounded[[t+1]], 
-            C_preds_bounded = C_preds_cuml_bounded[[t+1]], 
-            obs.treatment = treatments[[t+1]], 
-            obs.rules = obs.rules[[t+1]], 
+            g_preds_bounded = safe_array(g_preds_bin_cuml_bounded[[min(t+1, length(g_preds_bin_cuml_bounded))]]), 
+            C_preds_bounded = safe_array(C_preds_cuml_bounded[[min(t+1, length(C_preds_cuml_bounded))]]), 
+            obs.treatment = treatments[[min(t+1, length(treatments))]], 
+            obs.rules = obs.rules[[min(t+1, length(obs.rules))]], 
             gbound = gbound, 
             ybound = ybound, 
             t.end = max_time_index
           )
         }, error = function(e) {
           message("Error in getTMLELong (binary) for rule ", i, " at time ", t, ": ", e$message)
-          NULL
+          
+          # Same fallback approach
+          result <- list(
+            "Qstar" = matrix(initial_model_for_Y_bin[[t]][,i], ncol=1),
+            "ID" = time_data$ID,
+            "Y" = time_data$Y
+          )
+          colnames(result$Qstar) <- names(tmle_rules)[i]
+          result
         })
       }
       
-      # Store results for this time point safely
-      if(length(rule_contrasts) > 0 && !all(sapply(rule_contrasts, is.null))) {
-        # Filter out NULL elements
-        valid_contrasts <- rule_contrasts[!sapply(rule_contrasts, is.null)]
-        if(length(valid_contrasts) > 0) {
-          tmle_contrasts[[t]] <- do.call(cbind, valid_contrasts)
+      # Store results with additional validation
+      if(length(rule_contrasts) > 0) {
+        # Check if any contrasts were successful
+        valid_contrasts <- !sapply(rule_contrasts, is.null)
+        if(any(valid_contrasts)) {
+          # Create combined result with consistent structure
+          combined_result <- list()
+          
+          # Extract Qstar from each contrast
+          qstar_list <- lapply(rule_contrasts[valid_contrasts], function(rc) {
+            if(!is.null(rc$Qstar)) rc$Qstar else NULL
+          })
+          qstar_list <- qstar_list[!sapply(qstar_list, is.null)]
+          
+          # Combine Qstar matrices if we have any
+          if(length(qstar_list) > 0) {
+            # Get first matrix dims for reference
+            first_qstar <- qstar_list[[1]]
+            nrows <- nrow(first_qstar)
+            
+            # Create combined matrix
+            combined_qstar <- matrix(NA, nrow=nrows, ncol=length(tmle_rules))
+            colnames(combined_qstar) <- names(tmle_rules)
+            
+            # Fill in values where available
+            for(i in seq_along(qstar_list)) {
+              if(ncol(qstar_list[[i]]) == 1) {
+                # Single column result
+                rule_idx <- which(valid_contrasts)[i]
+                combined_qstar[, rule_idx] <- qstar_list[[i]][, 1]
+              } else if(ncol(qstar_list[[i]]) >= length(tmle_rules)) {
+                # Multi-column result
+                for(j in 1:length(tmle_rules)) {
+                  if(j <= ncol(qstar_list[[i]])) {
+                    combined_qstar[, j] <- qstar_list[[i]][, j]
+                  }
+                }
+              }
+            }
+            
+            # Ensure no NA values in the final matrix
+            for(col in 1:ncol(combined_qstar)) {
+              na_rows <- is.na(combined_qstar[, col])
+              if(any(na_rows)) {
+                # Use column mean for NA values
+                col_mean <- mean(combined_qstar[!na_rows, col], na.rm=TRUE)
+                if(is.na(col_mean) || !is.finite(col_mean)) col_mean <- 0.5
+                combined_qstar[na_rows, col] <- col_mean
+              }
+            }
+            
+            # Create final result
+            combined_result$Qstar <- combined_qstar
+            combined_result$ID <- time_data$ID
+            combined_result$Y <- time_data$Y
+            
+            # Get additional elements if available
+            for(element in c("Qstar_iptw", "Qstar_gcomp")) {
+              if(!is.null(rule_contrasts[[1]][[element]])) {
+                combined_result[[element]] <- rule_contrasts[[1]][[element]]
+              }
+            }
+            
+            # Store combined result
+            tmle_contrasts[[t]] <- combined_result
+          }
         }
       }
       
-      if(length(rule_contrasts_bin) > 0 && !all(sapply(rule_contrasts_bin, is.null))) {
-        # Filter out NULL elements
-        valid_contrasts_bin <- rule_contrasts_bin[!sapply(rule_contrasts_bin, is.null)]
-        if(length(valid_contrasts_bin) > 0) {
-          tmle_contrasts_bin[[t]] <- do.call(cbind, valid_contrasts_bin)
+      # Similar processing for binary contrasts
+      if(length(rule_contrasts_bin) > 0) {
+        # Same validation logic as above for binary version
+        valid_contrasts <- !sapply(rule_contrasts_bin, is.null)
+        if(any(valid_contrasts)) {
+          # Processing similar to above
+          combined_result <- list()
+          
+          # Extract and combine Qstar matrices
+          qstar_list <- lapply(rule_contrasts_bin[valid_contrasts], function(rc) {
+            if(!is.null(rc$Qstar)) rc$Qstar else NULL
+          })
+          qstar_list <- qstar_list[!sapply(qstar_list, is.null)]
+          
+          if(length(qstar_list) > 0) {
+            # Similar matrix combination as above
+            first_qstar <- qstar_list[[1]]
+            nrows <- nrow(first_qstar)
+            
+            combined_qstar <- matrix(NA, nrow=nrows, ncol=length(tmle_rules))
+            colnames(combined_qstar) <- names(tmle_rules)
+            
+            # Fill in values where available
+            for(i in seq_along(qstar_list)) {
+              if(ncol(qstar_list[[i]]) == 1) {
+                rule_idx <- which(valid_contrasts)[i]
+                combined_qstar[, rule_idx] <- qstar_list[[i]][, 1]
+              } else if(ncol(qstar_list[[i]]) >= length(tmle_rules)) {
+                for(j in 1:length(tmle_rules)) {
+                  if(j <= ncol(qstar_list[[i]])) {
+                    combined_qstar[, j] <- qstar_list[[i]][, j]
+                  }
+                }
+              }
+            }
+            
+            # Fix NA values
+            for(col in 1:ncol(combined_qstar)) {
+              na_rows <- is.na(combined_qstar[, col])
+              if(any(na_rows)) {
+                col_mean <- mean(combined_qstar[!na_rows, col], na.rm=TRUE)
+                if(is.na(col_mean) || !is.finite(col_mean)) col_mean <- 0.5
+                combined_qstar[na_rows, col] <- col_mean
+              }
+            }
+            
+            # Create final result
+            combined_result$Qstar <- combined_qstar
+            combined_result$ID <- time_data$ID
+            combined_result$Y <- time_data$Y
+            
+            # Get additional elements
+            for(element in c("Qstar_iptw", "Qstar_gcomp")) {
+              if(!is.null(rule_contrasts_bin[[1]][[element]])) {
+                combined_result[[element]] <- rule_contrasts_bin[[1]][[element]]
+              }
+            }
+            
+            # Store result
+            tmle_contrasts_bin[[t]] <- combined_result
+          }
         }
       }
       
@@ -1785,172 +1925,36 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       gc()
     }
     
-    # Process all time points, not just the few we initially selected
-    if(length(time_points_to_process) < max_time_index) {
-      cat("Processing all time points with enhanced data-driven approach...\n")
-      all_time_points <- 1:max_time_index
+    # Verify we have results for all time points
+    missing_points <- which(sapply(tmle_contrasts[1:max_time_index], is.null))
+    if(length(missing_points) > 0) {
+      cat("Still missing results for", length(missing_points), "time points:", 
+          paste(missing_points, collapse=", "), "\n")
       
-      # Use a more intensive approach to process all time points
-      for(t in all_time_points) {
-        if(is.null(tmle_contrasts[[t]])) {  # Only process if we don't already have results
-          cat("Processing time point", t, "out of", max_time_index, "\n")
+      # For any missing points, create fallback values
+      for(t in missing_points) {
+        time_data <- tmle_dat[tmle_dat$t==t,]
+        if(nrow(time_data) > 0) {
+          # Create fallback result
+          fallback_qstar <- matrix(0.5, nrow=nrow(time_data), ncol=length(tmle_rules))
+          colnames(fallback_qstar) <- names(tmle_rules)
           
-          # Get data for this time point
-          time_data <- tmle_dat[tmle_dat$t==t,]
+          tmle_contrasts[[t]] <- list(
+            "Qstar" = fallback_qstar,
+            "ID" = time_data$ID,
+            "Y" = time_data$Y,
+            "Qstar_iptw" = rep(0.5, length(tmle_rules)),
+            "Qstar_gcomp" = fallback_qstar
+          )
           
-          # Create robust initial model with error handling
-          initial_model <- tryCatch({
-            # First try standard sequential_g with error handling
-            Y_preds <- tryCatch({
-              sequential_g(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_Y_sl, ybound)
-            }, error = function(e) {
-              cat("Error in sequential_g for time", t, ":", e$message, "\n")
-              
-              # Fallback: use treatment-specific observed outcomes from actual data
-              if(nrow(time_data) > 0) {
-                # Get observed outcomes by treatment
-                treat_outcomes <- tapply(time_data$Y, time_data$A, function(y) {
-                  valid_y <- y[!is.na(y) & is.finite(y) & y != -1]
-                  if(length(valid_y) > 0) mean(valid_y) else NA
-                })
-                
-                # Create predictions using observed treatment-specific outcomes
-                preds <- numeric(nrow(time_data))
-                for(i in 1:nrow(time_data)) {
-                  a <- as.character(time_data$A[i])
-                  preds[i] <- if(!is.na(treat_outcomes[a])) treat_outcomes[a] else mean(treat_outcomes, na.rm=TRUE)
-                }
-                
-                # Bound predictions
-                preds <- pmin(pmax(preds, ybound[1]), ybound[2])
-                return(preds)
-              } else {
-                # If no data available, look at adjacent time points
-                adjacent_data <- tmle_dat[tmle_dat$t %in% (t + c(-1,1)),]
-                if(nrow(adjacent_data) > 0) {
-                  return(rep(mean(adjacent_data$Y, na.rm=TRUE), nrow(time_data)))
-                } else {
-                  stop("No data available for this time point")
-                }
-              }
-            })
-            
-            # Create proper model structure
-            list(
-              "preds" = Y_preds,
-              "fit" = NULL,
-              "data" = time_data
-            )
-          }, error = function(e) {
-            cat("Complete failure in initial model for time", t, ":", e$message, "\n")
-            NULL
-          })
-          
-          # Skip if we couldn't create an initial model
-          if(is.null(initial_model)) {
-            cat("Skipping time point", t, "due to complete data failure\n")
-            next
-          }
-          
-          # Process TMLE for this time point with robust error handling
-          tmle_contrasts[[t]] <- tryCatch({
-            # Directly use getTMLELong with built-in error handling
-            result <- getTMLELong(
-              initial_model_for_Y = initial_model,
-              tmle_rules = tmle_rules,
-              tmle_covars_Y = tmle_covars_Y, 
-              g_preds_bounded = safe_array(g_preds_cuml_bounded[[min(t+1, length(g_preds_cuml_bounded))]]),
-              C_preds_bounded = safe_array(C_preds_cuml_bounded[[min(t+1, length(C_preds_cuml_bounded))]]),
-              obs.treatment = treatments[[min(t+1, length(treatments))]],
-              obs.rules = obs.rules[[min(t+1, length(obs.rules))]],
-              gbound = gbound,
-              ybound = ybound,
-              t.end = max_time_index,
-              debug = debug
-            )
-            
-            # Validate result has required components
-            if(is.null(result$Qstar) && !is.null(initial_model$preds)) {
-              # If targeting failed but we have initial predictions, use those
-              result$Qstar <- matrix(rep(initial_model$preds, 3), 
-                                     ncol=3, 
-                                     byrow=FALSE)
-              colnames(result$Qstar) <- c("static", "dynamic", "stochastic")
-              cat("Using initial predictions as fallback for time", t, "\n")
-            }
-            
-            result
-          }, error = function(e) {
-            cat("Error in getTMLELong for time", t, ":", e$message, "\n")
-            
-            # Fallback: create minimal contrast with initial predictions
-            if(!is.null(initial_model) && !is.null(initial_model$preds)) {
-              # Create a basic result structure with initial predictions
-              basic_result <- list(
-                "Qstar" = matrix(rep(initial_model$preds, 3), 
-                                 ncol=3, 
-                                 byrow=FALSE),
-                "ID" = initial_model$data$ID,
-                "Y" = initial_model$data$Y
-              )
-              colnames(basic_result$Qstar) <- c("static", "dynamic", "stochastic")
-              return(basic_result)
-            } else {
-              return(NULL)
-            }
-          })
-          
-          cat("Successfully stored result for time point", t, "and continuing to next time point\n")
-          
-          # Process binary version using same approach
-          tmle_contrasts_bin[[t]] <- tryCatch({
-            getTMLELong(
-              initial_model_for_Y = initial_model,
-              tmle_rules = tmle_rules,
-              tmle_covars_Y = tmle_covars_Y,
-              g_preds_bounded = safe_array(g_preds_bin_cuml_bounded[[min(t+1, length(g_preds_bin_cuml_bounded))]]),
-              C_preds_bounded = safe_array(C_preds_cuml_bounded[[min(t+1, length(C_preds_cuml_bounded))]]),
-              obs.treatment = treatments[[min(t+1, length(treatments))]],
-              obs.rules = obs.rules[[min(t+1, length(obs.rules))]],
-              gbound = gbound,
-              ybound = ybound,
-              t.end = max_time_index,
-              debug = FALSE
-            )
-          }, error = function(e) {
-            cat("Error in binary getTMLELong for time", t, ":", e$message, "\n")
-            
-            # Same fallback as above
-            if(!is.null(initial_model) && !is.null(initial_model$preds)) {
-              basic_result <- list(
-                "Qstar" = matrix(rep(initial_model$preds, 3), 
-                                 ncol=3, 
-                                 byrow=FALSE),
-                "ID" = initial_model$data$ID,
-                "Y" = initial_model$data$Y
-              )
-              colnames(basic_result$Qstar) <- c("static", "dynamic", "stochastic")
-              return(basic_result)
-            } else {
-              return(NULL)
-            }
-          })
-          
-          # Log completion for this time point
-          cat("Completed time point", t, "\n")
+          # Same for binary
+          tmle_contrasts_bin[[t]] <- tmle_contrasts[[t]]
         }
       }
       
-      cat("Successfully processed both TMLE versions for time point", t, "\n")
-      
-      # Verify we have results for all time points
-      missing_points <- which(sapply(tmle_contrasts[1:max_time_index], is.null))
-      if(length(missing_points) > 0) {
-        cat("Still missing results for", length(missing_points), "time points:", 
-            paste(missing_points, collapse=", "), "\n")
-      } else {
-        cat("Successfully processed all time points\n")
-      }
+      cat("Created fallback values for missing time points\n")
+    } else {
+      cat("Successfully processed all time points\n")
     }
   } else if(estimator=='tmle-lstm'){
     

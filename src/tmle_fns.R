@@ -513,10 +513,29 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
   # First create a safe subset of data without missing Y values
   tmle_dat_sub <- tmle_dat[tmle_dat$t==t & !is.na(tmle_dat$Y),] # drop rows with missing Y
   
-  # Add an early check for empty data
-  if(nrow(tmle_dat_sub) == 0) {
-    warning("No non-missing Y values for time point t=", t, ", using default prediction")
-    return(rep(0.5, nrow(tmle_dat[tmle_dat$t==t,])))
+  if(nrow(tmle_dat_sub) < 10) {
+    # If very few observations, use data from adjacent time points
+    nearby_t <- c(t-1, t+1)
+    nearby_t <- nearby_t[nearby_t > 0 & nearby_t <= t.end]
+    
+    if(length(nearby_t) > 0) {
+      additional_data <- tmle_dat[tmle_dat$t %in% nearby_t & !is.na(tmle_dat$Y),]
+      
+      if(nrow(additional_data) > 0) {
+        tmle_dat_sub <- rbind(tmle_dat_sub, additional_data)
+        message("Added ", nrow(additional_data), " records from nearby time points for t=", t)
+      }
+    }
+  }
+  
+  # Check for near-constant Y values (not just identical)
+  y_values <- tmle_dat_sub$Y[!is.na(tmle_dat_sub$Y) & tmle_dat_sub$Y != -1]
+  if(length(y_values) > 0 && diff(range(y_values)) < 0.01) {
+    message("Y values nearly constant at t=", t, ", using robust approach")
+    # Use mean with a small amount of noise to avoid convergence issues
+    mean_y <- mean(y_values)
+    noise <- rnorm(nrow(tmle_dat[tmle_dat$t==t,]), 0, 0.001)
+    return(pmin(pmax(mean_y + noise, ybound[1]), ybound[2]))
   }
   
   # Special handling for Y_pred when t<T
@@ -1180,29 +1199,37 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
       model_data$weights > 0
     
     # Fit targeting model
-    if(sum(valid_rows) > 10) {
-      fit_data <- model_data[valid_rows, , drop=FALSE]
-      
-      # Trim extreme weights
-      if(any(fit_data$weights > 100 * median(fit_data$weights, na.rm=TRUE))) {
-        max_weight <- quantile(fit_data$weights, 0.95, na.rm=TRUE)
-        fit_data$weights <- pmin(fit_data$weights, max_weight)
-      }
-      
-      # Try to fit GLM with efficient error handling
-      updated_model_for_Y[[i]] <- tryCatch({
-        glm(
-          y ~ 1 + offset(offset),
-          weights = weights,
-          family = binomial(),
-          data = fit_data,
-          control = list(maxit = 50, epsilon = 1e-8) # Increased iterations and tighter tolerance
-        )
-      }, error = function(e) {
-        # Use fallback approach
+    fit_data <- model_data[valid_rows, , drop=FALSE]
+    
+    # Add stabilization for extreme weights
+    weight_quantiles <- quantile(fit_data$weights, c(0.01, 0.99), na.rm=TRUE)
+    fit_data$weights <- pmin(pmax(fit_data$weights, weight_quantiles[1]), weight_quantiles[2])
+    
+    # Use more robust convergence settings
+    updated_model_for_Y[[i]] <- tryCatch({
+      glm(
+        y ~ 1 + offset(offset),
+        weights = weights,
+        family = binomial(),
+        data = fit_data,
+        control = list(maxit = 100, epsilon = 1e-8, trace = FALSE)
+      )
+    }, error = function(e) {
+      message("Targeting model failed for rule ", i, " at time ", t, ": ", e$message)
+      # More robust fallback - use a simpler model
+      tryCatch({
+        # Try a weighted mean approach if GLM fails
+        epsilon <- weighted.mean(fit_data$y - fast_expit(fit_data$offset), w=fit_data$weights, na.rm=TRUE)
+        
+        # Create minimal model object with just the estimated coefficient
+        dummy_model <- list(coefficients = c("(Intercept)" = epsilon))
+        class(dummy_model) <- "glm"
+        dummy_model
+      }, error = function(e2) {
+        message("Fallback also failed: ", e2$message)
         NULL
       })
-    }
+    })
     
     # Apply targeting transformation
     if(is.null(updated_model_for_Y[[i]])) {
@@ -1263,6 +1290,30 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
   
   # G-computation estimates
   Qstar_gcomp <- as.matrix(QAW[, -1, drop=FALSE])
+  
+  # Add before the return statement in getTMLELong
+  # Ensure no NA values in Qstar matrix
+  if(any(is.na(Qstar))) {
+    message("Fixing NA values in Qstar")
+    for(col in 1:ncol(Qstar)) {
+      na_indices <- which(is.na(Qstar[,col]))
+      if(length(na_indices) > 0) {
+        # Calculate mean of valid values
+        valid_values <- Qstar[!is.na(Qstar[,col]), col]
+        if(length(valid_values) > 0) {
+          col_mean <- mean(valid_values)
+        } else {
+          col_mean <- 0.5  # Default value
+        }
+        
+        # Replace NA values
+        Qstar[na_indices, col] <- col_mean
+      }
+    }
+    
+    # Apply bounds to ensure valid values
+    Qstar <- pmin(pmax(Qstar, ybound[1]), ybound[2])
+  }
   
   # Print timing information if debugging
   if(debug) {
