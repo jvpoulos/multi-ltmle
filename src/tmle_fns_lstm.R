@@ -1566,9 +1566,63 @@ process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_d
       binary_iptw <- matrix(ybound[1], nrow=1, ncol=n_rules)
     })
     
-    # Create binary TMLE contrast - copy from multinomial and update relevant parts
-    tmle_contrast_bin <- tmle_contrast
+    # Create binary TMLE contrast - properly create a new object
+    tmle_contrast_bin <- list()
+    # Copy all elements from multinomial contrast
+    for(name in names(tmle_contrast)) {
+      if(is.matrix(tmle_contrast[[name]])) {
+        tmle_contrast_bin[[name]] <- matrix(tmle_contrast[[name]], ncol=ncol(tmle_contrast[[name]]))
+      } else {
+        tmle_contrast_bin[[name]] <- tmle_contrast[[name]]
+      }
+    }
+    # Now update the IPTW component
     tmle_contrast_bin$Qstar_iptw <- binary_iptw
+    
+    # Create separate targeting step for binary version of TMLE
+    for(i in seq_len(ncol(clever_covariates))) {
+      # Create model data for binary targeting
+      model_data_bin <- data.frame(
+        y = pmin(pmax(if(t < t_end) QAW[,"QA"] else Y, 0.01), 0.99),
+        offset = qlogis(pmax(pmin(QAW[,i+1], 0.99), 0.01)),
+        weights = weights[,i]
+      )
+      
+      # Filter valid rows
+      valid_rows_bin <- complete.cases(model_data_bin) &
+        is.finite(model_data_bin$y) &
+        is.finite(model_data_bin$offset) &
+        is.finite(model_data_bin$weights) &
+        model_data_bin$y != -1 &
+        model_data_bin$weights > 0
+      
+      if(sum(valid_rows_bin) > 10) {
+        # Subset data
+        model_data_bin <- model_data_bin[valid_rows_bin, , drop=FALSE]
+        
+        if(nrow(model_data_bin) > 0 && any(model_data_bin$weights > 0)) {
+          # Fit binary targeting model
+          updated_model_bin <- tryCatch({
+            glm(
+              y ~ 1 + offset(offset),
+              weights = weights,
+              family = quasibinomial(),
+              data = model_data_bin,
+              control = list(maxit = 25)
+            )
+          }, error = function(e) {
+            NULL
+          })
+          
+          # Apply binary targeting
+          if(!is.null(updated_model_bin)) {
+            epsilon_bin <- tryCatch(coef(updated_model_bin)[1], error=function(e) 0)
+            offset_term <- qlogis(pmax(pmin(Qs[,i], 0.99), 0.01))
+            tmle_contrast_bin$Qstar[,i] <- plogis(offset_term + epsilon_bin)
+          }
+        }
+      }
+    }
     
     if(debug) {
       time_end <- Sys.time()

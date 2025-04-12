@@ -1661,15 +1661,15 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         # Learning rate schedule with longer warmup
         lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            first_decay_steps=steps_per_epoch * 10,  # Longer initial decay
-            t_mul=2.0,  # Double period each restart
-            m_mul=0.9,  # Slightly reduce max learning rate
-            alpha=0.1  # Minimum learning rate
+            first_decay_steps=steps_per_epoch * 20,  # Longer initial decay
+            t_mul=1.5,  # Double period each restart
+            m_mul=0.95,  # Slightly reduce max learning rate
+            alpha=0.2  # Minimum learning rate
         )
         
         optimizer = tf.keras.optimizers.AdamW(
             learning_rate=lr_schedule,
-            weight_decay=0.001,
+            weight_decay=0.0005,
             beta_1=0.9,
             beta_2=0.999,
             epsilon=1e-7,

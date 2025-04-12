@@ -8,6 +8,8 @@
 
 simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=3, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
   # Set a global flag for detecting LSTM data generation issues
+  start_time <- Sys.time()
+  
   lstm_debug_enabled <- debug
   assign("lstm_debug_enabled", lstm_debug_enabled, envir = .GlobalEnv)
   
@@ -727,68 +729,38 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     })
     
     # Step 5: Initialize cumulative predictions with guarantees
-    g_preds_cuml <- vector("list", length(g_preds))
-    # First element is direct copy
-    g_preds_cuml[[1]] <- if(is.null(g_preds[[1]])) {
-      create_standard_matrix(NULL, expected_rows, expected_cols)
-    } else {
-      g_preds[[1]]
-    }
+    g_preds_cuml <- vector("list", length=t.end+1)
+    g_preds_cuml[[1]] <- g_preds[[1]]
     
-    # Modified Step 6: Calculate cumulative predictions with safer operations
+    # Replace the calculation loop with:
     for(i in 2:length(g_preds)) {
-      # Skip if missing current predictions
-      if(is.null(g_preds[[i]])) {
-        g_preds_cuml[[i]] <- g_preds_cuml[[i-1]]  # Use previous
-        next
-      }
-      
-      # Create a fresh result matrix
-      result <- matrix(0, nrow=expected_rows, ncol=expected_cols)
-      colnames(result) <- paste0("A", 1:expected_cols)
-      
-      # Ensure g_preds[[i]] is a matrix with proper dimensions
-      if(!is.matrix(g_preds[[i]])) {
-        # If it's not a matrix at all, convert to matrix
-        g_preds[[i]] <- matrix(as.numeric(g_preds[[i]]), 
-                               nrow=min(length(g_preds[[i]]), expected_rows), 
-                               ncol=1)
-        # If dimensions don't match, use standard matrix function
-        if(nrow(g_preds[[i]]) != expected_rows || ncol(g_preds[[i]]) != expected_cols) {
-          g_preds[[i]] <- create_standard_matrix(g_preds[[i]], expected_rows, expected_cols)
-        }
-      }
-      
-      # Similarly ensure g_preds_cuml[[i-1]] is a proper matrix
-      if(!is.matrix(g_preds_cuml[[i-1]])) {
-        g_preds_cuml[[i-1]] <- matrix(as.numeric(g_preds_cuml[[i-1]]), 
-                                      nrow=min(length(g_preds_cuml[[i-1]]), expected_rows), 
-                                      ncol=1)
-        if(nrow(g_preds_cuml[[i-1]]) != expected_rows || ncol(g_preds_cuml[[i-1]]) != expected_cols) {
-          g_preds_cuml[[i-1]] <- create_standard_matrix(g_preds_cuml[[i-1]], expected_rows, expected_cols)
-        }
-      }
-      
-      # Element-wise multiplication without artificial scaling
-      for(row in 1:expected_rows) {
-        for(col in 1:expected_cols) {
-          # Get current value
-          current_val <- g_preds[[i]][row, col]
-          # Get previous value (without artificial scaling)
-          prev_val <- g_preds_cuml[[i-1]][row, col]
-          
-          # Skip calculation if either value is NA
-          if(is.na(current_val) || is.na(prev_val)) {
-            result[row, col] <- NA
-          } else {
-            # Multiply element-by-element without artificial scaling
-            result[row, col] <- current_val * prev_val
+      if(is.null(g_preds[[i]]) || is.null(g_preds_cuml[[i-1]])) {
+        g_preds_cuml[[i]] <- g_preds[[i]]
+      } else {
+        # Match IDs between time points, similar to binary case
+        g_preds_ID <- lapply(seq_along(initial_model_for_A), function(j) {
+          if(is.null(initial_model_for_A[[j]]) || is.null(initial_model_for_A[[j]]$data)) {
+            return(NULL)
           }
+          initial_model_for_A[[j]]$data$ID
+        })
+        
+        # Find common IDs between current and previous time point
+        if(!is.null(g_preds_ID[[i]]) && !is.null(g_preds_ID[[i-1]])) {
+          common_idx <- match(g_preds_ID[[i]], g_preds_ID[[i-1]])
+          common_idx <- common_idx[!is.na(common_idx)]
+          
+          if(length(common_idx) > 0) {
+            # Scale to prevent underflow, similar to binary approach
+            g_preds_cuml[[i]] <- g_preds[[i]] * (0.5 + (g_preds_cuml[[i-1]][common_idx,] / 2))
+          } else {
+            g_preds_cuml[[i]] <- g_preds[[i]]
+          }
+        } else {
+          # No ID information - use direct matrix multiplication
+          g_preds_cuml[[i]] <- g_preds[[i]] * g_preds_cuml[[i-1]]
         }
       }
-      
-      # Store result
-      g_preds_cuml[[i]] <- result
     }
     
     # Step 7: Apply bounds with improved safeguards
@@ -1713,7 +1685,16 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       })
       
       # Same for binary model
-      initial_model_for_Y_bin[[t]] <- initial_model_for_Y[[t]]
+      initial_model_for_Y_bin[[t]] <- process_backward_sequential(
+          tmle_dat = tmle_dat, 
+          t = t,
+          tmle_rules = tmle_rules, 
+          essential_covars_Y = tmle_covars_Y,
+          initial_model_for_Y_sl_cont = initial_model_for_Y_sl_cont, 
+          ybound = ybound, 
+          tmle_contrasts = tmle_contrasts_bin,  # Use binary contrasts not multinomial
+          time.censored = time.censored
+        )
       
       # Skip if no data available
       if(is.null(initial_model_for_Y[[t]])) {
@@ -3288,7 +3269,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       "bias_iptw_bin" = bias_iptw_bin,
       "CP_iptw_bin" = CP_iptw_bin,
       "CIW_iptw_bin" = CIW_iptw_bin,
-      "iptw_est_var_bin" = iptw_est_var_bin
+      "iptw_est_var_bin" = iptw_est_var_bin,
+      "elapsed_time" = elapsed_time  # Added elapsed time
     )
   )
   
@@ -3322,7 +3304,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
               "bias_tmle_bin"= bias_tmle_bin,"CP_tmle_bin"=CP_tmle_bin,"CIW_tmle_bin"=CIW_tmle_bin,"tmle_est_var_bin"=tmle_est_var_bin,
               "yhat_gcomp"= gcomp_estimates, "bias_gcomp"= bias_gcomp,"CP_gcomp"= CP_gcomp,"CIW_gcomp"=CIW_gcomp,"gcomp_est_var"=gcomp_est_var,
               "yhat_iptw"= iptw_estimates,"bias_iptw"= bias_iptw,"CP_iptw"= CP_iptw,"CIW_iptw"=CIW_iptw,"iptw_est_var"=iptw_est_var,
-              "yhat_iptw_bin"= iptw_bin_estimates,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=iptw_est_var_bin, "estimator"=estimator))
+              "yhat_iptw_bin"= iptw_bin_estimates,"bias_iptw_bin"= bias_iptw_bin,"CP_iptw_bin"=CP_iptw_bin,"CIW_iptw_bin"=CIW_iptw_bin,"iptw_est_var_bin"=iptw_est_var_bin, "estimator"=estimator, "elapsed_time"=elapsed_time))
 }
 
 #####################
@@ -3527,7 +3509,7 @@ if(cores==1){ # run sequentially and save at each iteration
                       "n.folds", "treatment.rule", "use.SL", "scale.continuous", 
                       "debug", "window_size", "output_dir"))
   
-
+  
   # Set up worker nodes with packages based on estimator type
   clusterEvalQ(cl, {
     # Load common packages for all estimator types

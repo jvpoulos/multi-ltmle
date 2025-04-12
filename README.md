@@ -232,9 +232,9 @@ Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
 ### 3. Plot Simulation Results
 To create tables and plot results from simulations:
 ```bash
-Rscript long_sim_plots.R 'outputs/20250328' 'outputs/20250331'
+Rscript long_sim_plots.R 'outputs/20250328' 'outputs/20250404'
 ```
-Latex tables are saved to `tables/` and plots to `plots/`.
+Latex tables are saved to `tables/` and plots to `sim_results/`.
 
 ---
 

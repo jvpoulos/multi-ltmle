@@ -685,7 +685,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     py$lr <- 0.001
     py$dr <- 0.2
     py$nb_batches <- as.integer(256)
-    py$patience <- as.integer(5)
+    py$patience <- as.integer(10)
     py$t_end <- as.integer(t_end)
     py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")
     py$outcome_cols <- outcome_cols
