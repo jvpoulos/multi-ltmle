@@ -267,9 +267,9 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
           var_base <- var(valid_values, na.rm=TRUE)
           sd_val <- sqrt(var_base)
           
-          # 2. Incorporate autocorrelation with significantly enhanced parameters
-          max_lag <- min(50, floor(n/2))  # More lags (up to 50)
-          auto_factor <- 25.0  # Much higher base factor
+          # 2. Incorporate autocorrelation with more moderate parameters
+          max_lag <- min(30, floor(n/3))  # Fewer lags (was 50)
+          auto_factor <- 2.0  # Lower base factor (was 25.0)
           
           if(n > max_lag + 1) {
             # Calculate autocorrelation at different lags
@@ -282,18 +282,20 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
                 0  # Use 0 if correlation fails
               })
               
-              # Apply much slower decay for lags
-              weight <- 1 - (lag/(max_lag + 1))^0.2  # Very slow decay
+              # Apply faster decay for lags
+              weight <- 1 - (lag/(max_lag + 1))^0.5  # Faster decay (was 0.2)
               auto_sum <- auto_sum + weight * auto_corr
             }
             
-            # Apply very aggressive autocorrelation adjustment
-            # No bounds on auto_factor to allow for very large values
-            auto_factor <- auto_factor * (1 + 15 * abs(auto_sum))
+            # Apply more moderate autocorrelation adjustment
+            auto_factor <- auto_factor * (1 + 3 * abs(auto_sum))  # Smaller multiplier (was 15)
             
-            # Add time factor that increases for later time points
-            time_factor <- 1 + (t / t_end) * 2  # Increases by time
+            # Add time factor that increases more moderately for later time points
+            time_factor <- 1 + (t / t_end)  # Slower increase (was * 2)
             auto_factor <- auto_factor * time_factor
+            
+            # Cap the maximum auto_factor to prevent extreme values
+            auto_factor <- min(auto_factor, 10.0)
             
             cat(sprintf("  Auto sum: %.4f, time factor: %.2f, final factor: %.4f\n", 
                         auto_sum, time_factor, auto_factor))
@@ -331,7 +333,7 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
           
           cat(sprintf("  Final SE: %.8f (SD=%.8f, auto_factor=%.4f, n=%d)\n", 
                       se_vals[i], sd_val, auto_factor, n))
-        }else{
+        } else {
           sd_val <- sd(valid_values, na.rm=TRUE)
           
           # 1. If SD is zero or extremely small but data varies, use more robust method
@@ -425,7 +427,7 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
       }
       # If no valid values, keep it as NA
     }
-    se_vals
+    return(se_vals)
   })
   
   # Add this after calculating se_list in TMLE_IC function

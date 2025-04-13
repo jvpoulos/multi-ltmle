@@ -3227,6 +3227,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                             "_use_SL_", use.SL,
                             ".rds")
   
+  # Before the final return statement, calculate elapsed time
+  elapsed_time <- difftime(Sys.time(), start_time, units="mins")
+  
+  print(paste("Total execution time:", round(elapsed_time, 2), "minutes"))
+  
   # Create a list with metadata and results
   iteration_results <- list(
     "iteration" = r,
