@@ -323,11 +323,13 @@ def main():
             pos_weight = 1.0 / (pos_ratio + 1e-7)
             neg_weight = 1.0 / (1.0 - pos_ratio + 1e-7)
             
+            # Apply a scaling factor to increase positive class weight (address imbalance)
+            pos_weight = pos_weight * 5.0  # Multiply by 5 to significantly boost positive class weight
+            
             # Normalize weights
             total = pos_weight + neg_weight
             pos_weight = pos_weight / total * 2 
             neg_weight = neg_weight / total * 2
-
             logger.info("Censoring weights:")
             logger.info(f"Positive (censored) weight: {pos_weight:.4f}")
             logger.info(f"Negative (uncensored) weight: {neg_weight:.4f}")
@@ -338,12 +340,25 @@ def main():
                 1: total/(2 * max(c_counts[1], 1) if len(c_counts) > 1 else 1)
             }
             
+            # Adjust the final class weights to further address imbalance
+            class_weight[1] = class_weight[1] * 5.0  # Boost minority class weight
+            
+            # Re-normalize to reasonable values
+            weight_sum = class_weight[0] + class_weight[1]
+            class_weight[0] = class_weight[0] / weight_sum
+            class_weight[1] = class_weight[1] / weight_sum
+            
             # Log censoring distribution
             logger.info("Censoring class distribution:")
             for i in [0, 1]:
                 count = c_counts[i] if i < len(c_counts) else 0 
                 pct = (count/total) * 100
                 logger.info(f"Class {i}: {count} ({pct:.2f}%)")
+            
+            # Log the final adjusted weights
+            logger.info("Adjusted class weights for imbalance:")
+            logger.info(f"Class 0 weight: {class_weight[0]:.4f}")
+            logger.info(f"Class 1 weight: {class_weight[1]:.4f}")
         else:
             # Fallback to balanced weights if no target column
             class_weight = {0: 1.0, 1: 1.0}

@@ -728,49 +728,77 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       return(ids)
     })
     
-    # Step 5: Initialize cumulative predictions with guarantees
+    # Step 5: Initialize cumulative predictions with consistent dimensions
     g_preds_cuml <- vector("list", length=t.end+1)
     g_preds_cuml[[1]] <- g_preds[[1]]
     
-    # Replace the calculation loop with:
+    # Ultra-protective matrix approach with element-wise operations
+    cat("Using ultra-protective matrix approach with element-wise operations...\n")
+    
+    # Get expected dimensions from first non-null prediction
+    expected_rows <- nrow(initial_model_for_A[[1]]$data)
+    expected_cols <- J  # Number of treatment classes
+    
+    # For each time point
     for(i in 2:length(g_preds)) {
-      if(is.null(g_preds[[i]]) || is.null(g_preds_cuml[[i-1]])) {
-        g_preds_cuml[[i]] <- g_preds[[i]]
-      } else {
-        # Match IDs between time points, similar to binary case
-        g_preds_ID <- lapply(seq_along(initial_model_for_A), function(j) {
-          if(is.null(initial_model_for_A[[j]]) || is.null(initial_model_for_A[[j]]$data)) {
-            return(NULL)
-          }
-          initial_model_for_A[[j]]$data$ID
-        })
+      # Create empty result matrix
+      result <- matrix(0, nrow=expected_rows, ncol=expected_cols)
+      colnames(result) <- paste0("A", 1:expected_cols)
+      
+      # Ensure both matrices have proper dimensions before multiplication
+      if(!is.matrix(g_preds[[i]]) || nrow(g_preds[[i]]) != expected_rows || ncol(g_preds[[i]]) != expected_cols) {
+        g_preds[[i]] <- matrix(g_preds[[i]], nrow=expected_rows, ncol=expected_cols)
+      }
+      
+      if(!is.matrix(g_preds_cuml[[i-1]]) || nrow(g_preds_cuml[[i-1]]) != expected_rows || ncol(g_preds_cuml[[i-1]]) != expected_cols) {
+        g_preds_cuml[[i-1]] <- matrix(g_preds_cuml[[i-1]], nrow=expected_rows, ncol=expected_cols)
+      }
+      
+      # Match IDs between time points if available
+      if(!is.null(g_preds_ID[[i]]) && !is.null(g_preds_ID[[i-1]]) && 
+         length(g_preds_ID[[i]]) > 0 && length(g_preds_ID[[i-1]]) > 0) {
         
-        # Find common IDs between current and previous time point
-        if(!is.null(g_preds_ID[[i]]) && !is.null(g_preds_ID[[i-1]])) {
-          common_idx <- match(g_preds_ID[[i]], g_preds_ID[[i-1]])
-          common_idx <- common_idx[!is.na(common_idx)]
+        # Find matching IDs
+        common_ids <- intersect(g_preds_ID[[i]], g_preds_ID[[i-1]])
+        
+        if(length(common_ids) > 0) {
+          # Get corresponding row indices
+          idx_current <- match(common_ids, g_preds_ID[[i]])
+          idx_prev <- match(common_ids, g_preds_ID[[i-1]])
           
-          if(length(common_idx) > 0) {
-            # Scale to prevent underflow, similar to binary approach
-            g_preds_cuml[[i]] <- g_preds[[i]] * (0.5 + (g_preds_cuml[[i-1]][common_idx,] / 2))
-          } else {
-            g_preds_cuml[[i]] <- g_preds[[i]]
+          # For matching rows, use multiplication
+          for(j in 1:length(common_ids)) {
+            curr_idx <- idx_current[j]
+            prev_idx <- idx_prev[j]
+            result[curr_idx,] <- g_preds[[i]][curr_idx,] * (0.5 + (g_preds_cuml[[i-1]][prev_idx,] / 2))
+          }
+          
+          # For non-matching rows, just use current values
+          non_common_idx <- setdiff(1:nrow(g_preds[[i]]), idx_current)
+          if(length(non_common_idx) > 0) {
+            result[non_common_idx,] <- g_preds[[i]][non_common_idx,]
           }
         } else {
-          # No ID information - use direct matrix multiplication
-          g_preds_cuml[[i]] <- g_preds[[i]] * g_preds_cuml[[i-1]]
+          # No matching IDs, use direct multiplication
+          result <- g_preds[[i]] * g_preds_cuml[[i-1]]
         }
+      } else {
+        # No ID information - use direct matrix multiplication
+        result <- g_preds[[i]] * g_preds_cuml[[i-1]]
       }
+      
+      # Store result
+      g_preds_cuml[[i]] <- result
     }
     
-    # Step 7: Apply bounds with improved safeguards
+    # Apply bounds with improved safeguards
     g_preds_cuml_bounded <- lapply(g_preds_cuml, function(x) {
       # Handle NULL values
-      if(is.null(x)) return(create_standard_matrix(NULL, expected_rows, expected_cols))
+      if(is.null(x)) return(matrix(gbound[1], nrow=expected_rows, ncol=expected_cols))
       
       # Ensure x is a matrix
       if(!is.matrix(x)) {
-        x <- create_standard_matrix(x, expected_rows, expected_cols)
+        x <- matrix(x, nrow=expected_rows, ncol=expected_cols)
       }
       
       # Apply bounds safely
@@ -778,13 +806,13 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
         result <- boundProbs(x, bounds=gbound)
         if(!is.matrix(result) || nrow(result) != expected_rows || ncol(result) != expected_cols) {
           # If result isn't the right shape, fix it
-          result <- create_standard_matrix(result, expected_rows, expected_cols)
+          result <- matrix(result, nrow=expected_rows, ncol=expected_cols)
         }
         result
       }, error = function(e) {
         # Fall back to default matrix if boundProbs fails
         warning("Error in boundProbs, using default matrix: ", e$message)
-        return(create_standard_matrix(NULL, expected_rows, expected_cols))
+        return(matrix(gbound[1], nrow=expected_rows, ncol=expected_cols))
       })
     })
     cat("Multinomial treatment model processing complete\n")
@@ -3337,18 +3365,14 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 128 # number of simulation runs
+R <- 11 #128 # number of simulation runs
 
 full_vector <- 1:R
 
 # Specify the values to be omitted
 completed_values <- c()
-omit_values <- sort(c(47, 18, 7, 17, 39, 93, 118, 77, 24, 14, 85, 72,
-                      101, 113, 51, 108, 81, 57, 80, 70, 64, 105, 96, 74,
-                      38, 73, 65, 122, 130, 134, 131, 132, 140, 139, 133,
-                      151, 152, 162, 160, 169, 176, 191, 183, 202, 207, 204,
-                      209, 223, 217, 237, 233, 236, 243, 244, 247, 255, 263,
-                      269, 282, 279, 294, 306, 311, 316, 324))
+omit_values <- c(7, 14, 17, 18, 24, 38, 39, 47, 51, 57, 64, 65, 70, 72, 73, 74, 77, 80, 81, 85, 
+              93, 96, 101, 105, 108, 113, 118, 122)
 
 # Remove the specified values from the full vector
 final_vector <- full_vector[!full_vector %in% c(completed_values,omit_values)]
@@ -3495,9 +3519,11 @@ library(foreach)
 
 if(cores==1){ # run sequentially and save at each iteration
   sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE) %do% {
-    simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
-            cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
-            use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
+    result <- simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
+                      cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
+                      use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
+    # Individual iteration already saved by simLong function
+    result
   }
 } else if(cores>1){ # run in parallel
   library(parallel)
@@ -3548,17 +3574,19 @@ if(cores==1){ # run sequentially and save at each iteration
     sessionInfo()$loadedOnly
   })
   
-  sim.results <- foreach(r = 1:R, 
+  sim.results <- foreach(r = final_vector,
                          .combine='cbind', 
                          .errorhandling="pass",
                          .packages=library_vector, 
                          .verbose = TRUE) %dopar% {
                            # Use simLong with cores=1 to avoid nested parallelism
-                           simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, 
-                                   n.folds=n.folds, cores=1, estimator=estimator, 
-                                   treatment.rule=treatment.rule, use.SL=use.SL, 
-                                   scale.continuous=scale.continuous, debug=debug, 
-                                   window_size=window_size)
+                           result <- simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, 
+                                             n.folds=n.folds, cores=1, estimator=estimator, 
+                                             treatment.rule=treatment.rule, use.SL=use.SL, 
+                                             scale.continuous=scale.continuous, debug=debug, 
+                                             window_size=window_size)
+                           # Each worker node will save its own result
+                           result
                          }
 }
 saveRDS(sim.results, filename)

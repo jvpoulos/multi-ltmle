@@ -648,7 +648,8 @@ def get_optimized_callbacks(patience, output_dir, train_dataset):
             monitor='val_loss',
             patience=patience,
             restore_best_weights=True,
-            mode='min'
+            mode='min',
+            min_delta=0.001  # Add minimum improvement threshold
         ),
         
         # Best model checkpoint
@@ -1462,9 +1463,9 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             'recurrent_activation': 'sigmoid', 
             'kernel_initializer': 'glorot_uniform',
             'recurrent_initializer': 'orthogonal',
-            'kernel_regularizer': l2(0.001),
-            'recurrent_regularizer': l2(0.001),
-            'bias_regularizer': l2(0.001),
+            'kernel_regularizer': l2(0.0005),
+            'recurrent_regularizer': l2(0.0005),
+            'bias_regularizer': l2(0.0005),
             'dropout': dr,
             'recurrent_dropout': 0,
             'unit_forget_bias': True,
@@ -1565,7 +1566,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         x = tf.keras.layers.Dense(
             units=n_hidden,
             activation='relu',
-            kernel_regularizer=l2(0.005),
+            kernel_regularizer=l2(0.0005),
             name="dense_1"
         )(x)
         x = tf.keras.layers.LayerNormalization(name="norm_4")(x)
@@ -1648,7 +1649,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             activation=final_activation,
             kernel_initializer='glorot_uniform',
             bias_initializer=tf.keras.initializers.Constant(init_bias),
-            kernel_regularizer=l2(0.005),
+            kernel_regularizer=l2(0.0005),
             name="output_dense"
         )(x)
 
@@ -1661,16 +1662,16 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         # Learning rate schedule with longer warmup
         lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            first_decay_steps=steps_per_epoch * 20,  # Longer initial decay
+            first_decay_steps=steps_per_epoch * 10,  # Longer initial decay
             t_mul=1.5,  # Double period each restart
             m_mul=0.95,  # Slightly reduce max learning rate
-            alpha=0.2  # Minimum learning rate
+            alpha=0.3  # Minimum learning rate
         )
         
         optimizer = tf.keras.optimizers.AdamW(
             learning_rate=lr_schedule,
-            weight_decay=0.0005,
-            beta_1=0.9,
+            weight_decay=0.0003,
+            beta_1=0.92,
             beta_2=0.999,
             epsilon=1e-7,
             clipnorm=1.0,

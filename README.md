@@ -217,9 +217,9 @@ Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
   - `"TRUE"` or `"FALSE"`.
 
 #### Examples:
-1. Using the `"tmle"` estimator with super learner enabled and no MPI, using 4 cores for parallel computation:
+1. Using the `"tmle"` estimator with super learner enabled and no MPI, using 2 cores for parallel computation:
    ```bash
-   Rscript simulation.R 'tmle' 4 'TRUE' 'FALSE'
+   Rscript simulation.R 'tmle' 2 'TRUE' 'FALSE'
    ```
 
 2. Using the `"tmle-lstm"` estimator, using 2 cores for parallel computation:

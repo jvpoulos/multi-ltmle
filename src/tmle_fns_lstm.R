@@ -1581,11 +1581,11 @@ process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_d
     
     # Create separate targeting step for binary version of TMLE
     for(i in seq_len(ncol(clever_covariates))) {
-      # Create model data for binary targeting
+      # Create model data for binary targeting with binary-specific weights
       model_data_bin <- data.frame(
         y = pmin(pmax(if(t < t_end) QAW[,"QA"] else Y, 0.01), 0.99),
         offset = qlogis(pmax(pmin(QAW[,i+1], 0.99), 0.01)),
-        weights = weights[,i]
+        weights = weights_bin[,i]  # Use binary-specific weights
       )
       
       # Filter valid rows
@@ -1605,7 +1605,7 @@ process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_d
           updated_model_bin <- tryCatch({
             glm(
               y ~ 1 + offset(offset),
-              weights = weights,
+              weights = model_data_bin$weights,  # Use model_data_bin$weights instead of weights
               family = quasibinomial(),
               data = model_data_bin,
               control = list(maxit = 25)
@@ -2247,6 +2247,59 @@ getTMLELongLSTM <- function(initial_model_for_Y_preds, initial_model_for_Y_data,
         max_weight <- quantile(rule_weights, 0.99, na.rm=TRUE)
         weights[valid_idx,i] <- pmin(rule_weights, max_weight) / 
           sum(pmin(rule_weights, max_weight), na.rm=TRUE)
+      }
+    }
+  }
+  
+  # Calculate binary-specific g_matrix
+  g_matrix_bin <- if(is.list(current_g_preds_bin_list)) {
+    g_mat <- matrix(0, nrow=n_ids, ncol=ncol(current_obs_treatment))
+    for(j in seq_len(ncol(g_mat))) {
+      if(j <= length(current_g_preds_bin_list) && !is.null(current_g_preds_bin_list[[j]])) {
+        pred <- matrix(current_g_preds_bin_list[[j]], nrow=n_ids)
+        g_mat[,j] <- if(ncol(pred) > 1) pred[,1] else pred
+      } else {
+        g_mat[,j] <- rep(1/ncol(g_mat), n_ids)
+      }
+    }
+    g_mat
+  } else if(is.matrix(current_g_preds_bin_list)) {
+    if(nrow(current_g_preds_bin_list) != n_ids) {
+      matrix(rep(current_g_preds_bin_list, length.out=n_ids*ncol(current_g_preds_bin_list)), 
+             ncol=ncol(current_g_preds_bin_list))
+    } else {
+      current_g_preds_bin_list 
+    }
+  } else {
+    matrix(1/ncol(current_obs_treatment), nrow=n_ids, ncol=ncol(current_obs_treatment))
+  }
+  
+  # Calculate binary-specific joint probabilities
+  probs_bin <- g_matrix_bin * (1 - C_matrix)
+  bounded_probs_bin <- pmin(pmax(probs_bin, gbound[1]), gbound[2])
+  
+  # Calculate binary-specific weights
+  weights_bin <- matrix(0, nrow=n_ids, ncol=ncol(current_obs_rules))
+  for(i in seq_len(ncol(current_obs_rules))) {
+    valid_idx <- clever_covariates[,i] > 0
+    if(any(valid_idx)) {
+      # Calculate treatment probabilities using binary predictions
+      treatment_probs_bin <- rowSums(current_obs_treatment[valid_idx,] * bounded_probs_bin[valid_idx,], na.rm=TRUE)
+      
+      # Apply bounds
+      prob_lower <- max(0.001, gbound[1])
+      treatment_probs_bin[treatment_probs_bin < prob_lower] <- prob_lower
+      
+      # IPCW weights for binary model
+      cens_weights <- 1 / (1 - C_matrix[valid_idx,1])
+      weights_bin[valid_idx,i] <- cens_weights / treatment_probs_bin
+      
+      # Trim and normalize binary weights
+      rule_weights_bin <- weights_bin[valid_idx,i]
+      if(length(rule_weights_bin) > 0) {
+        max_weight_bin <- quantile(rule_weights_bin, 0.99, na.rm=TRUE)
+        weights_bin[valid_idx,i] <- pmin(rule_weights_bin, max_weight_bin) / 
+          sum(pmin(rule_weights_bin, max_weight_bin), na.rm=TRUE)
       }
     }
   }

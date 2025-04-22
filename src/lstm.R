@@ -682,9 +682,9 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     py$n_hidden <- as.integer(256)
     py$hidden_activation <- 'tanh'
     py$out_activation <- out_activation
-    py$lr <- 0.001
-    py$dr <- 0.2
-    py$nb_batches <- as.integer(256)
+    py$lr <- 0.002
+    py$dr <- 0.25
+    py$nb_batches <- as.integer(192)
     py$patience <- as.integer(10)
     py$t_end <- as.integer(t_end)
     py$feature_cols <- if(length(base_covariates) > 0) base_covariates else stop("No features available")

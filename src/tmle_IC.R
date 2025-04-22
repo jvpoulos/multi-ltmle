@@ -269,8 +269,9 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
           
           # 2. Incorporate autocorrelation with more moderate parameters
           max_lag <- min(30, floor(n/3))  # Fewer lags (was 50)
-          auto_factor <- 2.0  # Lower base factor (was 25.0)
+          auto_factor <- 3.0  
           
+          # Inside the standard error calculation section for TMLE estimator
           if(n > max_lag + 1) {
             # Calculate autocorrelation at different lags
             auto_sum <- 0
@@ -282,20 +283,27 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
                 0  # Use 0 if correlation fails
               })
               
-              # Apply faster decay for lags
-              weight <- 1 - (lag/(max_lag + 1))^0.5  # Faster decay (was 0.2)
+              # Apply decay for lags
+              weight <- 1 - (lag/(max_lag + 1))^0.5  
               auto_sum <- auto_sum + weight * auto_corr
             }
             
-            # Apply more moderate autocorrelation adjustment
-            auto_factor <- auto_factor * (1 + 3 * abs(auto_sum))  # Smaller multiplier (was 15)
+            # Apply autocorrelation adjustment
+            auto_factor <- auto_factor * (1 + 3 * abs(auto_sum))  
             
-            # Add time factor that increases more moderately for later time points
-            time_factor <- 1 + (t / t_end)  # Slower increase (was * 2)
+            # Add time factor that increases for later time points
+            time_factor <- 1 + (t / t_end) * 0.8  
             auto_factor <- auto_factor * time_factor
             
-            # Cap the maximum auto_factor to prevent extreme values
-            auto_factor <- min(auto_factor, 10.0)
+            # Cap the maximum auto_factor
+            auto_factor <- min(auto_factor, 10.0)  
+            
+            # Add error handling for NA values in auto_sum
+            if(is.na(auto_sum)) {
+              message("Warning: NA in auto_sum calculation at time ", t, ", rule ", i)
+              auto_sum <- 0  # Use 0 as fallback
+              auto_factor <- 10.0  # Use maximum allowed value as fallback
+            }
             
             cat(sprintf("  Auto sum: %.4f, time factor: %.2f, final factor: %.4f\n", 
                         auto_sum, time_factor, auto_factor))
@@ -334,74 +342,81 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
           cat(sprintf("  Final SE: %.8f (SD=%.8f, auto_factor=%.4f, n=%d)\n", 
                       se_vals[i], sd_val, auto_factor, n))
         } else {
-          sd_val <- sd(valid_values, na.rm=TRUE)
+          # For standard TMLE, use similar approach as LSTM but adapted
           
-          # 1. If SD is zero or extremely small but data varies, use more robust method
-          if(sd_val < 1e-4 && diff(range(valid_values)) > 1e-4) {
-            # Use range-based estimator (assumes approximately uniform distribution)
-            data_range <- diff(range(valid_values))
-            sd_val <- data_range / sqrt(12)
-            cat("t=", t, " rule=", i, ": Using range-based SD estimator (", sd_val, ")\n")
-          }
+          # Calculate t_end from the data structure
+          t_end <- length(tmle_contrasts)
           
-          # 2. If SD is still too small but we have multiple different values
-          if(sd_val < 1e-4 && length(unique(valid_values)) > 1) {
-            # Calculate SD based on unique values only
-            unique_vals <- unique(valid_values)
-            if(length(unique_vals) >= 2) {
-              sd_val <- sd(unique_vals)
-              cat("t=", t, " rule=", i, ": Using unique values SD estimator (", sd_val, ")\n")
+          # 1. Calculate base variance
+          n <- length(valid_values)
+          var_base <- var(valid_values, na.rm=TRUE)
+          sd_val <- sqrt(var_base)
+          
+          # 2. Incorporate autocorrelation with parameters appropriate for TMLE
+          max_lag <- min(20, floor(n/4))  # Fewer lags for TMLE
+          auto_factor <- 2.0  # Lower base factor for TMLE
+          
+          if(n > max_lag + 1) {
+            # Calculate autocorrelation at different lags
+            auto_sum <- 0
+            for(lag in 1:max_lag) {
+              auto_corr <- tryCatch({
+                cor(valid_values[1:(n-lag)], valid_values[(lag+1):n], 
+                    use="pairwise.complete.obs")
+              }, error = function(e) {
+                0  # Use 0 if correlation fails
+              })
+              
+              # Apply decay for lags
+              weight <- 1 - (lag/(max_lag + 1))^0.5  
+              auto_sum <- auto_sum + weight * auto_corr
             }
-          }
-          
-          # 3. Enhanced minimum SD calculation that scales with time and mean
-          mean_val <- mean(valid_values, na.rm = TRUE)
-          time_based_min_sd <- 0.01 + (0.002 * t) # Linearly increasing with time
-          mean_based_min_sd <- max(0.02, abs(mean_val) * (0.05 + 0.002 * t)) # Proportion increases with time
-          
-          # Apply the enhanced minimum SD
-          min_sd <- max(time_based_min_sd, mean_based_min_sd)
-          if(sd_val < min_sd) {
-            sd_val <- min_sd
-            cat(sprintf("t=%d, rule=%d: Using enhanced SD estimator: %.4f (time-based: %.4f, mean-based: %.4f)\n", 
-                        t, i, sd_val, time_based_min_sd, mean_based_min_sd))
-          }
-          
-          # 4. Apply stronger time-dependent correlation adjustment
-          n_effective <- length(valid_values)
-          
-          # Treatment-specific adjustment factors
-          rule_factors <- c(1.0, 1.2, 1.0) # Higher for dynamic rule (index 2)
-          rule_factor <- rule_factors[i]
-          
-          # Progressive time correlation that increases non-linearly
-          if(t > 1) {
-            # More aggressive correlation factor that grows with time
-            base_correlation <- 0.3 # Higher base value
-            time_power <- 1.5 # Non-linear growth
-            correlation_factor <- 1 + base_correlation * (t^time_power / 100)
             
-            # Calculate SE with all adjustment factors
-            se_vals[i] <- sd_val * sqrt(correlation_factor) * rule_factor / sqrt(n_effective)
-            cat(sprintf("t=%d, rule=%d: Applied correlation factor %.2f, rule factor %.1f\n", 
-                        t, i, correlation_factor, rule_factor))
-          } else {
-            # For t=1, still apply rule factor but no time correlation
-            se_vals[i] <- sd_val * rule_factor / sqrt(n_effective)
+            # Apply autocorrelation adjustment
+            auto_factor <- auto_factor * (1 + 3 * abs(auto_sum))  
+            
+            # Add time factor that increases for later time points
+            time_factor <- 1 + (t / t_end) * 0.8  
+            auto_factor <- auto_factor * time_factor
+            
+            # Cap the maximum auto_factor
+            auto_factor <- min(auto_factor, 10.0)  
+            
+            cat(sprintf("  Auto sum: %.4f, time factor: %.2f, final factor: %.4f\n", 
+                        auto_sum, time_factor, auto_factor))
           }
           
-          # 5. Final adaptive minimum SE threshold
-          min_se_base <- 0.01 # Starting value
-          min_se_growth <- 0.001 * t * rule_factor # Time and rule dependent growth
-          min_se <- min_se_base + min_se_growth
+          # Compute final standard error with auto_factor
+          se_vals[i] <- sqrt(var_base * auto_factor / n)
           
-          if(se_vals[i] < min_se) {
-            se_vals[i] <- min_se
-            cat(sprintf("t=%d, rule=%d: Applied minimum SE threshold: %.4f\n", t, i, min_se))
+          # Improved handling for near-zero SD
+          if(sd_val < 1e-6) {
+            if(diff(range(valid_values, na.rm=TRUE)) > 1e-6) {
+              # Use range-based estimator for very small SD with variation
+              data_range <- diff(range(valid_values, na.rm=TRUE))
+              sd_val <- data_range / sqrt(12)
+              var_base <- sd_val^2
+              cat(sprintf("Using range-based SD estimate: %.8f\n", sd_val))
+            } else {
+              # Use proportion of mean
+              mean_val <- mean(valid_values, na.rm=TRUE)
+              sd_val <- max(0.01, abs(mean_val) * 0.03)  # Use 3% of mean as SD
+              var_base <- sd_val^2
+              cat(sprintf("Using non-zero SD estimate: %.8f\n", sd_val))
+            }
+            
+            # Recalculate SE with new var_base
+            se_vals[i] <- sqrt(var_base * auto_factor / n)
           }
           
-          # 6. Debug information to track SE values
-          cat(sprintf("t=%d, rule=%d: Final SE=%.6f, n=%d\n", t, i, se_vals[i], n_effective))
+          # Add minimal safeguard for very small SE values
+          if(se_vals[i] < 0.001) {
+            se_vals[i] <- 0.001
+          }
+          
+          # Debug information
+          cat(sprintf("  Final SE: %.8f (SD=%.8f, auto_factor=%.4f, n=%d)\n", 
+                      se_vals[i], sd_val, auto_factor, n))
         }
         
         # Add diagnostics if enabled
