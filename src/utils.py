@@ -1662,7 +1662,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
         # Learning rate schedule with longer warmup
         lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
             initial_learning_rate=lr,
-            first_decay_steps=steps_per_epoch * 10,  # Longer initial decay
+            first_decay_steps=steps_per_epoch * 8,  # Longer initial decay
             t_mul=1.5,  # Double period each restart
             m_mul=0.95,  # Slightly reduce max learning rate
             alpha=0.3  # Minimum learning rate
