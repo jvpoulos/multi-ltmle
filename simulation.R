@@ -3313,14 +3313,38 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   }
   
   # Save iteration results
-  tryCatch({
+  # Print the output directory and result filename for debugging
+  print(paste0("Attempting to save results to: ", result_filename))
+
+  # Check if the parent directory exists and is writable
+  parent_dir <- dirname(result_filename)
+  if(!dir.exists(parent_dir)) {
+    warning(paste0("Parent directory does not exist: ", parent_dir))
+    # Try to create it
+    dir.create(parent_dir, recursive = TRUE, showWarnings = TRUE)
+  }
+
+  # Check if we have write permissions
+  if(!file.access(parent_dir, mode = 2) == 0) {
+    warning(paste0("No write permission for directory: ", parent_dir))
+  }
+
+  # Try to save with enhanced error handling
+  save_result <- tryCatch({
     saveRDS(iteration_results, result_filename)
-    if(debug) {
-      print(paste0("Saved iteration ", r, " results to ", result_filename))
-    }
+    TRUE  # Success
   }, error = function(e) {
     warning(paste0("Failed to save iteration ", r, " results: ", e$message))
+    print(paste0("Error details: ", conditionMessage(e)))
+    FALSE  # Failed
   })
+
+  # Verify the file was actually saved
+  if(save_result && file.exists(result_filename)) {
+    print(paste0("Successfully saved iteration ", r, " results to ", result_filename))
+  } else {
+    warning(paste0("Could not verify saved file exists: ", result_filename))
+  }
   
   print("Returning list")
   

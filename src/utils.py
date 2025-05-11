@@ -192,58 +192,9 @@ def masked_sparse_categorical_crossentropy(y_true, y_pred):
     return tf.reduce_sum(scce) / (n_valid + K.epsilon())
 
 
-@tf.keras.utils.register_keras_serializable(package='Custom')
-class MaskedBinaryAccuracy(tf.keras.metrics.Metric):
-    def __init__(self, name='masked_accuracy', threshold=0.5, **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.threshold = threshold
-        self.true_positives = self.add_weight(name='tp', initializer='zeros')
-        self.total_values = self.add_weight(name='total', initializer='zeros')
+# MaskedBinaryAccuracy removed - functionality covered by MaskedAccuracy class
 
-    @tf.function
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        mask = tf.cast(tf.not_equal(y_true, -1), tf.float32)
-        
-        threshold = tf.cast(self.threshold, y_pred.dtype)
-        y_pred = tf.cast(y_pred > threshold, y_pred.dtype)
-        y_true = tf.cast(y_true > threshold, y_true.dtype)
-        
-        values = tf.cast(tf.equal(y_true, y_pred), tf.float32) * mask
-        self.true_positives.assign_add(tf.reduce_sum(values))
-        self.total_values.assign_add(tf.reduce_sum(mask))
-
-    @tf.function
-    def result(self):
-        return tf.math.divide_no_nan(self.true_positives, self.total_values)
-
-    def reset_states(self):
-        self.true_positives.assign(0.0)
-        self.total_values.assign(0.0)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"threshold": self.threshold})
-        return config
-
-@tf.keras.utils.register_keras_serializable(package='Custom')
-class MaskedAUC(tf.keras.metrics.AUC):
-    def __init__(self, name='masked_auc', multi_label=False, **kwargs):
-        super().__init__(name=name, multi_label=multi_label, **kwargs)
-        self.multi_label = multi_label
-
-    @tf.function
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        mask = tf.cast(tf.not_equal(y_true, -1), tf.float32)
-        if sample_weight is not None:
-            sample_weight = sample_weight * mask
-        else:
-            sample_weight = mask
-        return super().update_state(y_true, y_pred, sample_weight)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"multi_label": self.multi_label})
-        return config
+# MaskedAUC removed - functionality covered by standard AUC with properly applied mask
 
 @tf.keras.utils.register_keras_serializable(package='Custom')
 class MaskedAccuracy(tf.keras.metrics.Metric):
@@ -273,24 +224,33 @@ class MaskedAccuracy(tf.keras.metrics.Metric):
         return super().get_config()
 
 def clean_model_config(config):
-    """Remove metrics and loss functions from model config."""
+    """Remove metrics and loss functions from model config to ensure clean loading."""
     if isinstance(config, dict):
+        # Create a copy to avoid modifying the original during iteration
+        cleaned_config = config.copy()
+
         # Remove metrics and loss from compile config
-        if 'compile_config' in config:
-            if 'metrics' in config['compile_config']:
-                config['compile_config']['metrics'] = []
-            if 'loss' in config['compile_config']:
-                config['compile_config']['loss'] = None
-        
+        if 'compile_config' in cleaned_config:
+            compile_config = cleaned_config['compile_config']
+            if isinstance(compile_config, dict):
+                # Remove problematic fields safely
+                compile_config.pop('metrics', None)
+                compile_config.pop('loss', None)
+                compile_config.pop('loss_weights', None)
+                compile_config.pop('weighted_metrics', None)
+
         # Recursively clean nested dictionaries
-        for key in config:
-            if isinstance(config[key], (dict, list)):
-                config[key] = clean_model_config(config[key])
+        for key, value in cleaned_config.items():
+            if isinstance(value, (dict, list)):
+                cleaned_config[key] = clean_model_config(value)
+
+        return cleaned_config
     elif isinstance(config, list):
         # Recursively clean lists
-        config = [clean_model_config(item) for item in config]
-    
-    return config
+        return [clean_model_config(item) for item in config]
+    else:
+        # Return primitives unchanged
+        return config
 
 def load_model_components(base_path, loss_fn, is_censoring, gbound=None, ybound=None):
     """Load model with proper custom objects."""
@@ -1472,19 +1432,7 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             'dtype': tf.float32
         }
 
-        # Multi-head self-attention layer
-        def attention_layer(queries, keys, values, mask=None):
-            # Multi-head attention with scaling
-            matmul_qk = tf.matmul(queries, keys, transpose_b=True)
-            dk = tf.cast(tf.shape(keys)[-1], tf.float32)
-            scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
-            
-            if mask is not None:
-                scaled_attention_logits += (mask * -1e9)
-            
-            attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)
-            output = tf.matmul(attention_weights, values)
-            return output, attention_weights
+        # Use the MultiHeadAttention class defined earlier instead of duplicating code
 
         # First LSTM + Attention block
         lstm1 = tf.keras.layers.LSTM(

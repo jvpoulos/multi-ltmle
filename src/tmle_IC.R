@@ -410,7 +410,7 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
           }
           
           # Add minimal safeguard for very small SE values
-          if(se_vals[i] < 0.001) {
+          if(!is.na(se_vals[i]) && se_vals[i] < 0.001) {
             se_vals[i] <- 0.001
           }
           

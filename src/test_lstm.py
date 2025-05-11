@@ -301,26 +301,10 @@ def test_model():
         n_valid_samples = len(test_data_x) - n_pre + 1
         if n_valid_samples <= 0:
             raise ValueError(f"Invalid number of samples: {n_valid_samples}")
-            
+
         preds_test = preds_test[:n_valid_samples]
-        
+
         logger.info(f"Final test predictions shape: {preds_test.shape}")
-        
-        # Ensure we only keep predictions for actual samples
-        n_valid_samples = len(test_data_x) - n_pre + 1
-        if n_valid_samples <= 0:
-            raise ValueError(f"Invalid number of samples: {n_valid_samples}")
-            
-        preds_test = preds_test[:n_valid_samples]
-        
-        logger.info(f"Final test predictions shape: {preds_test.shape}")
-        
-        # Ensure we only keep predictions for actual samples
-        n_valid_samples = len(test_data_x) - n_pre + 1
-        if n_valid_samples <= 0:
-            raise ValueError(f"Invalid number of samples: {n_valid_samples}")
-            
-        preds_test = preds_test[:n_valid_samples]
         
         # Add prediction analysis based on loss function
         if loss_fn == "binary_crossentropy":

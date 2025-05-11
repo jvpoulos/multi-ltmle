@@ -486,7 +486,6 @@ def main():
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=callbacks,
-        class_weight=class_weight,
         verbose=1
     )
 
