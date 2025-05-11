@@ -133,7 +133,7 @@ predict_with_cached_model <- function(model_key, rule_data, n_ids, t_end, window
 }
 
 
-lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, J, ybound, gbound, inference=FALSE, is_censoring=FALSE, debug=TRUE, batch_models=FALSE, batch_rules=NULL) {
+lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, J, ybound, gbound, inference=FALSE, is_censoring=FALSE, debug=TRUE, batch_models=FALSE, batch_rules=NULL, use_wandb=FALSE) {
   # This static variable tracks if models have already been loaded to avoid redundant loading
   if (!exists("cached_models", envir = .GlobalEnv)) {
     assign("cached_models", list(), envir = .GlobalEnv)
@@ -691,6 +691,7 @@ lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, 
     py$outcome_cols <- outcome_cols
     py$gbound <-gbound
     py$ybound <-ybound
+    py$use_wandb <- use_wandb
     
     # Synchronize model type and settings
     if(is_censoring_model) {

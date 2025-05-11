@@ -46,8 +46,16 @@ import traceback
 import logging
 import warnings
 
-import wandb
 from datetime import datetime
+import argparse
+
+# Import wandb conditionally to make it optional
+try:
+    import wandb
+    wandb_available = True
+except ImportError:
+    wandb_available = False
+    print("Warning: wandb not installed, logging disabled.")
 
 import gc
 tf.keras.backend.clear_session()
@@ -73,6 +81,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train LSTM models with optional wandb logging')
+    parser.add_argument('--use_wandb', action='store_true', help='Enable wandb logging')
+    args, unknown = parser.parse_known_args()
+    use_wandb = args.use_wandb and wandb_available
+
+    if use_wandb:
+        logger.info("wandb logging enabled")
+    else:
+        logger.info("wandb logging disabled")
+
     global n_pre, nb_batches, output_dir, loss_fn, epochs, lr, dr, n_hidden, hidden_activation, out_activation, patience, J, window_size, is_censoring, gbound, ybound
 
     # Record start time
@@ -429,36 +448,40 @@ def main():
 
     logger.info(f"Using actual input shape from data: {input_shape}")
     
-    # Update WandB config
-    wandb_config = {
-        'learning_rate': lr,
-        'epochs': epochs,
-        'batch_size': batch_size,
-        'hidden_units': n_hidden,
-        'dropout_rate': dr,
-        'optimizer': 'Adam',
-        'input_shape': input_shape,
-        'output_dim': output_dim,
-        'loss_function': loss_fn,
-        'hidden_activation': hidden_activation,
-        'output_activation': out_activation,
-        'steps_per_epoch': steps_per_epoch,
-        'validation_steps': validation_steps,
-        'window_size': window_size,
-    }
-
-    # Initialize WandB
-    run, wandb_callback = setup_wandb(
-        config=wandb_config,
-        validation_steps=validation_steps,
-        train_dataset=train_dataset
-    )
-    
     # Get callbacks
     callbacks = get_optimized_callbacks(patience, output_dir, train_dataset)
-    callbacks.append(wandb_callback)
-    callbacks.append(CustomCallback(train_dataset))
     callbacks.append(CustomNanCallback())
+
+    # Initialize WandB if enabled
+    if use_wandb:
+        # Update WandB config
+        wandb_config = {
+            'learning_rate': lr,
+            'epochs': epochs,
+            'batch_size': batch_size,
+            'hidden_units': n_hidden,
+            'dropout_rate': dr,
+            'optimizer': 'Adam',
+            'input_shape': input_shape,
+            'output_dim': output_dim,
+            'loss_function': loss_fn,
+            'hidden_activation': hidden_activation,
+            'output_activation': out_activation,
+            'steps_per_epoch': steps_per_epoch,
+            'validation_steps': validation_steps,
+            'window_size': window_size,
+        }
+
+        # Initialize WandB
+        run, wandb_callback = setup_wandb(
+            config=wandb_config,
+            validation_steps=validation_steps,
+            train_dataset=train_dataset
+        )
+
+        # Add wandb-specific callbacks
+        callbacks.append(wandb_callback)
+        callbacks.append(CustomCallback(train_dataset, use_wandb=True))
 
     model = create_model(
         input_shape=input_shape,
@@ -490,7 +513,8 @@ def main():
     )
 
     # Log metrics with proper handling of binary case
-    log_metrics(history, start_time)        
+    if use_wandb:
+        log_metrics(history, start_time)
 
     # Determine model filename based on case
     if is_censoring:
@@ -596,8 +620,10 @@ def main():
 
     logger.info(f"Predictions saved to: {pred_path}")
     logger.info(f"Prediction info saved to: {info_path}")
-    
-    wandb.finish()
+
+    # Finish wandb run if it was used
+    if use_wandb:
+        wandb.finish()
 
 if __name__ == "__main__":
     main()

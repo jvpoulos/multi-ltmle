@@ -30,8 +30,14 @@ gc.collect()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-import wandb
 from datetime import datetime
+
+# Import wandb conditionally
+try:
+    import wandb
+    wandb_available = True
+except ImportError:
+    wandb_available = False
 
 
 def get_model_filenames_test(loss_fn, output_dim, is_censoring):
@@ -374,8 +380,18 @@ def get_data_filenames(is_censoring, loss_fn, outcome_cols, output_dir=None):
     return f"{base}_input.csv", f"{base}_output.csv"
     
 def log_metrics(history, start_time):
+    """Log metrics to wandb if available.
+
+    Args:
+        history: Training history object
+        start_time: Training start time
+    """
+    if not wandb_available:
+        logger.info("wandb not available, skipping metrics logging")
+        return
+
     metrics_to_log = {}
-    
+
     try:
         if 'cross_entropy' in history.history:
             metrics_to_log.update({
@@ -383,7 +399,7 @@ def log_metrics(history, start_time):
                 'best_cross_entropy': float(min(history.history['cross_entropy'])),
                 'best_epoch': int(np.argmin(history.history['cross_entropy']))
             })
-            
+
         if 'val_cross_entropy' in history.history:
             metrics_to_log.update({
                 'final_val_cross_entropy': float(history.history['val_cross_entropy'][-1]),
@@ -397,7 +413,7 @@ def log_metrics(history, start_time):
                 'best_accuracy': float(min(history.history['accuracy'])),
                 'best_epoch': int(np.argmin(history.history['accuracy']))
             })
-            
+
         if 'val_accuracy' in history.history:
             metrics_to_log.update({
                 'final_val_accuracy': float(history.history['val_accuracy'][-1]),
@@ -411,7 +427,7 @@ def log_metrics(history, start_time):
                 'best_loss': float(min(history.history['loss'])),
                 'best_epoch': int(np.argmin(history.history['loss']))
             })
-            
+
         if 'val_loss' in history.history:
             metrics_to_log.update({
                 'final_val_loss': float(history.history['val_loss'][-1]),
@@ -420,28 +436,46 @@ def log_metrics(history, start_time):
             })
 
         metrics_to_log['training_time'] = time.time() - start_time
-        
+
+        # Print key metrics to console regardless of wandb availability
+        logger.info(f"Training completed in {metrics_to_log['training_time']:.2f} seconds")
+        if 'best_loss' in metrics_to_log:
+            logger.info(f"Best loss: {metrics_to_log['best_loss']:.4f} at epoch {metrics_to_log['best_epoch']}")
+        if 'best_val_loss' in metrics_to_log:
+            logger.info(f"Best validation loss: {metrics_to_log['best_val_loss']:.4f}")
+
+        # Log to wandb if available
+        wandb.log(metrics_to_log)
+
     except Exception as e:
         logger.error(f"Error collecting metrics: {str(e)}")
         logger.error(traceback.format_exc())
-    
-    wandb.log(metrics_to_log)
 
 def setup_wandb(config, validation_steps=None, train_dataset=None):
-    """Initialize WandB with configuration.
-    
+    """Initialize WandB with configuration if available.
+
     Args:
         config (dict): WandB configuration dictionary
         validation_steps (int, optional): Number of validation steps
         train_dataset: Training dataset for batch logging
+
+    Returns:
+        tuple: (run, wandb_callback) if wandb is available, or (None, dummy_callback) if not
     """
+    if not wandb_available:
+        # Return dummy objects if wandb is not available
+        logger.warning("wandb not available, returning dummy callback")
+        dummy_callback = tf.keras.callbacks.Callback()
+        return None, dummy_callback
+
+    # Initialize wandb only if available
     run = wandb.init(
         project="multi-ltmle",
         entity="jvpoulos",
         config=config,
         name=f"lstm_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
-    
+
     # Configure WandB callback with SavedModel format
     callback_config = {
         'monitor': 'val_loss',
@@ -461,17 +495,17 @@ def setup_wandb(config, validation_steps=None, train_dataset=None):
         'log_evaluation': False,
         'log_batch_frequency': None  # Disable batch logging
     }
-    
+
     # Add optional configurations if provided
     if validation_steps is not None:
         callback_config['validation_steps'] = validation_steps
-    
+
     if train_dataset is not None:
         callback_config['training_data'] = train_dataset
         callback_config['log_batch_frequency'] = 100
-    
+
     wandb_callback = wandb.keras.WandbCallback(**callback_config)
-    
+
     return run, wandb_callback
 
 class CustomNanCallback(tf.keras.callbacks.Callback):
@@ -484,39 +518,47 @@ class CustomNanCallback(tf.keras.callbacks.Callback):
                 break
 
 class CustomCallback(tf.keras.callbacks.Callback):
-    """Fixed implementation of CustomCallback"""
-    
-    def __init__(self, train_dataset):
+    """Fixed implementation of CustomCallback with optional wandb support"""
+
+    def __init__(self, train_dataset, use_wandb=False):
         super().__init__()  # Properly initialize parent class
         self._train_dataset = train_dataset
         self._start_time = time.time()
         self._epoch_start_time = None
         self._current_model = None  # Use a different name to avoid conflicts
-    
+        self._use_wandb = use_wandb and wandb_available
+
     def set_model(self, model):
         """Properly handle model setting"""
         super().set_model(model)
         self._current_model = model
-               
+
     def on_epoch_begin(self, epoch, logs=None):
         self._epoch_start_time = time.time()
-    
+
     def on_epoch_end(self, epoch, logs=None):
         if not logs:
             logs = {}
-                
+
         epoch_time = time.time() - self._epoch_start_time
-            
+
         if self._current_model is None:
             logger.warning("Model not set in CustomCallback")
             return
-                
+
+        # Print epoch time to console regardless of wandb setting
+        logger.info(f"Epoch {epoch} completed in {epoch_time:.2f} seconds")
+
+        # Skip wandb logging if not enabled
+        if not self._use_wandb:
+            return
+
         # Log metrics to WandB with safer handling
         metrics_dict = {
             'epoch': epoch,
             'epoch_time': epoch_time,
         }
-        
+
         # Safely get learning rate
         try:
             if hasattr(self._current_model.optimizer, 'learning_rate'):
@@ -527,29 +569,29 @@ class CustomCallback(tf.keras.callbacks.Callback):
                     metrics_dict['learning_rate'] = float(lr(epoch))
         except:
             logger.warning("Could not log learning rate")
-        
+
         # Add other logs safely
         for key, value in logs.items():
             if isinstance(value, (int, float)) and not np.isnan(value):
                 metrics_dict[key] = value
-        
+
         wandb.log(metrics_dict)
-            
+
         try:
             # Sample predictions with safer handling
             for x_batch in self._train_dataset.take(1):
                 if isinstance(x_batch, tuple):
                     x_batch = x_batch[0]
-                    
+
                 # Get predictions
                 sample_pred = self._current_model.predict(x_batch, verbose=0)
-                
+
                 # Remove any NaN values
                 sample_pred = np.nan_to_num(sample_pred, nan=0.0)
-                
+
                 if len(sample_pred.shape) > 2:
                     sample_pred = sample_pred.reshape(-1, sample_pred.shape[-1])
-                
+
                 # Only log if we have valid predictions
                 if np.all(np.isfinite(sample_pred)):
                     wandb.log({
@@ -560,11 +602,15 @@ class CustomCallback(tf.keras.callbacks.Callback):
                 break
         except Exception as e:
             logger.warning(f"Error in CustomCallback prediction logging: {str(e)}")
-    
+
     def on_train_batch_end(self, batch, logs=None):
         if not logs:
             logs = {}
-            
+
+        # Skip batch logging if wandb not enabled
+        if not self._use_wandb:
+            return
+
         if batch % 100 == 0:
             wandb.log({
                 'batch': batch,
