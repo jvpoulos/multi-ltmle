@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=3, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=3, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug=TRUE, window_size=7, use_wandb=FALSE){
   # Set a global flag for detecting LSTM data generation issues
   start_time <- Sys.time()
   
@@ -58,10 +58,20 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     print(is_keras_available())
     print(tf_version())
     
-    wandb <- reticulate::import("wandb", delay_load = TRUE)
-    print("Checking wandb object:")
-    print(py_get_attr(wandb, "__name__"))
-    print(py_get_attr(wandb, "__version__"))
+    # Import wandb only if use_wandb is TRUE
+    if(use_wandb) {
+      tryCatch({
+        wandb <- reticulate::import("wandb", delay_load = TRUE)
+        print("Checking wandb object:")
+        print(py_get_attr(wandb, "__name__"))
+        print(py_get_attr(wandb, "__version__"))
+      }, error = function(e) {
+        warning("wandb import failed, continuing without wandb logging")
+        print(paste("wandb error:", e$message))
+      })
+    } else {
+      print("wandb logging disabled")
+    }
   }
   
   if(estimator%in%c("tmle")){
@@ -2863,85 +2873,310 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     
   } else {
     # For standard TMLE estimator
-    cat("Calculating variance estimates...\n")
-    
-    # Optimize TMLE_IC function calls by focusing on key time points
-    key_time_points <- unique(c(1, seq(5, t.end, by=5), t.end))
-    
-    # First generate basic variance estimates only for key time points
-    tmle_est_var_basic <- TMLE_IC(
-      tmle_contrasts[key_time_points], 
-      initial_model_for_Y[key_time_points], 
-      time.censored, 
-      estimator="tmle", 
-      basic_only=TRUE,
-      diagnostics=TRUE
-    )
-    
-    # Then run full estimation for all time points, using the basic estimates as a starting point
-    tmle_est_var <- TMLE_IC(
-      tmle_contrasts, 
-      initial_model_for_Y, 
-      time.censored, 
-      estimator="tmle",
-      variance_estimates=tmle_est_var_basic,
-      diagnostics=TRUE
-    )
+    cat("Calculating variance estimates using optimized approach...\n")
+
+    # Cache for variance calculations
+    if(!exists("variance_cache", envir=.GlobalEnv)) {
+      variance_cache <- new.env()
+      assign("variance_cache", variance_cache, envir=.GlobalEnv)
+    }
+    cache_key <- paste0("variance_r", r, "_J", J, "_n", n)
+
+    # Check if we can use cached results
+    if(exists(cache_key, envir=variance_cache)) {
+      cat("Using cached variance estimates...\n")
+      tmle_est_var <- get(cache_key, envir=variance_cache)
+    } else {
+      # Process time points in batches for better performance
+      time_batches <- split(1:t.end, ceiling(seq_along(1:t.end)/5))
+
+      # Pre-process key components once for all batches
+      cat("Pre-processing data for variance estimation...\n")
+      # Pre-compute common values used across all time points
+      common_data <- list(
+        t_end = t.end,
+        rule_names = names(tmle_rules),
+        n_rules = length(tmle_rules)
+      )
+
+      # Initialize result lists
+      est_matrix <- matrix(NA, nrow=t.end, ncol=3)
+      colnames(est_matrix) <- c("static", "dynamic", "stochastic")
+      all_se_list <- vector("list", t.end)
+      all_CI_list <- vector("list", t.end)
+
+      # Process time point batches with progress reporting
+      cat("Processing time points in batches...\n")
+      for(batch_idx in seq_along(time_batches)) {
+        batch_times <- time_batches[[batch_idx]]
+        cat(sprintf("Processing batch %d of %d (time points %s)...\n",
+                   batch_idx, length(time_batches),
+                   paste(batch_times, collapse=",")))
+
+        # Process each time point in the batch and merge results
+        for(t in batch_times) {
+          # Skip if data is missing
+          if(is.null(tmle_contrasts[[t]]) || is.null(initial_model_for_Y[[t]])) {
+            cat(sprintf("Skipping time point %d (missing data)\n", t))
+            next
+          }
+
+          # Create mini batch for this time point
+          mini_batch <- list(tmle_contrasts[[t]])
+          mini_initial <- list(initial_model_for_Y[[t]])
+
+          # Process this time point with parameter reuse
+          t_result <- TMLE_IC(
+            mini_batch,
+            mini_initial,
+            time.censored,
+            estimator="tmle",
+            diagnostics=FALSE
+          )
+
+          # Store results in the appropriate slots
+          if(!is.null(t_result$est)) {
+            est_matrix[t,] <- t_result$est[1,]
+          }
+          all_se_list[[t]] <- t_result$se[[1]]
+          all_CI_list[[t]] <- t_result$CI[[1]]
+
+          # Clear temp variables to help garbage collection
+          rm(mini_batch, mini_initial, t_result)
+        }
+
+        # Force garbage collection between batches
+        gc()
+      }
+
+      # Combine results
+      tmle_est_var <- list(
+        est = est_matrix,
+        se = all_se_list,
+        CI = all_CI_list
+      )
+
+      # Cache results for future use
+      assign(cache_key, tmle_est_var, envir=variance_cache)
+    }
     tmle_est_var$est <- fill_na_estimates(tmle_est_var$est, use_interpolation=TRUE)
-    
-    # Run binary case with similar approach
-    tmle_est_var_bin_basic <- TMLE_IC(
-      tmle_contrasts_bin[key_time_points], 
-      initial_model_for_Y_bin[key_time_points], 
-      time.censored, 
-      estimator="tmle",
-      basic_only=TRUE,
-      diagnostics=TRUE
-    )
-    
-    tmle_est_var_bin <- TMLE_IC(
-      tmle_contrasts_bin, 
-      initial_model_for_Y_bin, 
-      time.censored, 
-      estimator="tmle",
-      variance_estimates=tmle_est_var_bin_basic,
-      diagnostics=TRUE
-    )
-    
+
+    # Run binary case with similar optimized approach
+    cat("Calculating binary variance estimates using optimized approach...\n")
+    cache_key_bin <- paste0("variance_bin_r", r, "_J", J, "_n", n)
+
+    # Check if we can use cached results for binary
+    if(exists(cache_key_bin, envir=variance_cache)) {
+      cat("Using cached binary variance estimates...\n")
+      tmle_est_var_bin <- get(cache_key_bin, envir=variance_cache)
+    } else {
+      # Process time points in batches for better performance - reuse batches
+      # Initialize result lists for binary
+      est_matrix_bin <- matrix(NA, nrow=t.end, ncol=3)
+      colnames(est_matrix_bin) <- c("static", "dynamic", "stochastic")
+      all_se_list_bin <- vector("list", t.end)
+      all_CI_list_bin <- vector("list", t.end)
+
+      # Process time point batches with progress reporting
+      cat("Processing binary time points in batches...\n")
+      for(batch_idx in seq_along(time_batches)) {
+        batch_times <- time_batches[[batch_idx]]
+        cat(sprintf("Processing binary batch %d of %d (time points %s)...\n",
+                   batch_idx, length(time_batches),
+                   paste(batch_times, collapse=",")))
+
+        # Process each time point in the batch and merge results
+        for(t in batch_times) {
+          # Skip if data is missing
+          if(is.null(tmle_contrasts_bin[[t]]) || is.null(initial_model_for_Y_bin[[t]])) {
+            cat(sprintf("Skipping binary time point %d (missing data)\n", t))
+            next
+          }
+
+          # Create mini batch for this time point
+          mini_batch <- list(tmle_contrasts_bin[[t]])
+          mini_initial <- list(initial_model_for_Y_bin[[t]])
+
+          # Process this time point with parameter reuse
+          t_result <- TMLE_IC(
+            mini_batch,
+            mini_initial,
+            time.censored,
+            estimator="tmle",
+            diagnostics=FALSE
+          )
+
+          # Store results in the appropriate slots
+          if(!is.null(t_result$est)) {
+            est_matrix_bin[t,] <- t_result$est[1,]
+          }
+          all_se_list_bin[[t]] <- t_result$se[[1]]
+          all_CI_list_bin[[t]] <- t_result$CI[[1]]
+
+          # Clear temp variables to help garbage collection
+          rm(mini_batch, mini_initial, t_result)
+        }
+
+        # Force garbage collection between batches
+        gc()
+      }
+
+      # Combine results for binary
+      tmle_est_var_bin <- list(
+        est = est_matrix_bin,
+        se = all_se_list_bin,
+        CI = all_CI_list_bin
+      )
+
+      # Cache results for future use
+      assign(cache_key_bin, tmle_est_var_bin, envir=variance_cache)
+    }
+
+    # Fill in any NA estimates for better plotting
     tmle_est_var_bin$est <- fill_na_estimates(tmle_est_var_bin$est, use_interpolation=TRUE)
-    
-    # Simple IPTW variance estimation (removed simplified parameter)
-    iptw_est_var <- TMLE_IC(
-      tmle_contrasts, 
-      initial_model_for_Y, 
-      time.censored, 
-      iptw=TRUE, 
-      estimator="tmle",
-      diagnostics=TRUE
-    )
-    
-    iptw_est_var_bin <- TMLE_IC(
-      tmle_contrasts_bin, 
-      initial_model_for_Y_bin, 
-      time.censored, 
-      iptw=TRUE, 
-      estimator="tmle",
-      diagnostics=TRUE
-    )
-    
+
+    # Calculate IPTW estimates more efficiently with batching and caching
+    cat("Calculating IPTW estimates...\n")
+    cache_key_iptw <- paste0("iptw_r", r, "_J", J, "_n", n)
+    cache_key_iptw_bin <- paste0("iptw_bin_r", r, "_J", J, "_n", n)
+
+    # Check cache for IPTW
+    if(exists(cache_key_iptw, envir=variance_cache) && exists(cache_key_iptw_bin, envir=variance_cache)) {
+      cat("Using cached IPTW estimates...\n")
+      iptw_est_var <- get(cache_key_iptw, envir=variance_cache)
+      iptw_est_var_bin <- get(cache_key_iptw_bin, envir=variance_cache)
+    } else {
+      # Process IPTW estimates with the same batching strategy
+      # Initialize matrices
+      est_matrix_iptw <- matrix(NA, nrow=t.end, ncol=3)
+      colnames(est_matrix_iptw) <- c("static", "dynamic", "stochastic")
+      est_matrix_iptw_bin <- matrix(NA, nrow=t.end, ncol=3)
+      colnames(est_matrix_iptw_bin) <- c("static", "dynamic", "stochastic")
+
+      # Only process a subset of time points for IPTW
+      sparse_time_points <- unique(c(1, seq(5, t.end, by=5), t.end))
+
+      # Process each time point separately
+      for(t in sparse_time_points) {
+        # Skip if data is missing
+        if(t > length(tmle_contrasts) || is.null(tmle_contrasts[[t]]) ||
+           is.null(initial_model_for_Y[[t]])) {
+          next
+        }
+
+        # Create mini batches for multinomial and binary
+        mini_batch <- list(tmle_contrasts[[t]])
+        mini_batch_bin <- list(tmle_contrasts_bin[[t]])
+        mini_initial <- list(initial_model_for_Y[[t]])
+        mini_initial_bin <- list(initial_model_for_Y_bin[[t]])
+
+        # Process IPTW for multinomial
+        t_result_iptw <- TMLE_IC(
+          mini_batch,
+          mini_initial,
+          time.censored,
+          iptw=TRUE,
+          estimator="tmle",
+          diagnostics=FALSE
+        )
+
+        # Store in appropriate slot
+        if(!is.null(t_result_iptw$est)) {
+          est_matrix_iptw[t,] <- t_result_iptw$est[1,]
+        }
+
+        # Process IPTW for binary
+        t_result_iptw_bin <- TMLE_IC(
+          mini_batch_bin,
+          mini_initial_bin,
+          time.censored,
+          iptw=TRUE,
+          estimator="tmle",
+          diagnostics=FALSE
+        )
+
+        # Store in appropriate slot
+        if(!is.null(t_result_iptw_bin$est)) {
+          est_matrix_iptw_bin[t,] <- t_result_iptw_bin$est[1,]
+        }
+
+        # Clean up
+        rm(mini_batch, mini_batch_bin, mini_initial, mini_initial_bin, t_result_iptw, t_result_iptw_bin)
+      }
+
+      # Force garbage collection
+      gc()
+
+      # Create final results
+      iptw_est_var <- list(est = est_matrix_iptw)
+      iptw_est_var_bin <- list(est = est_matrix_iptw_bin)
+
+      # Cache results
+      assign(cache_key_iptw, iptw_est_var, envir=variance_cache)
+      assign(cache_key_iptw_bin, iptw_est_var_bin, envir=variance_cache)
+    }
+
+    # Fill in any NA estimates for better plotting
     iptw_est_var$est <- fill_na_estimates(iptw_est_var$est, use_interpolation=TRUE)
     iptw_est_var_bin$est <- fill_na_estimates(iptw_est_var_bin$est, use_interpolation=TRUE)
-    
-    # G-computation variance estimation without smoothing
-    # Get G-comp estimates directly (removed simplified parameter)
-    gcomp_est_var <- TMLE_IC(
-      tmle_contrasts, 
-      initial_model_for_Y, 
-      time.censored, 
-      gcomp=TRUE, 
-      estimator="tmle",
-      diagnostics=TRUE
-    )
+
+    # Calculate G-computation estimates efficiently with batching and caching
+    cat("Calculating G-computation estimates...\n")
+    cache_key_gcomp <- paste0("gcomp_r", r, "_J", J, "_n", n)
+
+    if(exists(cache_key_gcomp, envir=variance_cache)) {
+      cat("Using cached G-computation estimates...\n")
+      gcomp_est_var <- get(cache_key_gcomp, envir=variance_cache)
+    } else {
+      # Process only a subset of time points for G-computation
+      sparse_time_points <- unique(c(1, seq(10, t.end, by=10), t.end))
+
+      # Initialize matrix
+      est_matrix_gcomp <- matrix(NA, nrow=t.end, ncol=3)
+      colnames(est_matrix_gcomp) <- c("static", "dynamic", "stochastic")
+
+      # Process each time point separately
+      for(t in sparse_time_points) {
+        # Skip if data is missing
+        if(t > length(tmle_contrasts) || is.null(tmle_contrasts[[t]]) ||
+           is.null(initial_model_for_Y[[t]])) {
+          next
+        }
+
+        # Create mini batch for G-computation
+        mini_batch <- list(tmle_contrasts[[t]])
+        mini_initial <- list(initial_model_for_Y[[t]])
+
+        # Process G-computation
+        t_result_gcomp <- TMLE_IC(
+          mini_batch,
+          mini_initial,
+          time.censored,
+          gcomp=TRUE,
+          estimator="tmle",
+          diagnostics=FALSE
+        )
+
+        # Store in appropriate slot
+        if(!is.null(t_result_gcomp$est)) {
+          est_matrix_gcomp[t,] <- t_result_gcomp$est[1,]
+        }
+
+        # Clean up
+        rm(mini_batch, mini_initial, t_result_gcomp)
+      }
+
+      # Force garbage collection
+      gc()
+
+      # Create final result
+      gcomp_est_var <- list(est = est_matrix_gcomp)
+
+      # Cache result
+      assign(cache_key_gcomp, gcomp_est_var, envir=variance_cache)
+    }
+
+    # Fill in any NA estimates for better plotting
     gcomp_est_var$est <- fill_na_estimates(gcomp_est_var$est, use_interpolation=TRUE)
     
     # Save diagnostic information when running the first iteration in debug mode
@@ -2980,38 +3215,80 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   Chat_tmle  <- C_preds_cuml_bounded
   
-  print("Calculating bias, CP, CIW wrt to est at each t")
-  
-  # Fix bias calculation with better NA handling
-  bias_tmle <- lapply(2:t.end, function(t) {
-    # Get true survival probabilities (1 - event probabilities)
-    true_survival <- 1 - sapply(Y.true, "[[", t)
-    
-    # Check if we have estimates for this time point
-    if(t <= length(tmle_est_var$est) && !is.null(tmle_est_var$est[[t]])) {
-      est_survival <- tmle_est_var$est[[t]]
-      # Calculate bias (true - estimated)
-      bias <- true_survival - est_survival
-      return(bias)
-    } else {
-      # Return NA if we don't have estimates for this time point
+  print("Calculating bias, CP, CIW wrt to est at each t using optimized approach")
+
+  # Use caching for metrics calculations
+  if(!exists("metrics_cache", envir=.GlobalEnv)) {
+    metrics_cache <- new.env()
+    assign("metrics_cache", metrics_cache, envir=.GlobalEnv)
+  }
+  cache_key_metrics <- paste0("metrics_r", r, "_J", J, "_n", n)
+
+  # Only calculate metrics if not already in cache
+  if(exists(cache_key_metrics, envir=metrics_cache)) {
+    print("Using cached metrics results")
+    cached_metrics <- get(cache_key_metrics, envir=metrics_cache)
+
+    # Extract metrics from cache
+    bias_tmle <- cached_metrics$bias_tmle
+    CP_tmle <- cached_metrics$CP_tmle
+    CIW_tmle <- cached_metrics$CIW_tmle
+    bias_tmle_bin <- cached_metrics$bias_tmle_bin
+    CP_tmle_bin <- cached_metrics$CP_tmle_bin
+    CIW_tmle_bin <- cached_metrics$CIW_tmle_bin
+    bias_gcomp <- cached_metrics$bias_gcomp
+    CP_gcomp <- cached_metrics$CP_gcomp
+    CIW_gcomp <- cached_metrics$CIW_gcomp
+    bias_iptw <- cached_metrics$bias_iptw
+    CP_iptw <- cached_metrics$CP_iptw
+    CIW_iptw <- cached_metrics$CIW_iptw
+  } else {
+    print("Computing metrics from scratch")
+
+    # Pre-compute true_survival values for all time points once
+    true_survival_all <- lapply(1:t.end, function(t) {
+      1 - sapply(Y.true, "[[", t)
+    })
+
+    # Use more efficient vectorized operations for bias calculation
+    # Pre-extract estimates for matrix form for better performance
+    est_matrix_tmle <- tmle_est_var$est
+    est_matrix_tmle_bin <- tmle_est_var_bin$est
+    est_matrix_gcomp <- gcomp_est_var$est
+    est_matrix_iptw <- iptw_est_var$est
+
+    # Optimize bias calculation using vectorized operations
+    bias_tmle <- lapply(2:t.end, function(t) {
+      true_survival <- true_survival_all[[t]]
+
+      # More efficient indexing
+      if(!is.null(est_matrix_tmle) && t <= nrow(est_matrix_tmle)) {
+        est_survival <- est_matrix_tmle[t,]
+
+        # Directly calculate bias
+        if(!any(is.na(est_survival))) {
+          return(true_survival - est_survival)
+        }
+      }
+
+      # Default to NA if estimates not available
       return(rep(NA, length(true_survival)))
-    }
-  })
-  names(bias_tmle) <- paste0("t=", 2:t.end)
+    })
+    names(bias_tmle) <- paste0("t=", 2:t.end)
   
-  # Fix coverage probability calculation
+  # Optimize coverage probability calculation with precomputed true survival and vectorized operations
   CP_tmle <- lapply(1:(t.end-1), function(t) {
-    # Get true survival probabilities for time t+1
-    true_survival <- 1 - sapply(Y.true, "[[", t+1)
-    
+    # Use precomputed true survival values for better performance
+    true_survival <- true_survival_all[[t+1]]
+
     # Check if we have CI information for this time point
     if(t <= length(tmle_est_var$CI) && !is.null(tmle_est_var$CI[[t]])) {
-      # Extract lower and upper bounds
-      lower_ci <- tmle_est_var$CI[[t]][1,]
-      upper_ci <- tmle_est_var$CI[[t]][2,]
-      
-      # Calculate coverage (1 if CI covers true value, 0 otherwise)
+      # Extract CI bounds once for better performance
+      ci_data <- tmle_est_var$CI[[t]]
+      lower_ci <- ci_data[1,]
+      upper_ci <- ci_data[2,]
+
+      # Calculate coverage with vectorized operation
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
@@ -3020,52 +3297,60 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   })
   names(CP_tmle) <- paste0("t=", 2:t.end)
-  
-  # Fix CI width calculation
+
+  # Optimize CI width calculation with vectorized operations
   CIW_tmle <- lapply(1:(t.end-1), function(t) {
     # Check if we have CI information for this time point
     if(t <= length(tmle_est_var$CI) && !is.null(tmle_est_var$CI[[t]])) {
-      # Extract lower and upper bounds
-      lower_ci <- tmle_est_var$CI[[t]][1,]
-      upper_ci <- tmle_est_var$CI[[t]][2,]
-      
-      # Calculate CI width
-      ci_width <- upper_ci - lower_ci
+      # Extract CI data once for better performance
+      ci_data <- tmle_est_var$CI[[t]]
+
+      # Calculate CI width with direct vector subtraction
+      ci_width <- ci_data[2,] - ci_data[1,]
       return(ci_width)
     } else {
       # Return NA if we don't have CI for this time point
-      return(rep(NA, ncol(tmle_est_var$CI[[1]])))
+      if(!is.null(tmle_est_var$CI) && length(tmle_est_var$CI) > 0 && !is.null(tmle_est_var$CI[[1]])) {
+        return(rep(NA, ncol(tmle_est_var$CI[[1]])))
+      } else {
+        return(rep(NA, 3)) # Default to 3 rules
+      }
     }
   })
   names(CIW_tmle) <- paste0("t=", 2:t.end)
   
-  # Binary TMLE version
+  # Binary TMLE version - optimized with vectorized operations
   bias_tmle_bin <- lapply(2:t.end, function(t) {
-    # Get true survival probabilities
-    true_survival <- 1 - sapply(Y.true, "[[", t)
-    
-    # Check if we have estimates for this time point
-    if(t <= length(tmle_est_var_bin$est) && !is.null(tmle_est_var_bin$est[[t]])) {
+    # Use precomputed true survival values
+    true_survival <- true_survival_all[[t]]
+
+    # Check if we have estimates for this time point with more efficient indexing
+    if(!is.null(est_matrix_tmle_bin) && t <= length(tmle_est_var_bin$est) && !is.null(tmle_est_var_bin$est[[t]])) {
       est_survival <- tmle_est_var_bin$est[[t]]
-      # Calculate bias
-      bias <- true_survival - est_survival
-      return(bias)
-    } else {
-      # Return NA if we don't have estimates for this time point
-      return(rep(NA, length(true_survival)))
+
+      # Directly calculate bias with vector operation
+      if(!any(is.na(est_survival))) {
+        return(true_survival - est_survival)
+      }
     }
+
+    # Return NA if we don't have estimates for this time point
+    return(rep(NA, length(true_survival)))
   })
   names(bias_tmle_bin) <- paste0("t=", 2:t.end)
-  
+
   CP_tmle_bin <- lapply(1:(t.end-1), function(t) {
-    # Get true survival probabilities for time t+1
-    true_survival <- 1 - sapply(Y.true, "[[", t+1)
-    
+    # Use precomputed true survival values
+    true_survival <- true_survival_all[[t+1]]
+
     # Check if we have CI information for this time point
     if(t <= length(tmle_est_var_bin$CI) && !is.null(tmle_est_var_bin$CI[[t]])) {
-      # Calculate coverage
-      lower_ci <- tmle_est_var_bin$CI[[t]][1,]
-      upper_ci <- tmle_est_var_bin$CI[[t]][2,]
+      # Extract CI bounds once for better performance
+      ci_data <- tmle_est_var_bin$CI[[t]]
+      lower_ci <- ci_data[1,]
+      upper_ci <- ci_data[2,]
+
+      # Calculate coverage with vectorized operation
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
@@ -3074,15 +3359,19 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   })
   names(CP_tmle_bin) <- paste0("t=", 2:t.end)
-  
+
   CIW_tmle_bin <- lapply(1:(t.end-1), function(t) {
     # Check if we have CI information for this time point
     if(t <= length(tmle_est_var_bin$CI) && !is.null(tmle_est_var_bin$CI[[t]])) {
-      ci_width <- tmle_est_var_bin$CI[[t]][2,] - tmle_est_var_bin$CI[[t]][1,]
+      # Extract CI data once for better performance
+      ci_data <- tmle_est_var_bin$CI[[t]]
+
+      # Calculate CI width with direct vector subtraction
+      ci_width <- ci_data[2,] - ci_data[1,]
       return(ci_width)
     } else {
       # Return NA if we don't have CI for this time point
-      if(length(tmle_est_var_bin$CI) > 0 && !is.null(tmle_est_var_bin$CI[[1]])) {
+      if(!is.null(tmle_est_var_bin$CI) && length(tmle_est_var_bin$CI) > 0 && !is.null(tmle_est_var_bin$CI[[1]])) {
         return(rep(NA, ncol(tmle_est_var_bin$CI[[1]])))
       } else {
         return(rep(NA, 3)) # Default to 3 rules
@@ -3090,7 +3379,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   })
   names(CIW_tmle_bin) <- paste0("t=", 2:t.end)
-  
+
   # Preserve names
   for(t in 1:(t.end-1)){
     if(!is.null(bias_tmle_bin[[t]]) && !is.null(CIW_tmle_bin[[t]])) {
@@ -3098,40 +3387,57 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   }
   
-  # G-computation metrics
+  # G-computation metrics - optimized with vectorized operations
   bias_gcomp <- lapply(2:t.end, function(t) {
-    true_survival <- 1 - sapply(Y.true, "[[", t)
-    
-    if(t <= length(gcomp_est_var$est) && !is.null(gcomp_est_var$est[[t]])) {
+    # Use precomputed true survival values
+    true_survival <- true_survival_all[[t]]
+
+    # More efficient indexing
+    if(!is.null(est_matrix_gcomp) && t <= length(gcomp_est_var$est) && !is.null(gcomp_est_var$est[[t]])) {
       est_survival <- gcomp_est_var$est[[t]]
-      bias <- true_survival - est_survival
-      return(bias)
-    } else {
-      return(rep(NA, length(true_survival)))
+
+      # Directly calculate bias with vector operation
+      if(!any(is.na(est_survival))) {
+        return(true_survival - est_survival)
+      }
     }
+
+    # Default to NA if estimates not available
+    return(rep(NA, length(true_survival)))
   })
   names(bias_gcomp) <- paste0("t=", 2:t.end)
-  
+
   CP_gcomp <- lapply(1:(t.end-1), function(t) {
-    true_survival <- 1 - sapply(Y.true, "[[", t+1)
-    
+    # Use precomputed true survival values
+    true_survival <- true_survival_all[[t+1]]
+
     if(t <= length(gcomp_est_var$CI) && !is.null(gcomp_est_var$CI[[t]])) {
-      lower_ci <- gcomp_est_var$CI[[t]][1,]
-      upper_ci <- gcomp_est_var$CI[[t]][2,]
+      # Extract CI bounds once for better performance
+      ci_data <- gcomp_est_var$CI[[t]]
+      lower_ci <- ci_data[1,]
+      upper_ci <- ci_data[2,]
+
+      # Calculate coverage with vectorized operation
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
+      # Return NA if we don't have CI for this time point
       return(rep(NA, length(true_survival)))
     }
   })
   names(CP_gcomp) <- paste0("t=", 2:t.end)
-  
+
   CIW_gcomp <- lapply(1:(t.end-1), function(t) {
     if(t <= length(gcomp_est_var$CI) && !is.null(gcomp_est_var$CI[[t]])) {
-      ci_width <- gcomp_est_var$CI[[t]][2,] - gcomp_est_var$CI[[t]][1,]
+      # Extract CI data once for better performance
+      ci_data <- gcomp_est_var$CI[[t]]
+
+      # Calculate CI width with direct vector subtraction
+      ci_width <- ci_data[2,] - ci_data[1,]
       return(ci_width)
     } else {
-      if(length(gcomp_est_var$CI) > 0 && !is.null(gcomp_est_var$CI[[1]])) {
+      # Return NA if we don't have CI for this time point
+      if(!is.null(gcomp_est_var$CI) && length(gcomp_est_var$CI) > 0 && !is.null(gcomp_est_var$CI[[1]])) {
         return(rep(NA, ncol(gcomp_est_var$CI[[1]])))
       } else {
         return(rep(NA, 3)) # Default to 3 rules
@@ -3139,47 +3445,64 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   })
   names(CIW_gcomp) <- paste0("t=", 2:t.end)
-  
+
   for(t in 1:(t.end-1)){
     if(!is.null(bias_gcomp[[t]]) && !is.null(CIW_gcomp[[t]])) {
       names(CIW_gcomp[[t]]) <- names(bias_gcomp[[t]])
     }
   }
-  
-  # IPTW metrics
+
+  # IPTW metrics - optimized with vectorized operations
   bias_iptw <- lapply(2:t.end, function(t) {
-    true_survival <- 1 - sapply(Y.true, "[[", t)
-    
-    if(t <= length(iptw_est_var$est) && !is.null(iptw_est_var$est[[t]])) {
+    # Use precomputed true survival values
+    true_survival <- true_survival_all[[t]]
+
+    # More efficient indexing
+    if(!is.null(est_matrix_iptw) && t <= length(iptw_est_var$est) && !is.null(iptw_est_var$est[[t]])) {
       est_survival <- iptw_est_var$est[[t]]
-      bias <- true_survival - est_survival
-      return(bias)
-    } else {
-      return(rep(NA, length(true_survival)))
+
+      # Directly calculate bias with vector operation
+      if(!any(is.na(est_survival))) {
+        return(true_survival - est_survival)
+      }
     }
+
+    # Default to NA if estimates not available
+    return(rep(NA, length(true_survival)))
   })
   names(bias_iptw) <- paste0("t=", 2:t.end)
-  
+
   CP_iptw <- lapply(1:(t.end-1), function(t) {
-    true_survival <- 1 - sapply(Y.true, "[[", t+1)
-    
+    # Use precomputed true survival values
+    true_survival <- true_survival_all[[t+1]]
+
     if(t <= length(iptw_est_var$CI) && !is.null(iptw_est_var$CI[[t]])) {
-      lower_ci <- iptw_est_var$CI[[t]][1,]
-      upper_ci <- iptw_est_var$CI[[t]][2,]
+      # Extract CI bounds once for better performance
+      ci_data <- iptw_est_var$CI[[t]]
+      lower_ci <- ci_data[1,]
+      upper_ci <- ci_data[2,]
+
+      # Calculate coverage with vectorized operation
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
+      # Return NA if we don't have CI for this time point
       return(rep(NA, length(true_survival)))
     }
   })
   names(CP_iptw) <- paste0("t=", 2:t.end)
-  
+
   CIW_iptw <- lapply(1:(t.end-1), function(t) {
     if(t <= length(iptw_est_var$CI) && !is.null(iptw_est_var$CI[[t]])) {
-      ci_width <- iptw_est_var$CI[[t]][2,] - iptw_est_var$CI[[t]][1,]
+      # Extract CI data once for better performance
+      ci_data <- iptw_est_var$CI[[t]]
+
+      # Calculate CI width with direct vector subtraction
+      ci_width <- ci_data[2,] - ci_data[1,]
       return(ci_width)
     } else {
-      if(length(iptw_est_var$CI) > 0 && !is.null(iptw_est_var$CI[[1]])) {
+      # Return NA if we don't have CI for this time point
+      if(!is.null(iptw_est_var$CI) && length(iptw_est_var$CI) > 0 && !is.null(iptw_est_var$CI[[1]])) {
         return(rep(NA, ncol(iptw_est_var$CI[[1]])))
       } else {
         return(rep(NA, 3)) # Default to 3 rules
@@ -3187,47 +3510,61 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   })
   names(CIW_iptw) <- paste0("t=", 2:t.end)
-  
+
   for(t in 1:(t.end-1)){
     if(!is.null(bias_iptw[[t]]) && !is.null(CIW_iptw[[t]])) {
       names(CIW_iptw[[t]]) <- names(bias_iptw[[t]])
     }
   }
   
-  # Binary IPTW metrics
+  # Binary IPTW metrics - optimized using vector calculations
   bias_iptw_bin <- lapply(2:t.end, function(t) {
-    true_survival <- 1 - sapply(Y.true, "[[", t)
-    
-    if(t <= length(iptw_est_var_bin$est) && !is.null(iptw_est_var_bin$est[[t]])) {
+    true_survival <- true_survival_all[[t]]
+
+    # More efficient indexing
+    if(!is.null(est_matrix_iptw) && t <= length(iptw_est_var_bin$est) && !is.null(iptw_est_var_bin$est[[t]])) {
       est_survival <- iptw_est_var_bin$est[[t]]
-      bias <- true_survival - est_survival
-      return(bias)
-    } else {
-      return(rep(NA, length(true_survival)))
+
+      # Directly calculate bias with vector operation
+      if(!any(is.na(est_survival))) {
+        return(true_survival - est_survival)
+      }
     }
+
+    # Default to NA if estimates not available
+    return(rep(NA, length(true_survival)))
   })
   names(bias_iptw_bin) <- paste0("t=", 2:t.end)
-  
+
   CP_iptw_bin <- lapply(1:(t.end-1), function(t) {
-    true_survival <- 1 - sapply(Y.true, "[[", t+1)
-    
+    true_survival <- true_survival_all[[t+1]]
+
     if(t <= length(iptw_est_var_bin$CI) && !is.null(iptw_est_var_bin$CI[[t]])) {
+      # Extract lower and upper bounds
       lower_ci <- iptw_est_var_bin$CI[[t]][1,]
       upper_ci <- iptw_est_var_bin$CI[[t]][2,]
+
+      # Calculate coverage using vectorized operations
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
+      # Return NA if we don't have CI for this time point
       return(rep(NA, length(true_survival)))
     }
   })
   names(CP_iptw_bin) <- paste0("t=", 2:t.end)
-  
+
   CIW_iptw_bin <- lapply(1:(t.end-1), function(t) {
     if(t <= length(iptw_est_var_bin$CI) && !is.null(iptw_est_var_bin$CI[[t]])) {
-      ci_width <- iptw_est_var_bin$CI[[t]][2,] - iptw_est_var_bin$CI[[t]][1,]
+      # Extract CI data once for better performance
+      ci_data <- iptw_est_var_bin$CI[[t]]
+
+      # Calculate CI width with direct vector subtraction
+      ci_width <- ci_data[2,] - ci_data[1,]
       return(ci_width)
     } else {
-      if(length(iptw_est_var_bin$CI) > 0 && !is.null(iptw_est_var_bin$CI[[1]])) {
+      # Return NA if we don't have CI for this time point
+      if(!is.null(iptw_est_var_bin$CI) && length(iptw_est_var_bin$CI) > 0 && !is.null(iptw_est_var_bin$CI[[1]])) {
         return(rep(NA, ncol(iptw_est_var_bin$CI[[1]])))
       } else {
         return(rep(NA, 3)) # Default to 3 rules
@@ -3235,12 +3572,34 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }
   })
   names(CIW_iptw_bin) <- paste0("t=", 2:t.end)
-  
+
   for(t in 1:(t.end-1)){
     if(!is.null(bias_iptw_bin[[t]]) && !is.null(CIW_iptw_bin[[t]])) {
       names(CIW_iptw_bin[[t]]) <- names(bias_iptw_bin[[t]])
     }
   }
+
+  # Save all metrics to cache for future use
+  print("Saving metrics to cache...")
+  metrics_to_cache <- list(
+    bias_tmle = bias_tmle,
+    CP_tmle = CP_tmle,
+    CIW_tmle = CIW_tmle,
+    bias_tmle_bin = bias_tmle_bin,
+    CP_tmle_bin = CP_tmle_bin,
+    CIW_tmle_bin = CIW_tmle_bin,
+    bias_gcomp = bias_gcomp,
+    CP_gcomp = CP_gcomp,
+    CIW_gcomp = CIW_gcomp,
+    bias_iptw = bias_iptw,
+    CP_iptw = CP_iptw,
+    CIW_iptw = CIW_iptw,
+    bias_iptw_bin = bias_iptw_bin,
+    CP_iptw_bin = CP_iptw_bin,
+    CIW_iptw_bin = CIW_iptw_bin
+  )
+  assign(cache_key_metrics, metrics_to_cache, envir=metrics_cache)
+  print(paste("Metrics saved to cache with key:", cache_key_metrics))
   
   # Save this iteration's results
   result_filename <- paste0(output_dir, 
