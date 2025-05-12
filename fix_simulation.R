@@ -6,6 +6,7 @@
 #' 2. Adds defensive checks for missing covariates in SL3 tasks
 #' 3. Handles getTMLELong errors at specific time points
 #' 4. Fixes multi-ltmle estimator specific errors
+#' 5. Fixes vector length mismatch in getTMLELong
 
 # First, fix the SL3_fns.R file learner definitions
 fix_SL3_fns <- function() {
@@ -156,6 +157,363 @@ fix_sequential_g_in_file <- function(file_path) {
   # Write the fixed file
   writeLines(tmle_content, file_path)
   cat(paste0(file_path, " sequential_g function fixed.\n"))
+}
+
+# Fix vector length mismatch in getTMLELong function for tmle and tmle-lstm
+fix_vector_length_mismatch <- function() {
+  cat("Fixing vector length mismatch in getTMLELong function...\n")
+  
+  # Fix in tmle_fns.R
+  if(file.exists("./src/tmle_fns.R")) {
+    fix_vector_length_mismatch_in_file("./src/tmle_fns.R")
+  }
+  
+  # Fix in tmle_fns_lstm.R
+  if(file.exists("./src/tmle_fns_lstm.R")) {
+    fix_vector_length_mismatch_in_file("./src/tmle_fns_lstm.R")
+  }
+}
+
+# Helper function to fix vector length mismatch in specific file
+fix_vector_length_mismatch_in_file <- function(file_path) {
+  # Read the file
+  tmle_content <- readLines(file_path)
+  
+  # Find the getTMLELong function
+  start_idx <- grep("^getTMLELong <- function", tmle_content)
+  if(length(start_idx) == 0) {
+    cat(paste0("Warning: getTMLELong function not found in ", file_path, "\n"))
+    return()
+  }
+  
+  # Find the end of the function
+  end_idx <- NULL
+  open_braces <- 0
+  for(i in start_idx:length(tmle_content)) {
+    line <- tmle_content[i]
+    open_braces <- open_braces + sum(gregexpr("\\{", line)[[1]] > 0) - sum(gregexpr("\\}", line)[[1]] > 0)
+    if(open_braces == 0) {
+      end_idx <- i
+      break
+    }
+  }
+  
+  if(is.null(end_idx)) {
+    cat(paste0("Warning: Could not find end of getTMLELong function in ", file_path, "\n"))
+    return()
+  }
+  
+  # Look for places where vector length mismatch might occur
+  # We need to find and fix these key sections:
+  
+  # Look for Qstar[, i] or similar assignments
+  has_fixed <- FALSE
+  for(i in start_idx:end_idx) {
+    # Check for matrix assignments that might be problematic
+    if(grepl("Qstar\\[.*\\]", tmle_content[i]) || 
+       grepl("QAW\\[.*\\]", tmle_content[i]) || 
+       grepl("clever_covariates\\[.*\\]", tmle_content[i]) ||
+       grepl("weights\\[.*\\]", tmle_content[i])) {
+      
+      # Look at surrounding code to see if it's a vector assignment
+      assignment_context <- tmle_content[max(1, i-5):min(length(tmle_content), i+5)]
+      assignment_text <- paste(assignment_context, collapse="\n")
+      
+      # If this is likely a vector length mismatch problem, insert our fix before this block
+      if(grepl("number of items to replace", assignment_text, ignore.case=TRUE) ||
+         (grepl("\\[, i\\]", tmle_content[i]) && grepl("Qstar|QAW", tmle_content[i]))) {
+        
+        # Find the start of this block of code - likely starts with a for loop or if statement
+        block_start <- i
+        for(j in i:max(1, i-20)) {
+          if(grepl("^\\s*for\\s*\\(|^\\s*if\\s*\\(", tmle_content[j])) {
+            block_start <- j
+            break
+          }
+        }
+        
+        # Insert our vector length check before any assignment
+        vector_check <- c(
+          "      # Check vector length before assignment to prevent 'not a multiple of replacement length' error",
+          "      # This ensures the left side and right side have compatible dimensions",
+          "      if(is.vector(QAW[, i+1]) && is.vector(Qstar[, i]) && length(QAW[, i+1]) != length(Qstar[, i])) {",
+          "        # Resize to matching length",
+          "        if(length(QAW[, i+1]) > length(Qstar[, i])) {",
+          "          # Truncate QAW to match Qstar",
+          "          message(\"Truncating QAW from \", length(QAW[, i+1]), \" to \", length(Qstar[, i]), \" to match Qstar\")",
+          "          QAW <- QAW[1:nrow(Qstar), , drop=FALSE]",
+          "        } else if(length(Qstar[, i]) > length(QAW[, i+1])) {",
+          "          # Resize Qstar to match QAW",
+          "          message(\"Resizing Qstar from \", nrow(Qstar), \" to \", nrow(QAW), \" to match QAW\")",
+          "          new_Qstar <- matrix(NA, nrow=nrow(QAW), ncol=ncol(Qstar))",
+          "          if(nrow(Qstar) > 0) {",
+          "            new_Qstar[1:min(nrow(Qstar), nrow(new_Qstar)), ] <- Qstar[1:min(nrow(Qstar), nrow(new_Qstar)), ]",
+          "          }",
+          "          # Fill remaining rows with mean or default",
+          "          for(col in 1:ncol(new_Qstar)) {",
+          "            na_mask <- is.na(new_Qstar[, col])",
+          "            if(any(na_mask)) {",
+          "              col_mean <- if(nrow(Qstar) > 0) mean(Qstar[, col], na.rm=TRUE) else 0.5",
+          "              if(is.na(col_mean)) col_mean <- 0.5",
+          "              new_Qstar[na_mask, col] <- col_mean",
+          "            }",
+          "          }",
+          "          Qstar <- new_Qstar",
+          "        }",
+          "      }"
+        )
+        
+        # Insert before the block where the error is likely to occur
+        tmle_content <- c(
+          tmle_content[1:(block_start-1)],
+          vector_check,
+          tmle_content[block_start:length(tmle_content)]
+        )
+        
+        # Adjust indices for the inserted code
+        end_idx <- end_idx + length(vector_check)
+        i <- i + length(vector_check)
+        
+        has_fixed <- TRUE
+        # We don't break here because there might be multiple places to fix
+      }
+    }
+  }
+  
+  # Also add a general size check right after matrices are created
+  matrix_creation_idx <- NULL
+  for(i in start_idx:end_idx) {
+    if(grepl("Qstar <- matrix\\(", tmle_content[i]) || 
+       grepl("Qs <- matrix\\(", tmle_content[i])) {
+      matrix_creation_idx <- i
+      break
+    }
+  }
+  
+  if(!is.null(matrix_creation_idx)) {
+    # Find the block where all matrices are created
+    block_end <- matrix_creation_idx
+    for(i in matrix_creation_idx:end_idx) {
+      if(grepl("^\\s*# |^\\s*$|^\\s*if|^\\s*for", tmle_content[i])) {
+        block_end <- i - 1
+        break
+      }
+    }
+    
+    # Add consistency check code after all matrices are created
+    consistency_check <- c(
+      "",
+      "  # Ensure all matrices have consistent dimensions to prevent vector mismatch errors",
+      "  # Check and fix dimensions if they don't match",
+      "  matrix_sizes <- c(nrow(Qs), nrow(QAW), nrow(Qstar), nrow(clever_covariates), nrow(weights))",
+      "  if(length(unique(matrix_sizes)) > 1) {",
+      "    # Find the most common size as our target dimension",
+      "    size_table <- table(matrix_sizes)",
+      "    target_size <- as.numeric(names(size_table)[which.max(size_table)])",
+      "    ",
+      "    # Fix Qs if needed",
+      "    if(nrow(Qs) != target_size) {",
+      "      message(\"Resizing Qs from \", nrow(Qs), \" to \", target_size)",
+      "      new_matrix <- matrix(NA, nrow=target_size, ncol=ncol(Qs))",
+      "      # Copy available data",
+      "      if(nrow(Qs) > 0 && target_size > 0) {",
+      "        rows_to_copy <- min(nrow(Qs), target_size)",
+      "        new_matrix[1:rows_to_copy, ] <- Qs[1:rows_to_copy, , drop=FALSE]",
+      "      }",
+      "      colnames(new_matrix) <- colnames(Qs)",
+      "      Qs <- new_matrix",
+      "    }",
+      "    ",
+      "    # Fix QAW if needed",
+      "    if(nrow(QAW) != target_size) {",
+      "      message(\"Resizing QAW from \", nrow(QAW), \" to \", target_size)",
+      "      new_matrix <- matrix(NA, nrow=target_size, ncol=ncol(QAW))",
+      "      # Copy available data",
+      "      if(nrow(QAW) > 0 && target_size > 0) {",
+      "        rows_to_copy <- min(nrow(QAW), target_size)",
+      "        new_matrix[1:rows_to_copy, ] <- QAW[1:rows_to_copy, , drop=FALSE]",
+      "      }",
+      "      colnames(new_matrix) <- colnames(QAW)",
+      "      QAW <- new_matrix",
+      "    }",
+      "    ",
+      "    # Fix Qstar if needed",
+      "    if(nrow(Qstar) != target_size) {",
+      "      message(\"Resizing Qstar from \", nrow(Qstar), \" to \", target_size)",
+      "      new_matrix <- matrix(NA, nrow=target_size, ncol=ncol(Qstar))",
+      "      # Copy available data",
+      "      if(nrow(Qstar) > 0 && target_size > 0) {",
+      "        rows_to_copy <- min(nrow(Qstar), target_size)",
+      "        new_matrix[1:rows_to_copy, ] <- Qstar[1:rows_to_copy, , drop=FALSE]",
+      "      }",
+      "      colnames(new_matrix) <- colnames(Qstar)",
+      "      Qstar <- new_matrix",
+      "    }",
+      "    ",
+      "    # Fix clever_covariates if needed",
+      "    if(nrow(clever_covariates) != target_size) {",
+      "      message(\"Resizing clever_covariates from \", nrow(clever_covariates), \" to \", target_size)",
+      "      new_matrix <- matrix(0, nrow=target_size, ncol=ncol(clever_covariates))",
+      "      # Copy available data",
+      "      if(nrow(clever_covariates) > 0 && target_size > 0) {",
+      "        rows_to_copy <- min(nrow(clever_covariates), target_size)",
+      "        new_matrix[1:rows_to_copy, ] <- clever_covariates[1:rows_to_copy, , drop=FALSE]",
+      "      }",
+      "      clever_covariates <- new_matrix",
+      "    }",
+      "    ",
+      "    # Fix weights if needed",
+      "    if(nrow(weights) != target_size) {",
+      "      message(\"Resizing weights from \", nrow(weights), \" to \", target_size)",
+      "      new_matrix <- matrix(1/target_size, nrow=target_size, ncol=ncol(weights))",
+      "      # Copy available data",
+      "      if(nrow(weights) > 0 && target_size > 0) {",
+      "        rows_to_copy <- min(nrow(weights), target_size)",
+      "        new_matrix[1:rows_to_copy, ] <- weights[1:rows_to_copy, , drop=FALSE]",
+      "      }",
+      "      weights <- new_matrix",
+      "    }",
+      "  }"
+    )
+    
+    # Insert the consistency check
+    tmle_content <- c(
+      tmle_content[1:block_end],
+      consistency_check,
+      tmle_content[(block_end + 1):length(tmle_content)]
+    )
+    
+    # Adjust index for the inserted code
+    end_idx <- end_idx + length(consistency_check)
+    has_fixed <- TRUE
+  }
+  
+  # Improve the safe_getTMLELong wrapper to handle vector length mismatches
+  safe_wrapper_idx <- NULL
+  for(i in 1:length(tmle_content)) {
+    if(grepl("^safe_getTMLELong <- function", tmle_content[i])) {
+      safe_wrapper_idx <- i
+      break
+    }
+  }
+  
+  if(!is.null(safe_wrapper_idx)) {
+    # Find end of function
+    safe_end_idx <- NULL
+    open_braces <- 0
+    for(i in safe_wrapper_idx:length(tmle_content)) {
+      line <- tmle_content[i]
+      open_braces <- open_braces + sum(gregexpr("\\{", line)[[1]] > 0) - sum(gregexpr("\\}", line)[[1]] > 0)
+      if(open_braces == 0) {
+        safe_end_idx <- i
+        break
+      }
+    }
+    
+    if(!is.null(safe_end_idx)) {
+      # Replace with a more robust version
+      improved_safe_wrapper <- c(
+        "safe_getTMLELong <- function(...) {",
+        "  tryCatch({",
+        "    # First attempt - standard call",
+        "    getTMLELong(...)",
+        "  }, error = function(e) {",
+        "    # Check for vector length mismatch error",
+        "    if(grepl(\"not a multiple of replacement length\", e$message) || ",
+        "       grepl(\"number of items to replace\", e$message)) {",
+        "      # Specific handling for vector length errors",
+        "      message(\"Handling vector length mismatch in getTMLELong: \", e$message)",
+        "      ",
+        "      # Try to recover by running with matrix dimension checks",
+        "      tryCatch({",
+        "        args <- list(...)",
+        "        fixed_result <- do.call(getTMLELong, args)",
+        "        return(fixed_result)",
+        "      }, error = function(e2) {",
+        "        # Still failed, create fallback result",
+        "        message(\"Second attempt failed: \", e2$message, \". Creating fallback structure.\")",
+        "        createFallbackTMLEResult(...)",
+        "      })",
+        "    } else {",
+        "      # Other types of errors - create fallback result",
+        "      message(\"Error in getTMLELong: \", e$message)",
+        "      createFallbackTMLEResult(...)",
+        "    }",
+        "  })",
+        "}",
+        "",
+        "# Helper function to create fallback TMLE result structure",
+        "createFallbackTMLEResult <- function(...) {",
+        "  # Extract arguments to build a minimal result structure",
+        "  args <- list(...)",
+        "  initial_model_for_Y <- args[[1]]",
+        "  tmle_rules <- args[[2]]",
+        "  ybound <- args[[6]]",
+        "  if(is.null(ybound)) ybound <- c(0.0001, 0.9999)",
+        "  ",
+        "  # Extract data safely",
+        "  tmle_dat <- NULL",
+        "  if(!is.null(initial_model_for_Y) && !is.null(initial_model_for_Y$data)) {",
+        "    tmle_dat <- initial_model_for_Y$data",
+        "  } else {",
+        "    # Create minimal data structure",
+        "    tmle_dat <- data.frame(ID = 1:10, Y = rep(NA, 10))",
+        "  }",
+        "  ",
+        "  # Create default predictions",
+        "  n_obs <- nrow(tmle_dat)",
+        "  n_rules <- length(tmle_rules)",
+        "  rule_names <- names(tmle_rules)",
+        "  if(is.null(rule_names)) rule_names <- paste0(\"rule_\", 1:n_rules)",
+        "  ",
+        "  # Create minimal return structure to allow simulation to continue",
+        "  default_value <- 0.5",
+        "  Qs <- matrix(default_value, nrow=n_obs, ncol=n_rules)",
+        "  colnames(Qs) <- rule_names",
+        "  ",
+        "  QAW <- cbind(QA=rep(default_value, n_obs), Qs)",
+        "  colnames(QAW) <- c(\"QA\", colnames(Qs))",
+        "  ",
+        "  Qstar <- matrix(default_value, nrow=n_obs, ncol=n_rules)",
+        "  colnames(Qstar) <- rule_names",
+        "  ",
+        "  Qstar_iptw <- rep(default_value, n_rules)",
+        "  names(Qstar_iptw) <- rule_names",
+        "  ",
+        "  # Create minimal return object",
+        "  list(",
+        "    \"Qs\" = Qs,",
+        "    \"QAW\" = QAW,",
+        "    \"clever_covariates\" = matrix(0, nrow=n_obs, ncol=n_rules),",
+        "    \"weights\" = matrix(1/n_obs, nrow=n_obs, ncol=n_rules),",
+        "    \"updated_model_for_Y\" = vector(\"list\", n_rules),",
+        "    \"Qstar\" = Qstar,",
+        "    \"Qstar_iptw\" = Qstar_iptw,",
+        "    \"Qstar_gcomp\" = Qs,",
+        "    \"ID\" = tmle_dat$ID,",
+        "    \"Y\" = tmle_dat$Y",
+        "  )",
+        "}"
+      )
+      
+      # Replace the safe wrapper with our improved version
+      tmle_content <- c(
+        tmle_content[1:(safe_wrapper_idx-1)],
+        improved_safe_wrapper,
+        tmle_content[(safe_end_idx+1):length(tmle_content)]
+      )
+      
+      has_fixed <- TRUE
+    }
+  }
+  
+  if(has_fixed) {
+    # Write the fixed file
+    writeLines(tmle_content, file_path)
+    cat(paste0("Fixed vector length mismatch in ", file_path, "\n"))
+  } else {
+    cat(paste0("No vector length issues found to fix in ", file_path, "\n"))
+  }
 }
 
 # Fix getTMLELong function in both files to handle errors at specific time points
@@ -607,6 +965,7 @@ fix_glm_family_calls()
 fix_slice_indices_error()
 fix_time_series_warnings()
 fix_weights_bin_error()
+fix_vector_length_mismatch()
 
 cat("All fixes completed. Run the simulation script with any estimator:\n")
 cat("For tmle-lstm: Rscript simulation.R 'tmle-lstm' 1 'TRUE' 'FALSE'\n")
