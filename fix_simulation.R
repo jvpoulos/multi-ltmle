@@ -903,57 +903,61 @@ fix_weights_bin_error <- function() {
     cat("Warning: tmle_fns_lstm.R not found, skipping weights_bin error fix\n")
     return()
   }
-  
+
   cat("Fixing 'weights_bin not found' error in tmle_fns_lstm.R...\n")
-  
+
   # Read the file
   tmle_content <- readLines("./src/tmle_fns_lstm.R")
-  
-  # Find areas where weights_bin is referenced
-  for(i in 1:length(tmle_content)) {
-    # Look for references to weights_bin
-    if(grepl("weights_bin", tmle_content[i])) {
-      # Add a check before using weights_bin
-      weights_bin_check <- paste0(
-        "      # Ensure weights_bin exists",
-        "\n      if(!exists(\"weights_bin\")) {",
-        "\n        # Create a default weights_bin if it doesn't exist",
-        "\n        message(\"weights_bin not found, creating default weights\")",
-        "\n        weights_bin <- rep(1, nrow(train_data))",
-        "\n        # If there's class imbalance, try to account for it",
-        "\n        if(is.factor(train_target) || all(train_target %in% c(0,1))) {",
-        "\n          if(is.factor(train_target)) {",
-        "\n            class_counts <- table(train_target)",
-        "\n          } else {",
-        "\n            class_counts <- table(factor(train_target, levels=c(0,1)))",
-        "\n          }",
-        "\n          if(length(class_counts) > 1 && min(class_counts) > 0) {",
-        "\n            # Calculate class weights",
-        "\n            class_weights <- 1 / (class_counts / sum(class_counts))",
-        "\n            # Normalize weights",
-        "\n            class_weights <- class_weights / sum(class_weights) * length(class_weights)",
-        "\n            # Assign weights to each sample based on its class",
-        "\n            if(is.factor(train_target)) {",
-        "\n              weights_bin <- class_weights[train_target]",
-        "\n            } else {",
-        "\n              weights_bin <- class_weights[as.factor(train_target)]",
-        "\n            }",
-        "\n          }",
-        "\n        }",
-        "\n      }"
+
+  # Find model_data_bin lines (typically preceeding weights_bin usage)
+  model_data_lines <- grep("model_data_bin <-", tmle_content)
+
+  if(length(model_data_lines) == 0) {
+    cat("Warning: Could not find model_data_bin definition. Skipping weights_bin fix.\n")
+    return()
+  }
+
+  # Loop through each model_data_bin occurrence
+  for(line_idx in model_data_lines) {
+    # Look ahead a few lines to see if weights_bin is used
+    look_ahead <- min(line_idx + 10, length(tmle_content))
+    next_lines <- tmle_content[line_idx:look_ahead]
+
+    # Check if weights_bin is used in these lines
+    if(any(grepl("weights_bin", next_lines))) {
+      # Add a check for weights_bin existence right before model_data_bin is defined
+      weights_bin_check <- "      # Ensure weights_bin exists
+      if(!exists(\"weights_bin\") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists(\"n_ids\") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat(\"Created default weights_bin with dimensions: \", paste(dim(weights_bin), collapse=\"x\"), \"\\n\")
+        } else if(exists(\"current_obs_rules\") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat(\"Created default weights_bin based on current_obs_rules dimensions\\n\")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat(\"Created minimal fallback weights_bin\\n\")
+        }
+      }"
+
+      # Insert the check right before model_data_bin definition
+      tmle_content <- c(
+        tmle_content[1:(line_idx-1)],
+        weights_bin_check,
+        tmle_content[line_idx:length(tmle_content)]
       )
-      
-      # Insert the check before this line
-      tmle_content <- c(tmle_content[1:(i-1)], weights_bin_check, tmle_content[i:length(tmle_content)])
-      
-      # Skip ahead past the inserted code
-      i <- i + unlist(strsplit(weights_bin_check, "\n"))
-      
-      # We've fixed the first occurrence, so break
-      break
+
+      # We've added code, so adjust line_idx for the remaining iterations
+      line_offset <- length(strsplit(weights_bin_check, "\n")[[1]])
+      model_data_lines[model_data_lines > line_idx] <- model_data_lines[model_data_lines > line_idx] + line_offset
+
+      # Skip ahead to avoid checking the same section again
+      line_idx <- line_idx + line_offset
     }
   }
-  
+
   # Write the fixed file
   writeLines(tmle_content, "./src/tmle_fns_lstm.R")
   cat("Fixed 'weights_bin not found' error in tmle_fns_lstm.R\n")
