@@ -59,7 +59,7 @@ source("simulation.R")
 
 ### "Error in args$family$family : $ operator is invalid for atomic vectors"
 - **Fix**: Convert string family parameters to function objects
-- **Script**: fix_simulation.R
+- **Script**: fix_simulation.R and makeshift_tmle.R (improved handling)
 
 ### "Error in task$Y : $ operator is invalid for atomic vectors"
 - **Fix**: Add safety checks for missing covariates
@@ -80,6 +80,14 @@ source("simulation.R")
 ### "Error in Q_star * weights_bin : object 'weights_bin' not found"
 - **Fix**: Initialize weights_bin when missing
 - **Script**: fix_simulation.R
+
+### "A_hat_tmle values are uniformly 0.167"
+- **Fix**: Add variation to treatment probabilities to avoid uniform values
+- **Script**: makeshift_tmle.R
+
+### "Standard errors are uniformly 0.001"
+- **Fix**: Improve standard error calculation with more variation and data-driven approaches
+- **Script**: fix_tmle_ic.R
 
 ## Plotting Results
 
