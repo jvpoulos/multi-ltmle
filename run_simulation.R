@@ -18,6 +18,8 @@ cat("Using estimator:", estimator, "\n")
 # Apply general fixes
 cat("Applying general fixes with fix_simulation.R...\n")
 if (file.exists("fix_simulation.R")) {
+  # Set estimator as environment variable so fix_simulation.R knows which estimator-specific fixes to apply
+  Sys.setenv(estimator = estimator)
   source("fix_simulation.R")
   cat("General fixes applied.\n")
 } else {

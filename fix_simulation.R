@@ -7,6 +7,8 @@
 #' 3. Handles getTMLELong errors at specific time points
 #' 4. Fixes multi-ltmle estimator specific errors
 #' 5. Fixes vector length mismatch in getTMLELong
+#' 6. Fixes invalid slice indices in tmle-lstm
+#' 7. Fixes weights_bin not found error in tmle-lstm
 
 # First, fix the SL3_fns.R file learner definitions
 fix_SL3_fns <- function() {
@@ -957,6 +959,92 @@ fix_weights_bin_error <- function() {
   cat("Fixed 'weights_bin not found' error in tmle_fns_lstm.R\n")
 }
 
+# Fix the invalid slice indices issue in tmle_fns_lstm.R
+fix_lstm_slice_indices <- function() {
+  cat("Fixing invalid slice indices in tmle-lstm...\n")
+
+  # Read the tmle_fns_lstm.R file
+  lstm_file <- "./src/tmle_fns_lstm.R"
+  if(!file.exists(lstm_file)) {
+    cat("Warning: tmle_fns_lstm.R not found. Skipping this fix.\n")
+    return(FALSE)
+  }
+
+  lstm_content <- readLines(lstm_file)
+
+  # Find the line with the invalid slice indices message
+  slice_line_idx <- grep("Invalid slice indices", lstm_content)
+
+  if(length(slice_line_idx) > 0) {
+    # Look for the preceding code where the slice indices are calculated
+    start_line <- max(1, slice_line_idx[1] - 15)
+    end_line <- min(length(lstm_content), slice_line_idx[1] + 15)
+
+    # Extract the code segment
+    slice_code_segment <- lstm_content[start_line:end_line]
+
+    # Find the lines that calculate start_idx and end_idx
+    start_idx_line <- grep("start_idx <-", slice_code_segment)
+    end_idx_line <- grep("end_idx <-", slice_code_segment)
+
+    if(length(start_idx_line) > 0 && length(end_idx_line) > 0) {
+      # Improve the start_idx and end_idx calculations to be more robust
+      # Add bounds checking to ensure start_idx <= end_idx and both are within range
+      improved_start_line <- "    start_idx <- max(1, min(((t-1) * chunk_size) + 1, n_total_samples))"
+      improved_end_line <- "    end_idx <- min(max(start_idx, t * chunk_size), n_total_samples)"
+
+      # Replace the lines in the code segment
+      slice_code_segment[start_idx_line] <- improved_start_line
+      slice_code_segment[end_idx_line] <- improved_end_line
+
+      # Update the fallback logic with additional safeguards
+      fallback_idx <- grep("# More robust fallback calculation", slice_code_segment)
+      if(length(fallback_idx) > 0) {
+        improved_fallback <- c(
+          "      # More robust fallback calculation",
+          "      chunk_size <- max(1, floor(n_total_samples / max(1, t_end)))",
+          "      t_adjusted <- min(t, t_end)",
+          "      start_idx <- max(1, min(((t_adjusted-1) * chunk_size) + 1, n_total_samples))",
+          "      end_idx <- min(max(start_idx, t_adjusted * chunk_size), n_total_samples)",
+          "      if(start_idx > end_idx) {",
+          "        # Absolute fallback: just use all samples",
+          "        start_idx <- 1",
+          "        end_idx <- n_total_samples",
+          "      }"
+        )
+
+        # Find the next code block after the fallback comment
+        next_block_idx <- fallback_idx
+        for(i in (fallback_idx+1):length(slice_code_segment)) {
+          if(!grepl("^\\s*#", slice_code_segment[i]) && nchar(trimws(slice_code_segment[i])) > 0) {
+            next_block_idx <- i
+            break
+          }
+        }
+
+        # Replace the fallback section
+        original_after_fallback <- slice_code_segment[(next_block_idx):length(slice_code_segment)]
+        slice_code_segment <- c(
+          slice_code_segment[1:(fallback_idx-1)],
+          improved_fallback,
+          original_after_fallback
+        )
+      }
+
+      # Update the file content
+      lstm_content[start_line:end_line] <- slice_code_segment[1:length(lstm_content[start_line:end_line])]
+
+      # Write the updated content back to the file
+      writeLines(lstm_content, lstm_file)
+      cat("Invalid slice indices fix applied to tmle_fns_lstm.R\n")
+      return(TRUE)
+    }
+  }
+
+  cat("Warning: Could not locate the invalid slice indices code. Fix not applied.\n")
+  return(FALSE)
+}
+
 # Apply all fixes
 fix_SL3_fns()
 fix_sequential_g()
@@ -966,6 +1054,13 @@ fix_slice_indices_error()
 fix_time_series_warnings()
 fix_weights_bin_error()
 fix_vector_length_mismatch()
+
+# Add LSTM-specific fixes when using tmle-lstm estimator
+estimator <- Sys.getenv("estimator")
+if(estimator == "tmle-lstm" || estimator == "") {
+  cat("\nDetected TMLE-LSTM estimator or default, applying LSTM-specific fixes\n")
+  fix_lstm_slice_indices()
+}
 
 cat("All fixes completed. Run the simulation script with any estimator:\n")
 cat("For tmle-lstm: Rscript simulation.R 'tmle-lstm' 1 'TRUE' 'FALSE'\n")

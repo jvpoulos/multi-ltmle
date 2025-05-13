@@ -26,6 +26,9 @@ Several error fixes have been implemented to address issues with different estim
 
 # Example: Run standard tmle estimator with all fixes
 ./run_tmle.sh
+
+# Example: Run tmle-lstm estimator with all fixes
+./run_tmle_lstm.sh
 ```
 
 #### Option 2: Run with R directly
@@ -66,9 +69,9 @@ source("simulation.R")
 - **Fix**: Ensure matrix dimensions are consistent
 - **Script**: makeshift_tmle.R
 
-### "Error: Vector slice indices must match the dimension of the vector"
-- **Fix**: Add safety checks for array indices
-- **Script**: fix_simulation.R
+### "Error: Vector slice indices must match the dimension of the vector" or "Invalid slice indices"
+- **Fix**: Add bounds checking and fallbacks for array indices
+- **Script**: fix_simulation.R (improved for tmle-lstm in fix_lstm_slice_indices)
 
 ### "Warning: No time series found for L1,L2,L3"
 - **Fix**: Add fallbacks for missing time series data

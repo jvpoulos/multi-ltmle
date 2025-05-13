@@ -5,6 +5,7 @@
 - Run simulation with fixes:
   - Preferred method: `./run_simulation.sh [estimator] [cores] [use_sl] [do_mpi]`
   - Standard tmle estimator: `./run_tmle.sh`
+  - TMLE-LSTM estimator: `./run_tmle_lstm.sh`
   - Direct R call: `Rscript run_simulation.R 'tmle-lstm' 1 'TRUE' 'FALSE'`
 - Plot results: `Rscript long_sim_plots.R 'outputs/YYYYMMDD'`
 - Test LSTM model: `Rscript test_predictions_in_r.R`
