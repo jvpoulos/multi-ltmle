@@ -82,3 +82,48 @@ metalearner_Y_cont <- make_learner(Lrnr_solnp, learner_function = metalearner_li
                                   eval_function = loss_squared_error)
 metalearner_A_bin <- make_learner(Lrnr_solnp, learner_function = metalearner_logistic_binomial, 
                                  eval_function = loss_loglik_binomial)
+
+# Add the original_subset_covariates function that is referenced in Stack class
+# This function will be used instead of the default sl3 implementation
+original_subset_covariates <- function(task) {
+  # This is a replacement for Stack$subset_covariates method
+  # which is called when predicting with the Stack
+  
+  # Get covariates from the task
+  all_covariates <- task$nodes$covariates
+  
+  # Check if all covariates exist in the task
+  X_dt <- task$X
+  task_covariates <- colnames(X_dt)
+  
+  # Find missing covariates
+  missing_covariates <- setdiff(all_covariates, task_covariates)
+  
+  # If there are missing covariates, add them to the task data
+  if (length(missing_covariates) > 0) {
+    # Create a new data.table with the missing covariates
+    missing_cols <- data.table::data.table(matrix(0, nrow = task$nrow, ncol = length(missing_covariates)))
+    data.table::setnames(missing_cols, missing_covariates)
+    
+    # Add the missing columns to X_dt
+    X_dt <- cbind(X_dt, missing_cols)
+  }
+  
+  # Return the task with all covariates
+  return(X_dt[, all_covariates, with = FALSE])
+}
+
+# Fix the subset_covariates error directly by adding it to global environment
+# so it can be found when needed
+attach_subset_covariates <- function() {
+  # Make sure original_subset_covariates is in the global environment
+  assign("original_subset_covariates", original_subset_covariates, envir = .GlobalEnv)
+  message("original_subset_covariates function attached to global environment")
+}
+
+# Attach the function to the global environment immediately
+tryCatch({
+  attach_subset_covariates()
+}, error = function(e) {
+  message("Error attaching original_subset_covariates: ", e$message)
+})

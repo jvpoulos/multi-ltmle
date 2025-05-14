@@ -203,7 +203,7 @@ Instructions
 To execute simulations, use the following command:
 
 ```bash
-Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
+./run_simulation.sh [arg1] [arg2] [arg3] [arg4]
 ```
 
 #### Arguments:
@@ -219,12 +219,12 @@ Rscript simulation.R [arg1] [arg2] [arg3] [arg4]
 #### Examples:
 1. Using the `"tmle"` estimator with super learner enabled and no MPI, using 2 cores for parallel computation:
    ```bash
-   Rscript simulation.R 'tmle' 2 'TRUE' 'FALSE'
+   ./run_simulation.sh 'tmle' 2 'TRUE' 'FALSE'
    ```
 
 2. Using the `"tmle-lstm"` estimator, using 2 cores for parallel computation:
    ```bash
-   Rscript simulation.R 'tmle-lstm' 2 'FALSE' 'FALSE'
+   ./run_simulation.sh 'tmle-lstm' 2 'FALSE' 'FALSE'
    ```
 
 ---
