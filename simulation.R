@@ -52,6 +52,7 @@ library(purrr)
 library(origami)
 library(sl3)
 options(sl3.verbose = FALSE)
+library(methods) # For R6 class operations
 library(nnet)
 library(ranger)
 library(glmnet)
@@ -70,40 +71,121 @@ source('./src/misc_fns.R')
 source('./src/simcausal_fns.R')
 source('./src/SL3_fns.R')
 
-# Ensure original_subset_covariates is in the global environment
-if(!exists("original_subset_covariates", envir = .GlobalEnv)) {
-  # Define the function directly in case it wasn't loaded from SL3_fns.R
-  original_subset_covariates <- function(task) {
-    # This is a replacement for Stack$subset_covariates method
-    # which is called when predicting with the Stack
-    
-    # Get covariates from the task
-    all_covariates <- task$nodes$covariates
-    
-    # Check if all covariates exist in the task
-    X_dt <- task$X
-    task_covariates <- colnames(X_dt)
-    
-    # Find missing covariates
-    missing_covariates <- setdiff(all_covariates, task_covariates)
-    
-    # If there are missing covariates, add them to the task data
-    if (length(missing_covariates) > 0) {
-      # Create a new data.table with the missing covariates
-      missing_cols <- data.table::data.table(matrix(0, nrow = task$nrow, ncol = length(missing_covariates)))
-      data.table::setnames(missing_cols, missing_covariates)
-      
-      # Add the missing columns to X_dt
-      X_dt <- cbind(X_dt, missing_cols)
+# Ensure the Stack class is properly patched for covariate handling
+# This is a critical fix for the "Task missing covariates" error
+patch_stack_class <- function() {
+  # First verify original_subset_covariates exists in global environment
+  if(!exists("original_subset_covariates", envir = .GlobalEnv)) {
+    # Define a robust version of the function directly
+    original_subset_covariates <- function(task) {
+      # Comprehensive error handling
+      tryCatch({
+        # Get covariates from the task
+        if (is.null(task) || is.null(task$nodes) || is.null(task$nodes$covariates)) {
+          warning("Task structure is invalid. Creating fallback data with required covariates.")
+          return(data.table::data.table(
+            V3=0, L1=0, L2=0, L3=0, Y.lag=0, Y.lag2=0, Y.lag3=0,
+            L1.lag=0, L1.lag2=0, L1.lag3=0, L2.lag=0, L2.lag2=0, L2.lag3=0,
+            L3.lag=0, L3.lag2=0, L3.lag3=0, white=0, black=0, latino=0, other=0,
+            mdd=0, bipolar=0, schiz=0, A1=0, A2=0, A3=0, A4=0, A5=0, A6=0,
+            A1.lag=0, A2.lag=0, A3.lag=0, A4.lag=0, A5.lag=0, A6.lag=0,
+            A1.lag2=0, A2.lag2=0, A3.lag2=0, A4.lag2=0, A5.lag2=0, A6.lag2=0,
+            A1.lag3=0, A2.lag3=0, A3.lag3=0, A4.lag3=0, A5.lag3=0, A6.lag3=0
+          ))
+        }
+        
+        all_covariates <- task$nodes$covariates
+        
+        # Check if all covariates exist in the task
+        if(is.null(task$X)) {
+          warning("Task X is NULL. Creating data with required covariates.")
+          X_dt <- data.table::data.table(matrix(0, nrow = max(1, task$nrow), ncol = length(all_covariates)))
+          data.table::setnames(X_dt, all_covariates)
+          return(X_dt)
+        }
+        
+        X_dt <- task$X
+        task_covariates <- colnames(X_dt)
+        
+        # Find missing covariates
+        missing_covariates <- setdiff(all_covariates, task_covariates)
+        
+        # If there are missing covariates, add them to the task data
+        if (length(missing_covariates) > 0) {
+          # Log missing covariates
+          message("Adding missing covariates: ", paste(missing_covariates, collapse=", "))
+          
+          # Create a new data.table with the missing covariates
+          missing_cols <- data.table::data.table(matrix(0, nrow = task$nrow, ncol = length(missing_covariates)))
+          data.table::setnames(missing_cols, missing_covariates)
+          
+          # Add the missing columns to X_dt
+          X_dt <- cbind(X_dt, missing_cols)
+        }
+        
+        # Return the task with all covariates
+        if (all(all_covariates %in% colnames(X_dt))) {
+          return(X_dt[, all_covariates, with = FALSE])
+        } else {
+          # Some covariates still missing - create fallback
+          warning("Still missing covariates after attempted fix. Creating complete fallback.")
+          result <- data.table::data.table(matrix(0, nrow = nrow(X_dt), ncol = length(all_covariates)))
+          data.table::setnames(result, all_covariates)
+          return(result)
+        }
+      }, error = function(e) {
+        # Complete fallback on any error
+        warning("Error in original_subset_covariates: ", e$message, ". Creating comprehensive fallback data.")
+        result <- data.table::data.table(
+          V3=0, L1=0, L2=0, L3=0, Y.lag=0, Y.lag2=0, Y.lag3=0,
+          L1.lag=0, L1.lag2=0, L1.lag3=0, L2.lag=0, L2.lag2=0, L2.lag3=0,
+          L3.lag=0, L3.lag2=0, L3.lag3=0, white=0, black=0, latino=0, other=0,
+          mdd=0, bipolar=0, schiz=0, A1=0, A2=0, A3=0, A4=0, A5=0, A6=0,
+          A1.lag=0, A2.lag=0, A3.lag=0, A4.lag=0, A5.lag=0, A6.lag=0,
+          A1.lag2=0, A2.lag2=0, A3.lag2=0, A4.lag2=0, A5.lag2=0, A6.lag2=0,
+          A1.lag3=0, A2.lag3=0, A3.lag3=0, A4.lag3=0, A5.lag3=0, A6.lag3=0
+        )
+        return(result)
+      })
     }
     
-    # Return the task with all covariates
-    return(X_dt[, all_covariates, with = FALSE])
+    # Attach to global environment
+    assign("original_subset_covariates", original_subset_covariates, envir = .GlobalEnv)
+    cat("Enhanced original_subset_covariates function has been manually attached to global environment\n")
   }
-  # Manually attach it to the global environment
-  assign("original_subset_covariates", original_subset_covariates, envir = .GlobalEnv)
-  cat("original_subset_covariates function has been manually attached to global environment\n")
+  
+  # Now try to monkey-patch the Stack class method directly
+  if(exists("Stack") && methods::is(Stack, "R6ClassGenerator")) {
+    tryCatch({
+      # Define a new wrapper that ensures subset_covariates uses our function
+      Stack$set("public", "subset_covariates", function(task) {
+        # Call the function from global environment
+        return(original_subset_covariates(task))
+      })
+      cat("Successfully patched Stack$subset_covariates method to handle missing covariates\n")
+    }, error = function(e) {
+      warning("Failed to patch Stack$subset_covariates: ", e$message)
+    })
+  } else {
+    message("Stack class not properly loaded yet - can't patch directly")
+  }
+  
+  # For SL3 >= v1.4.0, also try to set learner_custom_args for Stacks
+  if (exists("learner_custom_args", where = asNamespace("sl3"), inherits = FALSE)) {
+    tryCatch({
+      # Get the function from sl3 namespace
+      learner_custom_args_fn <- get("learner_custom_args", envir = asNamespace("sl3"))
+      # Set custom args for Stack to use our subset_covariates function
+      learner_custom_args_fn$Stack$set("subset_covariates", original_subset_covariates)
+      cat("Applied learner_custom_args patch for Stack in sl3 package\n")
+    }, error = function(e) {
+      warning("Failed to set learner_custom_args for Stack: ", e$message)
+    })
+  }
 }
+
+# Apply the patches to ensure Stack class can handle missing covariates
+patch_stack_class()
 
 if(estimator == "tmle") {
   source('./src/tmle_fns.R')

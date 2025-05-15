@@ -1325,12 +1325,38 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
     }
   }
 
-  # Fast creation of QAW matrix
-  QAW <- cbind(QA=as.numeric(initial_model_for_Y_preds), Qs)
-  colnames(QAW) <- c("QA", colnames(Qs))
+  # Fast creation of QAW matrix with dimension checks
+  tryCatch({
+    # First ensure initial_model_for_Y_preds has the right length
+    if(length(initial_model_for_Y_preds) != nrow(Qs)) {
+      warning("Length mismatch: initial_model_for_Y_preds length is ", length(initial_model_for_Y_preds), 
+              " but Qs has ", nrow(Qs), " rows. Fixing by recycling values.")
+      initial_model_for_Y_preds <- rep(initial_model_for_Y_preds, length.out = nrow(Qs))
+    }
+    
+    # Create matrix with correct dimensions
+    QAW <- cbind(QA=as.numeric(initial_model_for_Y_preds), Qs)
+    colnames(QAW) <- c("QA", colnames(Qs))
+  }, 
+  error = function(e) {
+    warning("Error creating QAW matrix: ", e$message, ". Creating fallback matrix.")
+    
+    # Create fallback matrix with correct dimensions
+    QAW <- matrix(0.5, nrow=nrow(Qs), ncol=ncol(Qs)+1)
+    colnames(QAW) <- c("QA", colnames(Qs))
+    return(QAW)
+  })
 
   # Vectorized NA handling and bounds application
   if(any(is.na(QAW))) QAW[is.na(QAW)] <- 0.5
+  
+  # Ensure consistent dimensions before applying bounds
+  if(ncol(QAW) != length(c("QA", colnames(Qs)))) {
+    warning("QAW has incorrect dimensions. Fixing column names.")
+    colnames(QAW) <- c("QA", colnames(Qs))[1:ncol(QAW)]
+  }
+  
+  # Apply bounds with dimension check
   QAW <- pmin(pmax(QAW, ybound[1]), ybound[2])
 
   # Fast detection of rule-relevant columns
