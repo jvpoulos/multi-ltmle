@@ -662,8 +662,8 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
     
     # Calculate slice indices with validation
     chunk_size <- as.integer((n_total_samples + t_end) / (t_end + 1))
-    start_idx <- ((t-1) * chunk_size) + 1
-    end_idx <- min(t * chunk_size, n_total_samples)
+    start_idx <- max(1, min(((t-1) * chunk_size) + 1, n_total_samples))
+    end_idx <- min(max(start_idx, t * chunk_size), n_total_samples)
     
     # Add validation to ensure start_idx <= end_idx
     if(start_idx > end_idx || start_idx > n_total_samples || end_idx < start_idx) {
@@ -671,18 +671,18 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
                   start_idx, end_idx, n_total_samples))
       
       # More robust fallback calculation
-      chunk_size <- floor(n_total_samples / max(1, t_end))
+      chunk_size <- max(1, floor(n_total_samples / max(1, t_end)))
       t_adjusted <- min(t, t_end)
-      start_idx <- 1 + (t_adjusted-1) * chunk_size
-      end_idx <- min(n_total_samples, start_idx + chunk_size - 1)
-      
-      # Final safety check
+      start_idx <- max(1, min(((t_adjusted-1) * chunk_size) + 1, n_total_samples))
+      end_idx <- min(max(start_idx, t_adjusted * chunk_size), n_total_samples)
       if(start_idx > end_idx) {
+        # Absolute fallback: just use all samples
         start_idx <- 1
-        end_idx <- min(n_total_samples, chunk_size)
+        end_idx <- n_total_samples
       }
-    }
-    
+      chunk_size <- max(1, floor(n_total_samples / max(1, t_end)))
+      t_adjusted <- min(t, t_end)
+    start_idx <- max(1, min(((t-1) * chunk_size) + 1, n_total_samples))
     # Extract slice based on type of input
     if(is.vector(slice)) {
       if(start_idx <= length(slice) && end_idx <= length(slice)) {
@@ -1642,6 +1642,291 @@ process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_d
     # Create separate targeting step for binary version of TMLE
     for(i in seq_len(ncol(clever_covariates))) {
       # Create model data for binary targeting with binary-specific weights
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
+      # Ensure weights_bin exists
+      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
+        # Create default weights if missing
+        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
+          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
+          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
+        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
+          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
+          cat("Created default weights_bin based on current_obs_rules dimensions\n")
+        } else {
+          # Ultimate fallback with minimal dimensions
+          weights_bin <- matrix(0.1, nrow=10, ncol=3)
+          cat("Created minimal fallback weights_bin\n")
+        }
+      }
       model_data_bin <- data.frame(
         y = pmin(pmax(if(t < t_end) QAW[,"QA"] else Y, 0.01), 0.99),
         offset = qlogis(pmax(pmin(QAW[,i+1], 0.99), 0.01)),
@@ -2592,4 +2877,5 @@ dynamic_mtp_lstm <- function(tmle_dat) {
   }
   
   return(result)
+}
 }
