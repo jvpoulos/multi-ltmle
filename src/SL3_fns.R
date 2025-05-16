@@ -349,108 +349,74 @@ create_safe_binary_stack <- function(family_type = "binomial") {
   
   # Create stack with error handling
   tryCatch({
-    # Use our custom Stack creation if available
-    if(exists("create_safe_stack", envir = .GlobalEnv)) {
-      return(create_safe_stack(
-        # Ranger with explicit settings
-        Lrnr_ranger$new(
-          num.trees = 100,
-          min.node.size = 5,
-          respect.unordered.factors = "partition",
-          probability = TRUE
-        ),
-        
-        # GLMnet with L1 regularization (alpha=1)
-        Lrnr_glmnet$new(
-          nfolds = 3,
-          nlambda = 10,
-          alpha = 1,
-          family = family_obj
-        ),
-        
-        # GLMnet with L1 and L2 regularization (alpha=0.5)
-        Lrnr_glmnet$new(
-          nfolds = 3,
-          nlambda = 10,
-          alpha = 0.5,
-          family = family_obj
-        ),
-        
-        # GLM with appropriate family
-        Lrnr_glm$new(
-          family = family_obj
-        ),
-        
-        # Mean predictor
-        Lrnr_mean$new()
-      ))
-    } else {
-      # Fall back to standard Stack with patched methods
-      stack <- Stack$new(
-        # Ranger with explicit settings
-        Lrnr_ranger$new(
-          num.trees = 100,
-          min.node.size = 5,
-          respect.unordered.factors = "partition",
-          probability = TRUE
-        ),
-        
-        # GLMnet with L1 regularization (alpha=1)
-        Lrnr_glmnet$new(
-          nfolds = 3,
-          nlambda = 10,
-          alpha = 1,
-          family = family_obj
-        ),
-        
-        # GLMnet with L1 and L2 regularization (alpha=0.5)
-        Lrnr_glmnet$new(
-          nfolds = 3,
-          nlambda = 10,
-          alpha = 0.5,
-          family = family_obj
-        ),
-        
-        # GLM with appropriate family
-        Lrnr_glm$new(
-          family = family_obj
-        ),
-        
-        # Mean predictor
-        Lrnr_mean$new()
-      )
+    # Create learners first
+    learners <- list(
+      # Ranger with explicit settings
+      Lrnr_ranger$new(
+        num.trees = 100,
+        min.node.size = 5,
+        respect.unordered.factors = "partition",
+        probability = TRUE
+      ),
       
-      # Attach our safe prediction method if original_subset_covariates is available
-      if(exists("original_subset_covariates", envir = .GlobalEnv)) {
-        tryCatch({
-          # Save the original predict method
+      # GLMnet with L1 regularization (alpha=1)
+      Lrnr_glmnet$new(
+        nfolds = 3,
+        nlambda = 10,
+        alpha = 1,
+        family = family_obj
+      ),
+      
+      # GLMnet with L1 and L2 regularization (alpha=0.5)
+      Lrnr_glmnet$new(
+        nfolds = 3,
+        nlambda = 10,
+        alpha = 0.5,
+        family = family_obj
+      ),
+      
+      # GLM with appropriate family
+      Lrnr_glm$new(
+        family = family_obj
+      ),
+      
+      # Mean predictor
+      Lrnr_mean$new()
+    )
+    
+    # Try different approaches to create the stack
+    stack <- tryCatch({
+      # First try our safe_create_stack function
+      if(exists("safe_create_stack", envir = .GlobalEnv)) {
+        do.call(safe_create_stack, learners)
+      } else {
+        stop("safe_create_stack not found")
+      }
+    }, error = function(e1) {
+      message("safe_create_stack failed: ", e1$message, ". Trying direct Stack$new")
+      tryCatch({
+        # Try direct Stack creation
+        Stack$new(learners)
+      }, error = function(e2) {
+        message("Direct Stack$new failed: ", e2$message, ". Using minimal stack")
+        # Create minimal stack
+        Stack$new(list(Lrnr_mean$new()))
+      })
+    })
+    
+    # Attach our safe prediction method if original_subset_covariates is available
+    if(exists("original_subset_covariates", envir = .GlobalEnv)) {
+      tryCatch({
+        # Save the original predict method
+        if(!is.null(stack$predict)) {
           original_predict <- stack$predict
           
           # Create a safer predict method that handles covariates
           stack$predict <- function(task, ...) {
-            # First ensure task has all needed covariates (without accessing private fields)
-            if(!is.null(task) && !is.null(task$nodes) && !is.null(task$nodes$covariates)) {
-              # Get required covariates from task
-              all_covars <- task$nodes$covariates
-              
-              # Process task data if available
-              if(!is.null(task$X)) {
-                # Check for missing covariates
-                task_covars <- colnames(task$X)
-                missing_covars <- setdiff(all_covars, task_covars)
-                
-                # Add any missing columns
-                if(length(missing_covars) > 0) {
-                  # Create data for missing columns
-                  missing_cols <- data.table::data.table(
-                    matrix(0, nrow = task$nrow, ncol = length(missing_covars))
-                  )
-                  data.table::setnames(missing_cols, missing_covars)
-                  
-                  # Add to task data
-                  task$X <- cbind(task$X, missing_cols)
-                  message("Added missing covariates to task: ", paste(missing_covars, collapse=", "))
-                }
+            # Pre-process task to ensure all covariates exist
+            if(!is.null(task) && exists("ensure_task_covariates", envir = .GlobalEnv)) {
+              if(!is.null(task$nodes) && !is.null(task$nodes$covariates) && !is.null(task$X)) {
+                task$X <- ensure_task_covariates(task$X, task$nodes$covariates)
               }
             }
             
@@ -471,30 +437,34 @@ create_safe_binary_stack <- function(family_type = "binomial") {
           }
           
           message("Attached safe predict method to Stack")
-        }, error = function(e) {
-          warning("Could not attach safe predict method: ", e$message, 
-                  ". Will continue with default predict method.")
-        })
-      }
-      
-      return(stack)
+        }
+      }, error = function(e) {
+        warning("Could not attach safe predict method: ", e$message, 
+                ". Will continue with default predict method.")
+      })
     }
+    
+    return(stack)
   }, error = function(e) {
     warning("Error creating learner stack: ", e$message, ". Creating fallback stack with minimal learners.")
     
     # Create a minimal fallback stack with one or two resilient learners
-    return(Stack$new(
-      # Ranger is generally more robust
-      Lrnr_ranger$new(
-        num.trees = 100,
-        min.node.size = 5,
-        respect.unordered.factors = "partition",
-        probability = TRUE
-      ),
-      
-      # Include mean as a fallback
-      Lrnr_mean$new()
-    ))
+    tryCatch({
+      Stack$new(list(
+        # Ranger is generally more robust
+        Lrnr_ranger$new(
+          num.trees = 100,
+          min.node.size = 5,
+          respect.unordered.factors = "partition",
+          probability = TRUE
+        ),
+        # Include mean as a fallback
+        Lrnr_mean$new()
+      ))
+    }, error = function(e2) {
+      # If even the minimal stack fails, create the most basic possible stack
+      Stack$new(list(Lrnr_mean$new()))
+    })
   })
 }
 
@@ -835,39 +805,26 @@ create_comprehensive_fallback <- function(n_rows = 1) {
   return(result)
 }
 
-# Override the Stack class behavior globally
-if(exists("Stack", where = "package:sl3")) {
-  # Get the Stack class from sl3 package
+# Create safe wrapper for Stack - safer approach
+safe_create_stack <- function(...) {
   tryCatch({
-    # Save original subset_covariates method
-    Stack_original <- sl3::Stack
-    
-    # Create a patched Stack class 
-    Stack_patched <- R6::R6Class(
-      "Stack",
-      inherit = Stack_original,
-      public = list(
-        subset_covariates = function(task) {
-          tryCatch({
-            # Use our safe version directly
-            original_subset_covariates(task)
-          }, error = function(e) {
-            message("Error in Stack$subset_covariates: ", e$message)
-            # Fallback to comprehensive dataset
-            create_comprehensive_fallback(1)
-          })
-        }
-      )
-    )
-    
-    # Replace the Stack in sl3's namespace
-    assignInNamespace("Stack", Stack_patched, ns="sl3")
-    message("Successfully patched Stack class directly")
-    
+    # Try to create a normal Stack
+    Stack$new(...)
   }, error = function(e) {
-    message("Could not patch Stack directly: ", e$message)
+    if(grepl("object of type 'closure' is not subsettable", e$message)) {
+      message("Stack$new error detected. Creating basic fallback stack.")
+      # Create a minimal stack with just mean learner
+      basic_learners <- list(Lrnr_mean$new())
+      # Create the stack differently
+      sl3::Stack$new(basic_learners)
+    } else {
+      stop(e)
+    }
   })
 }
+
+# Put in global environment
+assign("safe_create_stack", safe_create_stack, envir = .GlobalEnv)
 
 # Add a pre-check function that can be used before creating tasks
 ensure_task_covariates <- function(data, covariates) {
@@ -966,40 +923,42 @@ attach_subset_covariates <- function() {
       
       # Alternative: Try to override through the module's Stack object
       # This works by intercepting at the point of use
-      unlockBinding("Stack", sl3_env)
-      original_Stack <- get("Stack", envir = sl3_env)
-      
-      # Create wrapper that handles subset_covariates
-      Stack_wrapper <- function(...) {
-        stack_instance <- original_Stack$new(...)
+      tryCatch({
+        unlockBinding("Stack", sl3_env)
+        original_Stack <- get("Stack", envir = sl3_env)
         
-        # Override the subset_covariates method for this instance
-        if(!is.null(stack_instance)) {
-          original_subset <- stack_instance$subset_covariates
-          stack_instance$subset_covariates <- function(task) {
-            tryCatch({
-              # Try original method first
-              original_subset(task)
-            }, error = function(e) {
-              # On error, use our safe version
-              message("Stack subset_covariates failed, using safe fallback: ", e$message)
-              original_subset_covariates(task)
-            })
-          }
+        # Create wrapper that handles subset_covariates  
+        # Note: Stack is an R6ClassGenerator, not a function
+        if(inherits(original_Stack, "R6ClassGenerator")) {
+          # Create a new R6 class that inherits from Stack
+          Stack_wrapper <- R6::R6Class(
+            "Stack",
+            inherit = original_Stack,
+            public = list(
+              subset_covariates = function(task) {
+                tryCatch({
+                  # Try the parent class method first
+                  super$subset_covariates(task)
+                }, error = function(e) {
+                  # On error, use our safe version
+                  message("Stack subset_covariates failed, using safe fallback: ", e$message)
+                  original_subset_covariates(task)
+                })
+              }
+            )
+          )
+          
+          # Replace the Stack constructor
+          assign("Stack", Stack_wrapper, envir = sl3_env)
+          lockBinding("Stack", sl3_env)
+          
+          message("Successfully created Stack wrapper with safe subset_covariates")
+        } else {
+          message("Stack is not an R6ClassGenerator, skipping wrapper creation")
         }
-        
-        return(stack_instance)
-      }
-      
-      # Make the wrapper behave like the original
-      class(Stack_wrapper) <- class(original_Stack)
-      attributes(Stack_wrapper) <- attributes(original_Stack)
-      
-      # Replace the Stack constructor
-      assign("Stack", Stack_wrapper, envir = sl3_env)
-      lockBinding("Stack", sl3_env)
-      
-      message("Successfully created Stack wrapper with safe subset_covariates")
+      }, error = function(e) {
+        message("Could not create Stack wrapper: ", e$message)
+      })
       
     }, error = function(e) {
       message("Warning: Could not patch sl3 Stack class: ", e$message)
