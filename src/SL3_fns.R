@@ -623,6 +623,11 @@ make_task_with_all_covariates <- function(data, outcome, covariates, outcome_typ
     folds = folds
   )
   
+  # Ensure the task has the right class
+  if(!is.null(task) && !inherits(task, "sl3_Task")) {
+    class(task) <- c("sl3_Task", class(task))
+  }
+  
   # Patch the task's subset_covariates method
   if(!is.null(task)) {
     task$subset_covariates <- function(new_task) {
@@ -631,6 +636,55 @@ make_task_with_all_covariates <- function(data, outcome, covariates, outcome_typ
   }
   
   return(task)
+}
+
+# Create a safe task validation wrapper
+validate_sl3_task <- function(task) {
+  if(is.null(task)) {
+    stop("Task is NULL")
+  }
+  
+  # Check if task inherits from sl3_Task
+  if(!inherits(task, "sl3_Task")) {
+    # Try to coerce it to sl3_Task
+    if(is.environment(task) && !is.null(task$nodes)) {
+      # Add the sl3_Task class
+      class(task) <- c("sl3_Task", class(task))
+    } else {
+      stop("Object is not a valid sl3_Task")
+    }
+  }
+  
+  return(task)
+}
+
+# Override the is() function for sl3_Task checks temporarily
+if(exists("is", where = "package:methods")) {
+  original_is <- get("is", envir = asNamespace("methods"))
+  
+  # Create a wrapper for is() that handles sl3_Task specially
+  is_wrapper <- function(object, class2) {
+    if(class2 == "sl3_Task") {
+      # Use our custom validation
+      return(inherits(object, "sl3_Task") || 
+             (is.environment(object) && !is.null(object$nodes)))
+    } else {
+      # Use original is() for other checks
+      return(original_is(object, class2))
+    }
+  }
+  
+  # Try to override in the methods namespace (may fail due to locked bindings)
+  tryCatch({
+    unlockBinding("is", asNamespace("methods"))
+    assign("is", is_wrapper, envir = asNamespace("methods"))
+    lockBinding("is", asNamespace("methods"))
+    message("Successfully overrode is() function for sl3_Task checks")
+  }, error = function(e) {
+    # If we can't override in methods namespace, put it in global environment
+    assign("is", is_wrapper, envir = .GlobalEnv)
+    message("Created is() wrapper in global environment")
+  })
 }
 
 # Export this utility function

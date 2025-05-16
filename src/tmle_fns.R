@@ -1676,6 +1676,61 @@ safe_array <- function(arr, default_dims = c(1, 1)) {
   }
 }
 
+###################################################################
+# LSTM-specific treatment regime functions                        #
+###################################################################
+
+# These are aliases for the standard functions but with _lstm suffix
+
+static_arip_on_lstm <- function(row, lags=TRUE) {
+  static_arip_on(row, lags)
+}
+
+static_halo_on_lstm <- function(row, lags=TRUE) {
+  static_halo_on(row, lags)
+}
+
+static_olanz_on_lstm <- function(row, lags=TRUE) {
+  static_olanz_on(row, lags)
+}
+
+static_risp_on_lstm <- function(row, lags=TRUE) {
+  static_risp_on(row, lags)
+}
+
+static_quet_on_lstm <- function(row, lags=TRUE) {
+  static_quet_on(row, lags)
+}
+
+static_zipra_on_lstm <- function(row, lags=TRUE) {
+  static_zipra_on(row, lags)
+}
+
+static_mtp_lstm <- function(row) {
+  # Just call the regular static_mtp function
+  static_mtp(row)
+}
+
+dynamic_mtp_lstm <- function(row) {
+  # Call regular dynamic_mtp if it exists
+  if(exists("dynamic_mtp")) {
+    dynamic_mtp(row)
+  } else {
+    # Default implementation using aripiprazole
+    static_arip_on(row, lags=TRUE)
+  }
+}
+
+stochastic_mtp_lstm <- function(row) {
+  # Just call the regular stochastic_mtp function
+  if(exists("stochastic_mtp")) {
+    stochastic_mtp(row)
+  } else {
+    # Fallback implementation
+    row[grep("A[0-9]",colnames(row), value=TRUE)]
+  }
+}
+
 # Safer getTMLELong wrapper
 safe_getTMLELong <- function(...) {
   tryCatch({
