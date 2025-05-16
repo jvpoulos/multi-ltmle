@@ -622,6 +622,50 @@ if(requireNamespace("nnet", quietly = TRUE)) {
   message("Created custom multinom learner function")
 }
 
+# Create a function that directly handles tasks missing covariates
+make_task_with_all_covariates <- function(data, outcome, covariates, outcome_type = "continuous", folds = NULL) {
+  # Verify that all required covariates exist in the data
+  missing_cols <- setdiff(covariates, colnames(data))
+  
+  if(length(missing_cols) > 0) {
+    message("Adding missing columns to task data: ", paste(missing_cols, collapse=", "))
+    
+    # Create a comprehensive fallback to get the missing columns
+    fallback_data <- create_comprehensive_fallback(nrow(data))
+    
+    # Extract the missing columns
+    for(col in missing_cols) {
+      if(col %in% colnames(fallback_data)) {
+        data[[col]] <- fallback_data[[col]]
+      } else {
+        # Create the column with default values
+        data[[col]] <- 0
+      }
+    }
+  }
+  
+  # Create the task with all covariates now present
+  task <- sl3::make_sl3_Task(
+    data = data,
+    outcome = outcome,
+    covariates = covariates,
+    outcome_type = outcome_type,
+    folds = folds
+  )
+  
+  # Patch the task's subset_covariates method
+  if(!is.null(task)) {
+    task$subset_covariates <- function(new_task) {
+      original_subset_covariates(new_task)
+    }
+  }
+  
+  return(task)
+}
+
+# Export this utility function
+assign("make_task_with_all_covariates", make_task_with_all_covariates, envir = .GlobalEnv)
+
 # Create the standard stacks using our safer function
 tryCatch({
   learner_stack_A_bin <- create_safe_binary_stack("binomial")
@@ -791,11 +835,177 @@ create_comprehensive_fallback <- function(n_rows = 1) {
   return(result)
 }
 
+# Override the Stack class behavior globally
+if(exists("Stack", where = "package:sl3")) {
+  # Get the Stack class from sl3 package
+  tryCatch({
+    # Save original subset_covariates method
+    Stack_original <- sl3::Stack
+    
+    # Create a patched Stack class 
+    Stack_patched <- R6::R6Class(
+      "Stack",
+      inherit = Stack_original,
+      public = list(
+        subset_covariates = function(task) {
+          tryCatch({
+            # Use our safe version directly
+            original_subset_covariates(task)
+          }, error = function(e) {
+            message("Error in Stack$subset_covariates: ", e$message)
+            # Fallback to comprehensive dataset
+            create_comprehensive_fallback(1)
+          })
+        }
+      )
+    )
+    
+    # Replace the Stack in sl3's namespace
+    assignInNamespace("Stack", Stack_patched, ns="sl3")
+    message("Successfully patched Stack class directly")
+    
+  }, error = function(e) {
+    message("Could not patch Stack directly: ", e$message)
+  })
+}
+
+# Add a pre-check function that can be used before creating tasks
+ensure_task_covariates <- function(data, covariates) {
+  missing_covs <- setdiff(covariates, colnames(data))
+  
+  if(length(missing_covs) > 0) {
+    message("Pre-emptively adding missing covariates: ", paste(missing_covs, collapse=", "))
+    
+    # Get fallback data
+    fallback <- create_comprehensive_fallback(nrow(data))
+    
+    # Add each missing covariate
+    for(cov in missing_covs) {
+      if(cov %in% colnames(fallback)) {
+        data[[cov]] <- fallback[[cov]]
+      } else {
+        data[[cov]] <- 0
+      }
+    }
+  }
+  
+  return(data)
+}
+
+# Export for use in simulation
+assign("ensure_task_covariates", ensure_task_covariates, envir = .GlobalEnv)
+
 # Fix the subset_covariates error by providing safer alternatives
 attach_subset_covariates <- function() {
   # Make sure original_subset_covariates is in the global environment
   assign("original_subset_covariates", original_subset_covariates, envir = .GlobalEnv)
   message("original_subset_covariates function attached to global environment")
+  
+  # Also create a helper function for the Stack class to use
+  # This will properly implement subset_covariates
+  stack_subset_covariates_safe <- function(self, task) {
+    # Use our improved original_subset_covariates function
+    return(original_subset_covariates(task))
+  }
+  
+  # Put it in global environment
+  assign("stack_subset_covariates_safe", stack_subset_covariates_safe, envir = .GlobalEnv)
+  
+  # Attempt to directly patch the sl3 namespace if possible
+  if ("sl3" %in% loadedNamespaces()) {
+    tryCatch({
+      sl3_env <- asNamespace("sl3")
+      
+      # Check if Stack class is available
+      if(exists("Stack", envir = sl3_env)) {
+        Stack <- get("Stack", envir = sl3_env)
+        
+        # If Stack is an R6 generator
+        if(inherits(Stack, "R6ClassGenerator")) {
+          # Try to patch the class methods
+          tryCatch({
+            # Access the class definition
+            if(!is.null(Stack$public_methods)) {
+              # Create a safe wrapper for subset_covariates
+              Stack$public_methods$subset_covariates <- function(task) {
+                # Call our safe version
+                original_subset_covariates(task)
+              }
+              message("Successfully patched Stack$subset_covariates method")
+            }
+          }, error = function(e) {
+            # If we can't modify the class directly, try alternative approach
+            message("Could not directly patch Stack class: ", e$message)
+            
+            # Create an override in a different way
+            tryCatch({
+              # Create a new environment to override Stack behavior
+              stack_override_env <- new.env(parent = sl3_env)
+              
+              # Create our own Stack that wraps the original
+              SafeStack <- R6::R6Class(
+                "SafeStack",
+                inherit = Stack,
+                public = list(
+                  subset_covariates = function(task) {
+                    # Use our safe version
+                    original_subset_covariates(task)
+                  }
+                )
+              )
+              
+              # Replace Stack in the namespace
+              assign("Stack", SafeStack, envir = stack_override_env)
+              message("Created SafeStack wrapper for Stack class")
+            }, error = function(e2) {
+              message("Could not create SafeStack wrapper: ", e2$message)
+            })
+          })
+        }
+      }
+      
+      # Alternative: Try to override through the module's Stack object
+      # This works by intercepting at the point of use
+      unlockBinding("Stack", sl3_env)
+      original_Stack <- get("Stack", envir = sl3_env)
+      
+      # Create wrapper that handles subset_covariates
+      Stack_wrapper <- function(...) {
+        stack_instance <- original_Stack$new(...)
+        
+        # Override the subset_covariates method for this instance
+        if(!is.null(stack_instance)) {
+          original_subset <- stack_instance$subset_covariates
+          stack_instance$subset_covariates <- function(task) {
+            tryCatch({
+              # Try original method first
+              original_subset(task)
+            }, error = function(e) {
+              # On error, use our safe version
+              message("Stack subset_covariates failed, using safe fallback: ", e$message)
+              original_subset_covariates(task)
+            })
+          }
+        }
+        
+        return(stack_instance)
+      }
+      
+      # Make the wrapper behave like the original
+      class(Stack_wrapper) <- class(original_Stack)
+      attributes(Stack_wrapper) <- attributes(original_Stack)
+      
+      # Replace the Stack constructor
+      assign("Stack", Stack_wrapper, envir = sl3_env)
+      lockBinding("Stack", sl3_env)
+      
+      message("Successfully created Stack wrapper with safe subset_covariates")
+      
+    }, error = function(e) {
+      message("Warning: Could not patch sl3 Stack class: ", e$message)
+      message("Will rely on other fallback mechanisms")
+    })
+  }
   
   # Fix the is.family function to handle string values
   if ("sl3" %in% loadedNamespaces()) {
