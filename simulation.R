@@ -52,6 +52,7 @@ library(purrr)
 library(origami)
 library(sl3)
 options(sl3.verbose = FALSE)
+options(expressions = 500000)
 library(methods) # For R6 class operations
 library(nnet)
 library(ranger)
