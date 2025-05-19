@@ -36,7 +36,7 @@ Multinom <- function(n,probs){
     probs <- matrix(nrow = n, ncol = length(probs), byrow = TRUE)
   }
   if (is.vector(probs) && !is.na(n) && n > 0) {
-    probs <- matrix(data = probs, nrow = n, ncol = length(probs), 
+    probs <- matrix(data = probs, nrow = n, ncol = length(probs),
                     byrow = TRUE)
   }
   x <- t(apply(probs, 1, function(x) rmultinom(1, 1, x)))
@@ -52,26 +52,18 @@ StochasticFun <- function(condition, d, stay_prob=0.95) {
     d <- matrix(d, n, length(d), byrow = TRUE)
   }
   J <- ncol(d)
-  
+
   # Create a matrix with higher stay probability and lower switch probability
   switch_prob <- (1 - stay_prob) / (J - 1)  # Adjusted switch probability
-  
+
   # Create a matrix for the probabilities of staying vs. switching
   probs_matrix <- matrix(switch_prob, n, J, byrow = TRUE)
   for (j in 1:J) {
     probs_matrix[, j] <- ifelse(condition == j, stay_prob, switch_prob)
   }
-  
+
   # Apply the stochastic adjustments d
   res <- probs_matrix + d
-  
-  # Ensure that no probabilities exceed 1 after the adjustment
-  res[res > 1] <- 1
-  
-  # Replace any resulting NAs with a very small number
-  if (any(is.na(res))) {
-    res[is.na(res)] <- .Machine$double.eps
-  }
-  
+
   return(res)
 }
