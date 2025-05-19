@@ -38,9 +38,16 @@ D.base <- D +
        distr = "rbern",
        prob = ifelse(V2[0] == 3, 0.085, ifelse(V2[0] == 2, 0.015, 0.035))) + 
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
-       t = 0, 
+       t = 0,
        distr = "Multinom",
-       probs =  c(ifelse(V2[0]==1 & (L3[0]>0), 1/4, 1/8), ifelse(V2[0]==3 & (L1[0]>0), 1/4, 1/8), 1/8, ifelse(V2[0]==2 & (L2[0]>0), 1/4, 1/8), ifelse(V2[0]==2 & (L1[0]>0 | L2[0]>0 | L3[0]>0), 1/4, 1/8), 1/8)) + 
+       probs =  cbind(
+         ifelse(V2[0]==1 & (L3[0]>0), 1/4, 1/8),
+         ifelse(V2[0]==3 & (L1[0]>0), 1/4, 1/8),
+         1/8,
+         ifelse(V2[0]==2 & (L2[0]>0), 1/4, 1/8),
+         ifelse(V2[0]==2 & (L1[0]>0 | L2[0]>0 | L3[0]>0), 1/4, 1/8),
+         1/8
+       )) +
   node("C",                                     # monthly_censored_indicator (no censoring at baseline)
        t = 0,
        distr = "rbern",
