@@ -305,14 +305,23 @@ def load_model_components(base_path, loss_fn, is_censoring, gbound=None, ybound=
 
 def create_temporal_split(x_data, y_data, n_pre, train_frac=0.8, val_frac=0.1):
     """Create temporally-aware train/val/test splits.
-    
+
     Args:
         x_data: Input features DataFrame
-        y_data: Target values DataFrame 
+        y_data: Target values DataFrame
         n_pre: Sequence window size
         train_frac: Fraction of sequences for training
         val_frac: Fraction of sequences for validation
     """
+
+    if not (0 < train_frac < 1):
+        raise ValueError("train_frac must be between 0 and 1")
+
+    if not (0 <= val_frac < 1):
+        raise ValueError("val_frac must be between 0 and 1")
+
+    if train_frac + val_frac >= 1:
+        raise ValueError("train_frac + val_frac must be less than 1")
     # Calculate number of complete sequences
     num_sequences = len(x_data) - n_pre + 1
     
@@ -328,20 +337,20 @@ def create_temporal_split(x_data, y_data, n_pre, train_frac=0.8, val_frac=0.1):
     train_x = x_data[:train_idx].copy()
     train_y = y_data[:train_idx].copy()
     
-    val_x = x_data[train_sequences:val_idx].copy()
-    val_y = y_data[train_sequences:val_idx].copy()
-    
-    test_x = x_data[val_sequences:].copy()
-    test_y = y_data[val_sequences:].copy()
+    val_x = x_data[train_idx:val_idx].copy()
+    val_y = y_data[train_idx:val_idx].copy()
+
+    test_x = x_data[val_idx:].copy()
+    test_y = y_data[val_idx:].copy()
     
     # Get sizes for split_info
     train_size = len(train_x)
     val_size = len(val_x)
     
     logger.info(f"\nTemporal split details:")
-    logger.info(f"Training period: samples 0 to {train_idx}")
-    logger.info(f"Validation period: samples {train_sequences} to {val_idx}")
-    logger.info(f"Testing period: samples {val_sequences} to end")
+    logger.info(f"Training period: samples 0 to {train_idx - 1}")
+    logger.info(f"Validation period: samples {train_idx} to {val_idx - 1}")
+    logger.info(f"Testing period: samples {val_idx} to end")
     logger.info(f"Sequence window size: {n_pre}")
     
     return train_x, train_y, val_x, val_y, test_x, test_y, train_size, val_size
