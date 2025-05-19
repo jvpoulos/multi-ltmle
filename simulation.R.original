@@ -109,7 +109,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   source('./src/simcausal_dgp.R', local =TRUE)
   
   # specify intervention rules (t=0 is same as observed)
-  Dset <- set.DAG(D, vecfun=c("StochasticFun")) # locks DAG, consistency checks
+  Dset <- set.DAG(D, vecfun=c("StochasticFun", "cbind")) # locks DAG, consistency checks
   
   # Call the improved function with LaTeX formatting
   if(r==1){
