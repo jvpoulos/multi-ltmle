@@ -4,8 +4,9 @@
 # Subjects are i.i.d., so the variance of each estimator is the   #
 # empirical variance of its per-subject influence curve:          #
 # SE = sd(IC_i) / sqrt(n); 95% CI = estimate +/- 1.96 SE.         #
-# G-computation with data-adaptive regressions has no analytic   #
-# influence-curve variance, so its SE and CI are NA.              #
+# G-computation with data-adaptive regressions has no valid       #
+# analytic IC; its SE uses the IC evaluated at the untargeted     #
+# fits, which ignores plug-in bias (approximate, anti-conservative).#
 ###################################################################
 
 # tmle_contrasts: list over target times (named "t=<t>") of getTMLELong() outputs, i.e. for each rule
@@ -36,6 +37,7 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
       r <- x[[rule]]
       if (gcomp) {
         est[i, rule] <- r$psi_gcomp
+        if (!is.null(r$ic_gcomp) && !anyNA(r$ic_gcomp)) se[i, rule] <- sd(r$ic_gcomp) / sqrt(length(r$ic_gcomp))
       } else if (iptw) {
         est[i, rule] <- r$psi_iptw
         if (!anyNA(r$ic_iptw)) se[i, rule] <- sd(r$ic_iptw) / sqrt(length(r$ic_iptw))

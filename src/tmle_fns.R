@@ -1061,7 +1061,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
     Y_t <- as.numeric(dat[[paste0("Y_", tstar)]])
     # targeted (LTMLE) and untargeted (g-computation) recursions
     Qstar_next <- NULL; Qg_next <- NULL
-    D <- rep(0, n)
+    D <- rep(0, n); D_g <- rep(0, n)
     eps <- rep(NA_real_, tstar + 1)
     ok <- TRUE
     for (s in tstar:0) {
@@ -1094,6 +1094,8 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
         Zg <- if (s == tstar) Y_t else ifelse(Y_s == 1, 1, Qg_next)
         step_g <- if (s == tstar) step else process_backward_sequential(dat, s, rule, tmle_covars_Y, initial_model_for_Y, ybound, Zg)
         if (is.null(step_g)) { failures <- failures + 1; gcomp <- FALSE } else {
+          # influence curve evaluated at the untargeted fits (approximate inference for g-computation)
+          D_g[in_R] <- D_g[in_R] + w * (Zg[in_R] - step_g$Q_obs[in_R])
           Qg_next <- if (!is.null(step_g$Q_a)) {
             a_prev <- as.integer(as.character(dat[[paste0("A_", s - 1)]]))
             rowSums(sapply(1:6, function(a) rule_stochastic_density(a, a_prev) * step_g$Q_a[, a]))
@@ -1124,6 +1126,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
       psi = psi, ic = ic,
       psi_iptw = psi_iptw, ic_iptw = ic_iptw,
       psi_gcomp = if (gcomp && ok) mean(Qg_next) else NA_real_,
+      ic_gcomp = if (gcomp && ok) D_g + Qg_next - mean(Qg_next) else rep(NA_real_, n),
       eps = eps, n_followers = sum(w_last > 0, na.rm = TRUE), failures = failures)
   }
   out
