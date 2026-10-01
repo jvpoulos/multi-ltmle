@@ -125,13 +125,14 @@ Contents
     - **treatment.rule**: Specify "static", "dynamic", "stochastic", or "all".
     - **gbound**/**ybound**: Bounds for propensity scores and initial predictions, respectively.
     - **J**: Number of treatments (`J=6`).
-    - **n**: Sample size (default is `12500`).
+    - **n**: Sample size (default is `10000`).
     - **t.end**: Number of time periods (must be between `4` and `36`).
-    - **R**: Number of simulation runs (default is `325`).
-    - **target.gwt**: Logical flag to adjust weights in the clever covariate (default is `TRUE`).
-    - **use.SL**: Logical flag to enable Super Learner (default is `TRUE`).
+    - **R**: Number of simulation runs (default is `100`; 5th argument of `run_simulation.sh`).
+    - **target.times**: Time points t at which psi_t = E[Y_t^d] is estimated by the `'tmle'` estimator (default all, `1..36`; 6th argument).
+    - **use.SL**: Logical flag to enable Super Learner (default is `TRUE`); `FALSE` uses GLM / multinomial logistic regression.
     - **scale.continuous**: Logical flag for scaling continuous variables.
-    - **n.folds**: Number of cross-validation folds for Super Learner (default is `5`).
+    - **n.folds**: Number of cross-validation folds for Super Learner (default is `3`).
+  - The true parameter values are computed once from a large Monte Carlo sample (5 x 100,000 per rule) and cached in `data/`.
 
 ### **long_sim_plots.R**
 - Aggregates and visualizes the output of `simulation.R`. Includes:
@@ -203,7 +204,7 @@ Instructions
 To execute simulations, use the following command:
 
 ```bash
-./run_simulation.sh [arg1] [arg2] [arg3] [arg4]
+./run_simulation.sh [arg1] [arg2] [arg3] [arg4] [R] [target_times] [output_dir]
 ```
 
 #### Arguments:
@@ -215,6 +216,9 @@ To execute simulations, use the following command:
   - `"TRUE"` or `"FALSE"`.
 - **`[arg4]`**: Logical flag for enabling MPI parallel programming:
   - `"TRUE"` or `"FALSE"`.
+- **`[R]`**: Number of simulation replicates (default `100`); replicates already saved in `output_dir` are skipped.
+- **`[target_times]`**: `"all"` or a comma-separated list such as `"6,12,18,24,30,36"` (`'tmle'` only).
+- **`[output_dir]`**: Output directory (default `./outputs/YYYYMMDD`).
 
 #### Examples:
 1. Using the `"tmle"` estimator with super learner enabled and no MPI, using 2 cores for parallel computation:

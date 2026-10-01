@@ -777,564 +777,358 @@ sequential_g <- function(t, tmle_dat, n.folds, tmle_covars_Y, initial_model_for_
   return(Y_preds)
 }
 
-process_backward_sequential <- function(tmle_dat, t, tmle_rules, essential_covars_Y, 
-                                        initial_model_for_Y_sl_cont, ybound, tmle_contrasts,
-                                        time.censored=NULL) {
-  message("Processing time point t=", t)
-  
-  # Check if time point is valid - t.end is typically 36
-  if(t > 36) {
-    warning("Invalid time point t=", t, ". Maximum supported is 36.")
-    return(NULL)
-  }
-  
-  # Create empty time.censored if not provided
-  if(is.null(time.censored)) {
-    time.censored <- data.frame(ID=integer(0), time_censored=integer(0))
-  }
-  
-  # Subset data safely
-  tmle_dat_t <- tryCatch({
-    # First subset the data based on time point
-    subset <- tmle_dat[tmle_dat$t == t, ]
-    
-    # Then filter out censored individuals if time.censored has data
-    if(nrow(time.censored) > 0) {
-      censored_ids <- time.censored$ID[which(time.censored$time_censored < t)]
-      if(length(censored_ids) > 0) {
-        subset <- subset[!subset$ID %in% censored_ids, ]
-      }
-    }
-    
-    subset
-  }, error = function(e) {
-    message("Error subsetting data: ", e$message)
-    # Return empty data frame with required columns
-    empty_df <- data.frame(ID=integer(0), t=integer(0), Y=numeric(0))
-    empty_df
-  })
-  
-  # Early exit if no data
-  if(nrow(tmle_dat_t) == 0) {
-    warning("No data available after filtering at time t=", t)
-    # Return placeholder results
-    return(NULL)
-  }
-  
-  # Calculate mean Y value for fallback
-  mean_Y <- mean(tmle_dat_t$Y, na.rm=TRUE)
-  if(is.na(mean_Y) || !is.finite(mean_Y)) mean_Y <- 0.5
-  
-  # Skip SuperLearner entirely and use simple fallback approach
-  n_rules <- length(tmle_rules)
-  
-  # Create prediction matrix more safely
+###################################################################
+# LTMLE core (rebuilt 2026-10)                                    #
+# Sequential regression (iterated conditional expectations) for   #
+# each target time t, targeting with the cumulative clever         #
+# covariate, and influence-curve-based inference.                  #
+# Nodes per time k: L1_k, L2_k, L3_k, A_k, C_k (1 = censored), Y_k #
+###################################################################
+
+# subjects still under observation at time k (uncensored through k-1, no event through k-1)
+ltmle_at_risk <- function(dat, k) {
+  if (k == 0) return(rep(TRUE, nrow(dat)))
+  out <- dat[[paste0("C_", k - 1)]] == 0 & dat[[paste0("Y_", k - 1)]] == 0
+  out[is.na(out)] <- FALSE
+  out
+}
+
+# subjects at risk at k and uncensored at k (outcome Y_k observed)
+ltmle_uncensored <- function(dat, k) {
+  if (k == 0) return(rep(TRUE, nrow(dat)))
+  out <- ltmle_at_risk(dat, k) & dat[[paste0("C_", k)]] == 0
+  out[is.na(out)] <- FALSE
+  out
+}
+
+ltmle_onehot <- function(a, prefix, J = 6) {
+  m <- sapply(2:J, function(j) as.numeric(a == j))
+  if (!is.matrix(m)) m <- matrix(m, nrow = 1)
+  colnames(m) <- paste0(prefix, "_", 2:J)
+  m
+}
+
+# Design matrix at time k: baseline race (V1), diagnosis (V2), age (V3, optional), L at k and k-1,
+# squared change in L1, indicators used by the rules, A_{k-1}, and optionally A_k.
+ltmle_design <- function(dat, k, A = NULL, include_V3 = TRUE, J = 6) {
+  n <- nrow(dat)
+  L1 <- as.numeric(dat[[paste0("L1_", k)]])
+  L2 <- as.numeric(dat[[paste0("L2_", k)]])
+  L3 <- as.numeric(dat[[paste0("L3_", k)]])
+  lag <- function(v) if (k == 0) rep(0, n) else as.numeric(dat[[paste0(v, "_", k - 1)]])
+  V1 <- as.integer(as.character(dat$V1_0))
+  V2 <- as.integer(as.character(dat$V2_0))
+  X <- cbind(V1_2 = as.numeric(V1 == 2), V1_3 = as.numeric(V1 == 3), V1_4 = as.numeric(V1 == 4),
+             V2_2 = as.numeric(V2 == 2), V2_3 = as.numeric(V2 == 3),
+             L1 = L1, L2 = L2, L3 = L3, L1_pos = as.numeric(L1 > 0),
+             L_any = as.numeric(L1 > 0 | L2 > 0 | L3 > 0),
+             L1_lag = lag("L1"), L2_lag = lag("L2"), L3_lag = lag("L3"),
+             dL1_sq = (L1 - lag("L1"))^2)
+  if (include_V3) X <- cbind(V3 = as.numeric(dat$V3_0), X)
+  if (k > 0) X <- cbind(X, ltmle_onehot(as.integer(as.character(dat[[paste0("A_", k - 1)]])), "A_lag", J))
+  if (!is.null(A)) X <- cbind(X, ltmle_onehot(A, "A", J))
+  X
+}
+
+# lapply over time points, in forked processes when cores > 1 (a crashed worker raises an error)
+ltmle_lapply <- function(X, FUN, cores = 1) {
+  if (cores <= 1) return(lapply(X, FUN))
+  out <- parallel::mclapply(X, FUN, mc.cores = cores, mc.preschedule = FALSE)
+  if (any(sapply(out, inherits, "try-error"))) stop("ltmle_lapply: a worker failed: ", out[sapply(out, inherits, "try-error")][[1]])
+  out
+}
+
+# Fit a regression of y on X with either sl3 Super Learner (use_sl=TRUE) or a parametric model.
+# The SL's cross-validation folds are set on the sl3 task (V = n.folds); Lrnr_sl has no cv_folds argument.
+# type: "binary" (0/1 outcome), "continuous" (outcome in [0,1]), "categorical" (factor 1..J).
+# Returns a function predicting on new design matrices, or NULL on failure (logged, never imputed).
+ltmle_fit <- function(X, y, type, use_sl = TRUE, n.folds = 3, J = 6) {
+  keep <- apply(X, 2, function(x) length(unique(x)) > 1)
+  X <- X[, keep, drop = FALSE]
+  cols <- colnames(X)
   tryCatch({
-    # Create matrix with proper dimensions
-    prediction_matrix <- matrix(mean_Y, nrow=nrow(tmle_dat_t), ncol=n_rules)
-    
-    # Add column names safely
-    if(!is.null(names(tmle_rules)) && length(names(tmle_rules)) == n_rules) {
-      colnames(prediction_matrix) <- names(tmle_rules)
-    } else {
-      # Create default column names if needed
-      colnames(prediction_matrix) <- paste0("rule_", 1:n_rules)
+    if (type == "categorical") {
+      y <- factor(y, levels = 1:J)
+      if (use_sl) {
+        dt <- data.table::data.table(X); dt$y <- y
+        task <- sl3_Task$new(dt, covariates = cols, outcome = "y", outcome_type = "categorical", folds = n.folds)
+        fit <- create_treatment_model_sl(n.folds)$train(task)
+        return(function(Xnew) {
+          dn <- data.table::data.table(Xnew[, cols, drop = FALSE]); dn$y <- factor(rep(1, nrow(dn)), levels = 1:J)
+          p <- unpack_predictions(fit$predict(sl3_Task$new(dn, covariates = cols, outcome = "y", outcome_type = "categorical")))
+          out <- matrix(0, nrow(Xnew), J); colnames(out) <- 1:J
+          out[, colnames(p)] <- p
+          out
+        })
+      }
+      df <- data.frame(X); df$y <- droplevels(y)
+      fit <- nnet::multinom(y ~ ., data = df, trace = FALSE, MaxNWts = 10000)
+      return(function(Xnew) {
+        p <- predict(fit, newdata = data.frame(Xnew[, cols, drop = FALSE]), type = "probs")
+        if (!is.matrix(p)) {
+          lv <- levels(df$y)
+          p <- if (length(lv) == 2) cbind(1 - p, p) else matrix(p, nrow = nrow(Xnew))
+          colnames(p) <- lv
+        }
+        out <- matrix(0, nrow(Xnew), J); colnames(out) <- 1:J
+        out[, colnames(p)] <- p
+        out
+      })
     }
-    
-    return(prediction_matrix)
+    if (length(unique(y)) == 1) {
+      const <- unique(y)
+      return(function(Xnew) rep(const, nrow(Xnew)))
+    }
+    if (use_sl) {
+      dt <- data.table::data.table(X); dt$y <- y
+      if (type == "binary") {
+        task <- sl3_Task$new(dt, covariates = cols, outcome = "y", outcome_type = "binomial", folds = n.folds)
+        fit <- Lrnr_sl$new(learners = learner_stack_Y, metalearner = metalearner_Y)$train(task)
+      } else {
+        task <- sl3_Task$new(dt, covariates = cols, outcome = "y", outcome_type = "continuous", folds = n.folds)
+        fit <- Lrnr_sl$new(learners = learner_stack_Y_cont, metalearner = metalearner_Y_cont)$train(task)
+      }
+      return(function(Xnew) {
+        dn <- data.table::data.table(Xnew[, cols, drop = FALSE]); dn$y <- rep_len(c(0, 1), nrow(dn)) # placeholder outcome
+        as.numeric(fit$predict(sl3_Task$new(dn, covariates = cols, outcome = "y",
+                                            outcome_type = if (type == "binary") "binomial" else "continuous")))
+      })
+    }
+    fit <- suppressWarnings(glm.fit(cbind(1, X), y, family = quasibinomial()))
+    beta <- fit$coefficients
+    beta[is.na(beta)] <- 0
+    function(Xnew) as.numeric(plogis(cbind(1, Xnew[, cols, drop = FALSE]) %*% beta))
   }, error = function(e) {
-    # Handle any matrix creation errors
-    warning("Error creating prediction matrix: ", e$message)
-    # Return a safer fallback
-    safe_matrix <- matrix(mean_Y, nrow=1, ncol=n_rules)
-    colnames(safe_matrix) <- if(!is.null(names(tmle_rules))) names(tmle_rules) else paste0("rule_", 1:n_rules)
-    return(safe_matrix)
+    message("ltmle_fit (", type, ") failed: ", conditionMessage(e))
+    NULL
   })
 }
 
-###################################################################
-# TMLE targeting step:                                            #
-# estimate each treatment rule-specific mean                      #
-###################################################################
-getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_bounded, 
-                        C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end, analysis=FALSE, debug=FALSE){
-  # Initialize timer if debugging is enabled
-  if(debug) start_time <- Sys.time()
-  
-  # Robust check for the initial model structure
-  if(is.null(initial_model_for_Y)) {
-    stop("initial_model_for_Y cannot be NULL")
-  }
-  
-  # Handle case where initial_model_for_Y is a vector (predictions only)
-  if(is.vector(initial_model_for_Y) && !is.list(initial_model_for_Y)) {
-    Y_preds <- initial_model_for_Y
-    
-    # Default data structure (need to have compatible structure)
-    tmle_dat_sub <- data.frame(
-      ID = 1:length(Y_preds),
-      Y = NA,
-      C = 0,
-      A = NA
-    )
-    
-    # Create proper model structure
-    initial_model_for_Y <- list(
-      "preds" = Y_preds,
-      "fit" = NULL,
-      "data" = tmle_dat_sub
-    )
-  }
-  
-  # Extract initial model components with proper checks
-  initial_model_for_Y_preds <- if(!is.null(initial_model_for_Y$preds)) {
-    initial_model_for_Y$preds
-  } else {
-    stop("Cannot extract predictions from initial_model_for_Y")
-  }
-  
-  initial_model_for_Y_data <- if(!is.null(initial_model_for_Y$data)) {
-    initial_model_for_Y$data
-  } else {
-    stop("Cannot extract data from initial_model_for_Y")
-  }
-  
-  initial_model_for_Y_sl_fit <- if(!is.null(initial_model_for_Y$fit)) {
-    initial_model_for_Y$fit
-  } else {
-    NULL
-  }
-  
-  # Create fallback model if needed
-  if(is.null(initial_model_for_Y_sl_fit)) {
-    mean_Y <- mean(initial_model_for_Y_data$Y, na.rm=TRUE)
-    if(is.na(mean_Y) || !is.finite(mean_Y)) mean_Y <- 0.5
-    
-    initial_model_for_Y_sl_fit <- list(
-      predict = function(newdata) rep(mean_Y, nrow(if(is.data.frame(newdata)) newdata else initial_model_for_Y_data))
-    )
-    class(initial_model_for_Y_sl_fit) <- "intercept_model"
-  }
-  
-  # Get censoring status - handle NA values properly
-  C <- initial_model_for_Y_data$C
-  C[is.na(C)] <- 0  # Treat NA censoring as uncensored
-  
-  # Create QAW matrix with proper dimensions
-  Qs <- matrix(NA, nrow=nrow(initial_model_for_Y_data), ncol=length(tmle_rules))
-  colnames(Qs) <- names(tmle_rules)
-  
-  # Define faster utility functions
-  fast_expit <- function(x) 1/(1+exp(-pmin(pmax(x, -100), 100)))
-  fast_logit <- function(p) log(pmax(pmin(p, 0.9999), 0.0001)/(1-pmax(pmin(p, 0.9999), 0.0001)))
-  
-  # Process each rule with enhanced efficiency
-  for(i in seq_along(tmle_rules)) {
-    rule <- names(tmle_rules)[i]
-    
-    if(debug) cat("Processing rule:", rule, "\n")
-    
-    # Use a rule-specific approach to shift treatment
-    shifted_data <- initial_model_for_Y_data
-    
-    # Get rule function and prepare treatment columns
-    rule_fn <- tmle_rules[[rule]]
-    treat_cols <- grep("^A[0-9]", names(shifted_data), value=TRUE)
-    
-    # Apply treatment rule to batches of data for better performance
-    batch_size <- min(500, nrow(shifted_data))
-    num_batches <- ceiling(nrow(shifted_data) / batch_size)
-    
-    for(batch_idx in 1:num_batches) {
-      # Calculate batch range
-      start_idx <- (batch_idx - 1) * batch_size + 1
-      end_idx <- min(batch_idx * batch_size, nrow(shifted_data))
-      
-      # Process each row in the batch
-      for(row_idx in start_idx:end_idx) {
-        # Apply the rule to get treatment assignments
-        tryCatch({
-          # Get current row
-          current_row <- shifted_data[row_idx,, drop=FALSE]
-          
-          # Apply rule function
-          shifted_treatments <- rule_fn(current_row)
-          
-          # Ensure treatments are properly formatted
-          if(is.list(shifted_treatments)) shifted_treatments <- unlist(shifted_treatments)
-          if(is.matrix(shifted_treatments)) shifted_treatments <- shifted_treatments[1,]
-          
-          # Apply treatments to data
-          if(length(treat_cols) > 0 && length(shifted_treatments) > 0) {
-            if(!is.null(names(shifted_treatments))) {
-              # Match by name
-              common_cols <- intersect(treat_cols, names(shifted_treatments))
-              if(length(common_cols) > 0) {
-                for(col in common_cols) {
-                  shifted_data[row_idx, col] <- shifted_treatments[col]
-                }
-              }
-            } else {
-              # Match by position
-              for(j in 1:min(length(treat_cols), length(shifted_treatments))) {
-                shifted_data[row_idx, treat_cols[j]] <- shifted_treatments[j]
-              }
-            }
-          }
-        }, error = function(e) {
-          if(debug) cat("Rule application error in row", row_idx, ":", e$message, "\n")
-        })
-      }
-    }
-    
-    # Attempt prediction more efficiently
-    if(debug) cat("Attempting prediction for rule", rule, "\n")
-    
-    # Try direct SL prediction if model is available
-    shifted_preds <- NULL
-    
-    # Make prediction with various fallback options
-    if(inherits(initial_model_for_Y_sl_fit, "Lrnr_base") || 
-       inherits(initial_model_for_Y_sl_fit, "intercept_model")) {
-      
-      # Try direct prediction first
-      shifted_preds <- tryCatch({
-        # Add any missing covariates needed for prediction
-        if(inherits(initial_model_for_Y_sl_fit, "Lrnr_base") && 
-           !is.null(initial_model_for_Y_sl_fit$fit_object) && 
-           !is.null(initial_model_for_Y_sl_fit$fit_object$params) && 
-           !is.null(initial_model_for_Y_sl_fit$fit_object$params$covariates)) {
-          
-          missing_covs <- setdiff(initial_model_for_Y_sl_fit$fit_object$params$covariates, colnames(shifted_data))
-          if(length(missing_covs) > 0) {
-            for(cov in missing_covs) shifted_data[[cov]] <- 0
-          }
-        }
-        
-        # Make direct prediction
-        preds <- initial_model_for_Y_sl_fit$predict(shifted_data)
-        if(debug) cat("Prediction successful for rule", rule, "\n")
-        preds
-      }, error = function(e) {
-        if(debug) cat("Prediction failed:", e$message, "\n")
-        NULL
-      })
-    }
-    
-    # If direct prediction fails, use a simpler approach
-    if(is.null(shifted_preds) || length(shifted_preds) != nrow(shifted_data)) {
-      if(debug) cat("Using fallback prediction for rule", rule, "\n")
-      
-      # Try simplified rule-specific prediction
-      shifted_preds <- tryCatch({
-        # Create simplified prediction
-        if(rule == "static") {
-          # Use initial predictions with slight rule adjustment
-          adjusted_preds <- initial_model_for_Y_preds + rnorm(length(initial_model_for_Y_preds), 0, 0.01) 
-        } else if(rule == "dynamic") {
-          # Add slightly different adjustment
-          adjusted_preds <- initial_model_for_Y_preds + rnorm(length(initial_model_for_Y_preds), 0.01, 0.01)
-        } else {
-          # Stochastic rule gets a third adjustment
-          adjusted_preds <- initial_model_for_Y_preds + rnorm(length(initial_model_for_Y_preds), -0.01, 0.01)
-        }
-        adjusted_preds
-      }, error = function(e) {
-        # Final fallback - use initial predictions
-        if(debug) cat("Simplified prediction failed:", e$message, "\n")
-        initial_model_for_Y_preds
-      })
-    }
-    
-    # Bound predictions
-    Qs[, i] <- pmin(pmax(shifted_preds, ybound[1]), ybound[2])
-  }
-  
-  # Create QAW matrix with bounds
-  QAW <- cbind(QA=as.numeric(initial_model_for_Y_preds), Qs)
-  colnames(QAW) <- c("QA", colnames(Qs))
-  QAW[is.na(QAW)] <- 0.5
-  QAW <- pmin(pmax(QAW, ybound[1]), ybound[2])
-  
-  # Compute clever covariates and weights more efficiently
-  clever_covariates <- matrix(0, nrow=nrow(initial_model_for_Y_data), ncol=length(tmle_rules))
-  weights <- matrix(0, nrow=nrow(initial_model_for_Y_data), ncol=length(tmle_rules))
-  
-  # Get relevant columns for rule application
-  has_mdd <- "mdd" %in% colnames(initial_model_for_Y_data)
-  has_bipolar <- "bipolar" %in% colnames(initial_model_for_Y_data)
-  has_schiz <- "schiz" %in% colnames(initial_model_for_Y_data)
-  has_L <- all(c("L1", "L2", "L3") %in% colnames(initial_model_for_Y_data))
-  
-  # Process clever covariates and weights for each rule
-  for(i in seq_along(tmle_rules)) {
-    rule <- names(tmle_rules)[i]
-    
-    if(debug) cat("Processing weights for rule", rule, "\n")
-    
-    # Apply rule-specific approach to flagging observations
-    if(rule == "static") {
-      # Default to all uncensored
-      clever_covariates[C == 0, i] <- 1
-      
-      # Refine if diagnosis columns exist
-      if(has_mdd || has_bipolar || has_schiz) {
-        # Reset to zero
-        clever_covariates[, i] <- 0
-        
-        # Add appropriate flags
-        if(has_mdd) clever_covariates[C == 0 & initial_model_for_Y_data$mdd == 1, i] <- 1
-        if(has_bipolar) clever_covariates[C == 0 & initial_model_for_Y_data$bipolar == 1, i] <- 1
-        if(has_schiz) clever_covariates[C == 0 & initial_model_for_Y_data$schiz == 1, i] <- 1
-      }
-    } else if(rule == "dynamic") {
-      # Default to all uncensored
-      clever_covariates[C == 0, i] <- 1
-      
-      # Refine if L and diagnosis columns exist
-      if(has_L) {
-        has_symptoms <- initial_model_for_Y_data$L1 > 0 | 
-          initial_model_for_Y_data$L2 > 0 | 
-          initial_model_for_Y_data$L3 > 0
-        
-        # Reset to zero
-        clever_covariates[, i] <- 0
-        
-        # Add appropriate flags based on diagnosis and symptoms
-        if(has_mdd) clever_covariates[C == 0 & initial_model_for_Y_data$mdd == 1 & has_symptoms, i] <- 1
-        if(has_bipolar) clever_covariates[C == 0 & initial_model_for_Y_data$bipolar == 1 & has_symptoms, i] <- 1
-        if(has_schiz) clever_covariates[C == 0 & initial_model_for_Y_data$schiz == 1 & has_symptoms, i] <- 1
-        
-        # If no matching observations, fall back to diagnosis only
-        if(sum(clever_covariates[, i]) == 0) {
-          if(has_mdd) clever_covariates[C == 0 & initial_model_for_Y_data$mdd == 1, i] <- 1
-          if(has_bipolar) clever_covariates[C == 0 & initial_model_for_Y_data$bipolar == 1, i] <- 1
-          if(has_schiz) clever_covariates[C == 0 & initial_model_for_Y_data$schiz == 1, i] <- 1
-        }
-      }
+# Treatment models g_k(a | history) for k = 0..K among subjects at risk at k.
+# arm = "multinomial": one multinomial model per time; "binomial": J separate one-vs-rest
+# binary models per time (predictions are not renormalised). Returns a list of n x J matrices
+# (NA rows outside the risk set) and the number of failed fits.
+fit_treatment_models <- function(dat, K, arm = "multinomial", use_sl = TRUE, n.folds = 3, J = 6, cores = 1) {
+  n <- nrow(dat)
+  g <- ltmle_lapply(0:K, function(k) {
+    failures <- 0
+    out <- matrix(NA_real_, n, J, dimnames = list(NULL, 1:J))
+    rs <- ltmle_at_risk(dat, k)
+    X <- ltmle_design(dat, k)[rs, , drop = FALSE]
+    a <- as.integer(as.character(dat[[paste0("A_", k)]]))[rs]
+    if (arm == "multinomial") {
+      pred <- ltmle_fit(X, a, "categorical", use_sl, n.folds, J)
+      if (is.null(pred)) return(list(g = out, failures = 1))
+      out[rs, ] <- pred(X)
     } else {
-      # Stochastic rule - use all uncensored
-      clever_covariates[C == 0, i] <- 1
-    }
-    
-    # Ensure we have some observations
-    if(sum(clever_covariates[, i]) == 0) {
-      clever_covariates[C == 0, i] <- 1
-    }
-    
-    # Calculate weights
-    rule_idx <- which(clever_covariates[, i] > 0)
-    if(length(rule_idx) > 0) {
-      # Extract treatment probabilities if available
-      if(!is.null(obs.treatment) && nrow(obs.treatment) >= max(rule_idx)) {
-        if(ncol(obs.treatment) > 0) {
-          rule_weights <- rowSums(obs.treatment[rule_idx, , drop=FALSE], na.rm=TRUE) / 
-            max(1, ncol(obs.treatment))
-          rule_weights[is.na(rule_weights) | rule_weights <= 0] <- gbound[1]
-          weights[rule_idx, i] <- rule_weights / sum(rule_weights, na.rm=TRUE)
-        } else {
-          weights[rule_idx, i] <- 1 / length(rule_idx)
-        }
-      } else {
-        weights[rule_idx, i] <- 1 / length(rule_idx)
+      for (j in 1:J) {
+        pred <- ltmle_fit(X, as.numeric(a == j), "binary", use_sl, n.folds, J)
+        if (is.null(pred)) { failures <- failures + 1; next }
+        out[rs, j] <- pred(X)
       }
     }
-  }
-  
-  # Ensure all weight columns sum to 1
-  for(i in 1:ncol(weights)) {
-    col_sum <- sum(weights[, i], na.rm=TRUE)
-    if(col_sum > 0) {
-      weights[, i] <- weights[, i] / col_sum
-    } else {
-      # Use uniform weights if column sums to 0
-      idx <- clever_covariates[, i] > 0
-      if(any(idx)) weights[idx, i] <- 1 / sum(idx)
-    }
-  }
-  
-  # Targeting step with improved efficiency
-  updated_model_for_Y <- vector("list", length(tmle_rules))
-  Qstar <- matrix(NA, nrow=nrow(initial_model_for_Y_data), ncol=length(tmle_rules))
-  colnames(Qstar) <- names(tmle_rules)
-  
-  # Determine if we're at the last time point
-  is_last_timepoint <- FALSE
-  if(!is.null(initial_model_for_Y_data$t)) {
-    is_last_timepoint <- any(initial_model_for_Y_data$t == t.end, na.rm=TRUE)
-  }
-  
-  # Extract observed outcomes
-  Y_values <- initial_model_for_Y_data$Y
-  
-  # Process each rule targeting step efficiently
-  for(i in seq_along(tmle_rules)) {
-    rule <- names(tmle_rules)[i]
-    
-    # Select appropriate outcome source
-    if(is_last_timepoint) {
-      # At final time point, prefer observed outcomes if available
-      valid_outcomes <- sum(!is.na(Y_values) & Y_values != -1, na.rm=TRUE)
-      outcome_source <- if(valid_outcomes > 10) Y_values else QAW[, 1]
-    } else {
-      # Not final time point - use predictions
-      outcome_source <- QAW[, 1]
-    }
-    
-    # Create model data for targeting
-    model_data <- data.frame(
-      y = pmin(pmax(outcome_source, 0.0001), 0.9999),
-      offset = fast_logit(QAW[, i+1]),
-      weights = weights[, i]
-    )
-    
-    # Filter valid rows
-    valid_rows <- !is.na(model_data$y) & 
-      !is.na(model_data$offset) & 
-      !is.na(model_data$weights) &
-      is.finite(model_data$y) &
-      is.finite(model_data$offset) &
-      is.finite(model_data$weights) &
-      model_data$y != -1 &
-      model_data$weights > 0
-    
-    # Fit targeting model
-    fit_data <- model_data[valid_rows, , drop=FALSE]
-    
-    # Add stabilization for extreme weights
-    weight_quantiles <- quantile(fit_data$weights, c(0.01, 0.99), na.rm=TRUE)
-    fit_data$weights <- pmin(pmax(fit_data$weights, weight_quantiles[1]), weight_quantiles[2])
-    
-    # Use more robust convergence settings
-    updated_model_for_Y[[i]] <- tryCatch({
-      glm(
-        y ~ 1 + offset(offset),
-        weights = weights,
-        family = binomial(),
-        data = fit_data,
-        control = list(maxit = 100, epsilon = 1e-8, trace = FALSE)
-      )
-    }, error = function(e) {
-      message("Targeting model failed for rule ", i, " at time ", t, ": ", e$message)
-      # More robust fallback - use a simpler model
-      tryCatch({
-        # Try a weighted mean approach if GLM fails
-        epsilon <- weighted.mean(fit_data$y - fast_expit(fit_data$offset), w=fit_data$weights, na.rm=TRUE)
-        
-        # Create minimal model object with just the estimated coefficient
-        dummy_model <- list(coefficients = c("(Intercept)" = epsilon))
-        class(dummy_model) <- "glm"
-        dummy_model
-      }, error = function(e2) {
-        message("Fallback also failed: ", e2$message)
-        NULL
-      })
-    })
-    
-    # Apply targeting transformation
-    if(is.null(updated_model_for_Y[[i]])) {
-      # No targeting - use initial predictions
-      Qstar[, i] <- QAW[, i+1]
-    } else {
-      # Get epsilon from model
-      epsilon <- tryCatch({
-        if(inherits(updated_model_for_Y[[i]], "glm")) {
-          epsi <- coef(updated_model_for_Y[[i]])[1]
-          # Bound extreme values
-          if(!is.finite(epsi) || abs(epsi) > 5) {
-            epsi <- sign(epsi) * min(abs(epsi), 5)
-          }
-          epsi
-        } else {
-          0
-        }
-      }, error = function(e) {
-        0
-      })
-      
-      # Apply targeted transformation
-      base_probs <- QAW[, i+1]
-      logit_values <- fast_logit(base_probs)
-      shifted_logits <- logit_values + epsilon
-      Qstar[, i] <- pmin(pmax(fast_expit(shifted_logits), ybound[1]), ybound[2])
-    }
-  }
-  
-  # Calculate IPTW estimates efficiently
-  Qstar_iptw <- rep(NA, length(tmle_rules))
-  names(Qstar_iptw) <- names(tmle_rules)
-  
-  for(i in seq_along(tmle_rules)) {
-    valid_idx <- clever_covariates[, i] > 0
-    if(any(valid_idx)) {
-      outcomes <- Y_values[valid_idx]
-      weight_vals <- weights[valid_idx, i]
-      
-      valid_outcome <- !is.na(outcomes) & outcomes != -1
-      if(any(valid_outcome)) {
-        Qstar_iptw[i] <- tryCatch({
-          weighted.mean(outcomes[valid_outcome], weight_vals[valid_outcome], na.rm = TRUE)
-        }, error = function(e) {
-          mean(QAW[, i+1], na.rm=TRUE)
-        })
-      } else {
-        Qstar_iptw[i] <- mean(QAW[, i+1], na.rm=TRUE)
-      }
-    } else {
-      Qstar_iptw[i] <- mean(QAW[, i+1], na.rm=TRUE)
-    }
-    
-    # Ensure IPTW estimates are bounded
-    Qstar_iptw[i] <- pmin(pmax(Qstar_iptw[i], ybound[1]), ybound[2])
-  }
-  
-  # G-computation estimates
-  Qstar_gcomp <- as.matrix(QAW[, -1, drop=FALSE])
-  
-  # Add before the return statement in getTMLELong
-  # Ensure no NA values in Qstar matrix
-  if(any(is.na(Qstar))) {
-    message("Fixing NA values in Qstar")
-    for(col in 1:ncol(Qstar)) {
-      na_indices <- which(is.na(Qstar[,col]))
-      if(length(na_indices) > 0) {
-        # Calculate mean of valid values
-        valid_values <- Qstar[!is.na(Qstar[,col]), col]
-        if(length(valid_values) > 0) {
-          col_mean <- mean(valid_values)
-        } else {
-          col_mean <- 0.5  # Default value
-        }
-        
-        # Replace NA values
-        Qstar[na_indices, col] <- col_mean
-      }
-    }
-    
-    # Apply bounds to ensure valid values
-    Qstar <- pmin(pmax(Qstar, ybound[1]), ybound[2])
-  }
-  
-  # Print timing information if debugging
-  if(debug) {
-    end_time <- Sys.time()
-    cat("Total getTMLELong execution time:", difftime(end_time, start_time, units="secs"), "seconds\n")
-  }
-  
-  # Return results
-  return(list(
-    "Qs" = Qs,
-    "QAW" = QAW,
-    "clever_covariates" = clever_covariates,
-    "weights" = weights,
-    "updated_model_for_Y" = updated_model_for_Y,
-    "Qstar" = Qstar,
-    "Qstar_iptw" = Qstar_iptw,
-    "Qstar_gcomp" = Qstar_gcomp,
-    "ID" = initial_model_for_Y_data$ID,
-    "Y" = Y_values
-  ))
+    list(g = out, failures = failures)
+  }, cores)
+  list(g = lapply(g, `[[`, "g"), failures = sum(sapply(g, `[[`, "failures")))
 }
+
+# Censoring models P(C_k = 0 | history, A_k) for k = 1..K among subjects at risk at k.
+# Age (V3) is excluded: it affects only censoring (age-out at 65) and no other node, so
+# coarsening at random holds given (L, A) history alone, while conditioning on V3 would make
+# P(C_k = 0) = 0 after age 65 (a structural positivity violation).
+fit_censoring_models <- function(dat, K, use_sl = TRUE, n.folds = 3, J = 6, cores = 1) {
+  n <- nrow(dat)
+  gC <- ltmle_lapply(seq_len(K), function(k) {
+    out <- rep(NA_real_, n)
+    rs <- ltmle_at_risk(dat, k)
+    X <- ltmle_design(dat, k, A = as.integer(as.character(dat[[paste0("A_", k)]])), include_V3 = FALSE)[rs, , drop = FALSE]
+    pred <- ltmle_fit(X, as.numeric(dat[[paste0("C_", k)]][rs] == 0), "binary", use_sl, n.folds, J)
+    if (is.null(pred)) return(list(gC = out, failures = 1))
+    out[rs] <- pred(X)
+    list(gC = out, failures = 0)
+  }, cores)
+  list(gC = lapply(gC, `[[`, "gC"), failures = sum(sapply(gC, `[[`, "failures")))
+}
+
+# Cumulative clever-covariate weights for one rule.
+# Deterministic rules: W_s = prod_{k<=s} I(A_k = d_k) / g_k(d_k) * prod_{k=1..s} 1 / P(C_k = 0).
+# Stochastic rule: W_s = prod_{k=1..s} g*(A_k | A_{k-1}) / g_k(A_k) * prod_{k=1..s} 1 / P(C_k = 0).
+# The per-time density ratio g*/g is bounded above at 1/gbound[1] (for deterministic rules g* = 1, i.e.
+# g is bounded below at gbound[1]; bounding g itself would down-weight the stochastic rule's switches,
+# whose probability is ~0.01). P(C = 0) is bounded below at gbound[1]. cum_prob is the unbounded cumulative probability
+# of the rule path (deterministic) or g/g* ratio (stochastic), used for the positivity diagnostic.
+rule_weights <- function(dat, rule, g, gC, K, gbound) {
+  n <- nrow(dat)
+  V2 <- dat$V2_0
+  cumw <- rep(1, n); follow <- rep(TRUE, n); cum_prob <- rep(1, n)
+  W <- vector("list", K + 1); P <- vector("list", K + 1); D <- vector("list", K + 1)
+  a_prev <- NULL
+  for (k in 0:K) {
+    a_obs <- as.integer(as.character(dat[[paste0("A_", k)]]))
+    if (rule == "stochastic") {
+      if (k > 0) {
+        g_obs <- g[[k + 1]][cbind(seq_len(n), a_obs)]
+        g_star <- rule_stochastic_density(a_obs, a_prev)
+        cumw <- cumw * pmin(g_star / g_obs, 1 / gbound[1]) # density ratio bounded at 1/gbound[1]
+        cum_prob <- cum_prob * g_obs / g_star
+      }
+    } else {
+      d <- rule_assign(rule, k, V2, dat[[paste0("L1_", k)]], dat[[paste0("L2_", k)]], dat[[paste0("L3_", k)]])
+      D[[k + 1]] <- d
+      g_d <- g[[k + 1]][cbind(seq_len(n), d)]
+      follow <- follow & (a_obs == d)
+      cumw <- cumw / pmax(g_d, gbound[1])
+      cum_prob <- cum_prob * g_d
+    }
+    if (k > 0) cumw <- cumw / pmax(gC[[k]], gbound[1])
+    in_R <- ltmle_uncensored(dat, k)
+    W[[k + 1]] <- ifelse(in_R, ifelse(follow, cumw, 0), NA_real_)
+    P[[k + 1]] <- ifelse(in_R & follow, cum_prob, NA_real_)
+    a_prev <- a_obs
+  }
+  list(W = W, cum_prob = P, d = D, rule = rule)
+}
+
+###################################################################
+# One step s of the backward recursion for one rule:              #
+# regress the pseudo-outcome Z_s on history among subjects at     #
+# risk and uncensored at s, then predict under observed A_s and   #
+# under the rule for everyone at risk at s.                       #
+# tmle_contrasts: pseudo-outcome vector Z_s (length n)            #
+# essential_covars_Y: design function (dat, k, A) -> matrix       #
+# initial_model_for_Y_sl_cont: list(use_sl, n.folds)              #
+###################################################################
+process_backward_sequential <- function(tmle_dat, t, tmle_rules, essential_covars_Y,
+                                        initial_model_for_Y_sl_cont, ybound, tmle_contrasts,
+                                        time.censored=NULL) {
+  J <- 6
+  s <- t
+  rule <- tmle_rules
+  n <- nrow(tmle_dat)
+  in_R <- ltmle_uncensored(tmle_dat, s)
+  at_risk <- ltmle_at_risk(tmle_dat, s)
+  a_obs <- as.integer(as.character(tmle_dat[[paste0("A_", s)]]))
+  Z <- tmle_contrasts
+  type <- if (all(Z[in_R] %in% c(0, 1))) "binary" else "continuous"
+  pred <- ltmle_fit(essential_covars_Y(tmle_dat, s, A = a_obs)[in_R, , drop = FALSE], Z[in_R], type,
+                    initial_model_for_Y_sl_cont$use_sl, initial_model_for_Y_sl_cont$n.folds, J)
+  if (is.null(pred)) return(NULL)
+  bound <- function(p) pmin(pmax(p, ybound[1]), ybound[2])
+  Q_obs <- rep(NA_real_, n)
+  Q_obs[in_R] <- bound(pred(essential_covars_Y(tmle_dat, s, A = a_obs)[in_R, , drop = FALSE]))
+  Q_a <- NULL
+  Q_d <- rep(NA_real_, n)
+  if (rule == "stochastic") {
+    if (s == 0) {
+      # A_0 keeps its natural distribution under the stochastic rule
+      Q_d[at_risk] <- bound(pred(essential_covars_Y(tmle_dat, s, A = a_obs)[at_risk, , drop = FALSE]))
+    } else {
+      a_prev <- as.integer(as.character(tmle_dat[[paste0("A_", s - 1)]]))
+      Q_a <- matrix(NA_real_, n, J)
+      for (a in 1:J) {
+        Q_a[at_risk, a] <- bound(pred(essential_covars_Y(tmle_dat, s, A = rep(a, n))[at_risk, , drop = FALSE]))
+      }
+    }
+  } else {
+    d <- rule_assign(rule, s, tmle_dat$V2_0, tmle_dat[[paste0("L1_", s)]], tmle_dat[[paste0("L2_", s)]], tmle_dat[[paste0("L3_", s)]])
+    Q_d[at_risk] <- bound(pred(essential_covars_Y(tmle_dat, s, A = d)[at_risk, , drop = FALSE]))
+  }
+  list(Q_obs = Q_obs, Q_d = Q_d, Q_a = Q_a, in_R = in_R, at_risk = at_risk)
+}
+
+###################################################################
+# LTMLE, IPTW (Hajek) and sequential g-computation of             #
+# psi_t = E[Y_t^d] for one target time t (= t.end argument).      #
+# initial_model_for_Y: list(use_sl, n.folds) for the Q regressions#
+# tmle_rules: rule names; tmle_covars_Y: design function          #
+# g_preds_bounded / C_preds_bounded: treatment / censoring fits   #
+# obs.treatment: wide observed data; obs.rules: optional cached   #
+# rule_weights() output (computed from g and C if NULL)           #
+# Returns, per rule, point estimates and influence curves.        #
+###################################################################
+getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_bounded,
+                        C_preds_bounded, obs.treatment, obs.rules, gbound, ybound, t.end, analysis=FALSE, debug=FALSE,
+                        gcomp=TRUE){
+  dat <- obs.treatment
+  tstar <- t.end
+  n <- nrow(dat)
+  if (is.null(tmle_covars_Y)) tmle_covars_Y <- ltmle_design
+  out <- list()
+  for (rule in tmle_rules) {
+    rw <- if (!is.null(obs.rules) && !is.null(obs.rules[[rule]])) obs.rules[[rule]] else
+      rule_weights(dat, rule, g_preds_bounded, C_preds_bounded, tstar, gbound)
+    failures <- 0
+    Y_t <- as.numeric(dat[[paste0("Y_", tstar)]])
+    # targeted (LTMLE) and untargeted (g-computation) recursions
+    Qstar_next <- NULL; Qg_next <- NULL
+    D <- rep(0, n)
+    eps <- rep(NA_real_, tstar + 1)
+    ok <- TRUE
+    for (s in tstar:0) {
+      in_R <- ltmle_uncensored(dat, s)
+      Y_s <- as.numeric(dat[[paste0("Y_", s)]])
+      Z <- if (s == tstar) Y_t else ifelse(Y_s == 1, 1, Qstar_next)
+      step <- process_backward_sequential(dat, s, rule, tmle_covars_Y, initial_model_for_Y, ybound, Z)
+      if (is.null(step)) { failures <- failures + 1; ok <- FALSE; break }
+      # targeting: weighted logistic fluctuation with offset logit(Q_s(observed A_s)) and weights W_s
+      W_s <- rw$W[[s + 1]]
+      w <- W_s[in_R]
+      if (anyNA(w)) { failures <- failures + 1; ok <- FALSE; break }  # treatment/censoring fit failed
+      if (sum(w) > 0) {
+        fl <- suppressWarnings(glm(Z[in_R] ~ 1, offset = qlogis(step$Q_obs[in_R]), weights = w, family = quasibinomial()))
+        eps[s + 1] <- coef(fl)[1]
+        if (!is.finite(eps[s + 1])) { failures <- failures + 1; ok <- FALSE; break }
+      } else {
+        eps[s + 1] <- 0
+        failures <- failures + 1  # no rule-followers left to target on
+      }
+      upd <- function(q) plogis(qlogis(q) + eps[s + 1])
+      Qstar_obs <- upd(step$Q_obs)
+      Qstar_d <- if (!is.null(step$Q_a)) {
+        a_prev <- as.integer(as.character(dat[[paste0("A_", s - 1)]]))
+        rowSums(sapply(1:6, function(a) rule_stochastic_density(a, a_prev) * upd(step$Q_a[, a])))
+      } else upd(step$Q_d)
+      D[in_R] <- D[in_R] + w * (Z[in_R] - Qstar_obs[in_R])
+      Qstar_next <- Qstar_d
+      if (gcomp) {
+        Zg <- if (s == tstar) Y_t else ifelse(Y_s == 1, 1, Qg_next)
+        step_g <- if (s == tstar) step else process_backward_sequential(dat, s, rule, tmle_covars_Y, initial_model_for_Y, ybound, Zg)
+        if (is.null(step_g)) { failures <- failures + 1; gcomp <- FALSE } else {
+          Qg_next <- if (!is.null(step_g$Q_a)) {
+            a_prev <- as.integer(as.character(dat[[paste0("A_", s - 1)]]))
+            rowSums(sapply(1:6, function(a) rule_stochastic_density(a, a_prev) * step_g$Q_a[, a]))
+          } else step_g$Q_d
+        }
+      }
+    }
+    if (ok) {
+      psi <- mean(Qstar_next)
+      ic <- D + Qstar_next - psi
+    } else {
+      psi <- NA_real_; ic <- rep(NA_real_, n)
+    }
+    # IPTW (Hajek): weight at min(t, event time) for subjects observed through then
+    w_last <- rep(0, n); done <- rep(FALSE, n)
+    for (s in 0:tstar) {
+      in_R <- ltmle_uncensored(dat, s)
+      stop_here <- in_R & !done & (s == tstar | dat[[paste0("Y_", s)]] == 1)
+      stop_here[is.na(stop_here)] <- FALSE
+      w_last[stop_here] <- rw$W[[s + 1]][stop_here]
+      done <- done | stop_here
+    }
+    Yw <- ifelse(is.na(Y_t), 0, Y_t)
+    if (anyNA(w_last)) w_last[] <- NA_real_
+    psi_iptw <- if (isTRUE(sum(w_last) > 0)) sum(w_last * Yw) / sum(w_last) else NA_real_
+    ic_iptw <- if (isTRUE(sum(w_last) > 0)) w_last * (Yw - psi_iptw) / mean(w_last) else rep(NA_real_, n)
+    out[[rule]] <- list(
+      psi = psi, ic = ic,
+      psi_iptw = psi_iptw, ic_iptw = ic_iptw,
+      psi_gcomp = if (gcomp && ok) mean(Qg_next) else NA_real_,
+      eps = eps, n_followers = sum(w_last > 0, na.rm = TRUE), failures = failures)
+  }
+  out
+}
+
 ###################################################################
 # Other helper functions                                         #
 ###################################################################

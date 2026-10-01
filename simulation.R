@@ -6,7 +6,7 @@
 # Simulation function #
 ######################
 
-simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=3, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7){
+simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001,0.9999), n.folds=3, cores=1, estimator="tmle", treatment.rule = "all", use.SL=TRUE, scale.continuous=FALSE, debug =TRUE, window_size=7, target.times=NULL){
   # Set a global flag for detecting LSTM data generation issues
   start_time <- Sys.time()
   
@@ -116,13 +116,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       xjitter=0,        # No jitter for a more structured layout
       yjitter=0,        # No jitter for a more structured layout
       tmax = 3,
-      customvlabs = c("V^1", "V^2", "V^3",
-                      "L^1_0", "L^2_0", "L^3_0",
-                      "L^1_1", "L^2_1", "L^3_1",
-                      "L^1_2", "L^2_2", "L^3_2",
-                      "L^1_3", "L^2_3", "L^3_3",
-                      "A_0", "A_1", "A_2", "A_3", 
-                      "C_1", "C_2", "C_3", "Y_1", "Y_2", "Y_3"),
+      customvlabs = c("V^1", "V^2", "V^3",  # simcausal node order: by time, then L1, L2, L3, A, C, Y
+                      "L^1_0", "L^2_0", "L^3_0", "A_0",
+                      "L^1_1", "L^2_1", "L^3_1", "A_1", "C_1", "Y_1",
+                      "L^1_2", "L^2_2", "L^3_2", "A_2", "C_2", "Y_2",
+                      "L^1_3", "L^2_3", "L^3_3", "A_3", "C_3", "Y_3"),
       node_size = 8,      # Larger nodes to fit LaTeX text
       label_size = 1.5,    # Larger text labels
       label_dist = 0,      # Labels positioned at center of nodes
@@ -144,13 +142,11 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
       xjitter=0,
       yjitter=0,
       tmax = 3,
-      customvlabs = c("V^1", "V^2", "V^3",
-                      "L^1_0", "L^2_0", "L^3_0",
-                      "L^1_1", "L^2_1", "L^3_1",
-                      "L^1_2", "L^2_2", "L^3_2",
-                      "L^1_3", "L^2_3", "L^3_3",
-                      "A_0", "A_1", "A_2", "A_3", 
-                      "C_1", "C_2", "C_3", "Y_1", "Y_2", "Y_3"),
+      customvlabs = c("V^1", "V^2", "V^3",  # simcausal node order: by time, then L1, L2, L3, A, C, Y
+                      "L^1_0", "L^2_0", "L^3_0", "A_0",
+                      "L^1_1", "L^2_1", "L^3_1", "A_1", "C_1", "Y_1",
+                      "L^1_2", "L^2_2", "L^3_2", "A_2", "C_2", "Y_2",
+                      "L^1_3", "L^2_3", "L^3_3", "A_3", "C_3", "Y_3"),
       node_size = 8,
       label_size = 1.5,
       label_dist = 0,
@@ -161,6 +157,113 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     )
     
     dev.off()
+  }
+  
+  if(estimator=="tmle"){
+    ##########################################################################
+    # Super Learner (or GLM) path, rebuilt 2026-10:                          #
+    # LTMLE / IPTW / g-computation of psi_t = E[Y_t^d] under no censoring,   #
+    # with multinomial or separate binomial treatment models.                #
+    # The legacy SL code further below is no longer reached for "tmle".      #
+    ##########################################################################
+    rules <- c("static", "dynamic", "stochastic")
+    if(is.null(target.times)) target.times <- 1:t.end
+    target.times <- sort(unique(target.times))
+    K <- max(target.times)
+    truth <- compute_truth(Dset, t.end) # large-n Monte Carlo truth, cached under ./data
+    Odat <- sim(DAG = Dset, n = n, LTCF = "Y", rndseed = r, verbose = FALSE) # observed data (C = 1: censored)
+    
+    # treatment (multinomial and binomial) and censoring models, k = 0..K
+    g_multi <- fit_treatment_models(Odat, K, arm = "multinomial", use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
+    g_bin <- fit_treatment_models(Odat, K, arm = "binomial", use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
+    g_C <- fit_censoring_models(Odat, K, use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
+    weights_multi <- setNames(lapply(rules, function(rule) rule_weights(Odat, rule, g_multi$g, g_C$gC, K, gbound)), rules)
+    weights_bin <- setNames(lapply(rules, function(rule) rule_weights(Odat, rule, g_bin$g, g_C$gC, K, gbound)), rules)
+    
+    # sequential regressions for every (target time, treatment model) pair; g-computation once
+    Q_spec <- list(use_sl = use.SL, n.folds = n.folds)
+    jobs <- expand.grid(t = rev(target.times), arm = c("multinomial", "binomial"), stringsAsFactors = FALSE)
+    run_job <- function(j) {
+      arm <- jobs$arm[j]
+      tryCatch(getTMLELong(Q_spec, rules, ltmle_design,
+                           if(arm == "multinomial") g_multi$g else g_bin$g, g_C$gC, Odat,
+                           if(arm == "multinomial") weights_multi else weights_bin,
+                           gbound, ybound, jobs$t[j], gcomp = (arm == "multinomial")),
+               error = function(e) {
+                 message("getTMLELong failed (t=", jobs$t[j], ", ", arm, "): ", conditionMessage(e))
+                 NULL
+               })
+    }
+    RNGkind("L'Ecuyer-CMRG"); set.seed(r)
+    fits <- if(cores > 1) parallel::mclapply(seq_len(nrow(jobs)), run_job, mc.cores = cores, mc.preschedule = FALSE) else lapply(seq_len(nrow(jobs)), run_job)
+    fits <- lapply(fits, function(f) if(inherits(f, "try-error")) NULL else f)
+    pick <- function(arm) {
+      idx <- which(jobs$arm == arm)
+      out <- fits[idx][order(jobs$t[idx])]
+      names(out) <- paste0("t=", sort(jobs$t[idx]))
+      out
+    }
+    contrasts_multi <- pick("multinomial")
+    contrasts_bin <- pick("binomial")
+    
+    tmle_est_var <- TMLE_IC(contrasts_multi, Q_spec)
+    tmle_est_var_bin <- TMLE_IC(contrasts_bin, Q_spec)
+    iptw_est_var <- TMLE_IC(contrasts_multi, Q_spec, iptw = TRUE)
+    iptw_est_var_bin <- TMLE_IC(contrasts_bin, Q_spec, iptw = TRUE)
+    gcomp_est_var <- TMLE_IC(contrasts_multi, Q_spec, gcomp = TRUE)
+    
+    # performance metrics per estimator, rule and target time (event-probability scale)
+    impl <- if(use.SL) "SL" else "GLM"
+    est_list <- list("LTMLE-%s (multi.)" = tmle_est_var, "LTMLE-%s (bin.)" = tmle_est_var_bin,
+                     "IPTW-%s (multi.)" = iptw_est_var, "IPTW-%s (bin.)" = iptw_est_var_bin,
+                     "G-Comp-%s" = gcomp_est_var)
+    metrics <- do.call(rbind, lapply(names(est_list), function(nm) {
+      ev <- est_list[[nm]]
+      data.frame(r = r, estimator = sprintf(nm, impl),
+                 rule = rep(rules, each = length(target.times)), t = rep(target.times, length(rules)),
+                 est = as.vector(ev$est[paste0("t=", target.times), rules]),
+                 se = as.vector(ev$se[paste0("t=", target.times), rules]),
+                 truth = as.vector(truth$truth[target.times, rules]),
+                 stringsAsFactors = FALSE)
+    }))
+    metrics$lower <- metrics$est - qnorm(0.975) * metrics$se
+    metrics$upper <- metrics$est + qnorm(0.975) * metrics$se
+    metrics$bias <- metrics$est - metrics$truth
+    metrics$abs_bias <- abs(metrics$bias)
+    metrics$cover <- as.numeric(metrics$lower <= metrics$truth & metrics$truth <= metrics$upper)
+    metrics$ciw <- metrics$upper - metrics$lower
+    
+    # positivity diagnostic: among uncensored subjects following the rule through t, share whose
+    # (unbounded) cumulative probability of the rule path is < 0.025 (stochastic rule: prod g / g*)
+    positivity <- do.call(rbind, lapply(c("multinomial", "binomial"), function(arm) {
+      w <- if(arm == "multinomial") weights_multi else weights_bin
+      do.call(rbind, lapply(rules, function(rule) {
+        do.call(rbind, lapply(target.times, function(t) {
+          p <- w[[rule]]$cum_prob[[t + 1]]
+          data.frame(r = r, arm = arm, rule = rule, t = t,
+                     n_at_risk = sum(ltmle_uncensored(Odat, t)), n_followers = sum(!is.na(p)),
+                     prop_small = if(any(!is.na(p))) mean(p < 0.025, na.rm = TRUE) else NA_real_,
+                     stringsAsFactors = FALSE)
+        }))
+      }))
+    }))
+    
+    fit_failures <- sum(sapply(fits, function(f) if(is.null(f)) 1 else sum(sapply(f, function(x) x$failures))))
+    failures <- c(g_multinomial = g_multi$failures, g_binomial = g_bin$failures, g_censoring = g_C$failures,
+                  ltmle = fit_failures, jobs_failed = sum(sapply(fits, is.null)))
+    elapsed_time <- difftime(Sys.time(), start_time, units = "mins")
+    iteration_results <- list("iteration" = r, "estimator" = estimator, "n" = n, "J" = J, "t.end" = t.end,
+                              "n_folds" = n.folds, "use_SL" = use.SL, "gbound" = gbound, "ybound" = ybound,
+                              "target_times" = target.times, "metrics" = metrics, "positivity" = positivity,
+                              "failures" = failures, "truth_mc_se" = truth$mc_se[target.times, rules],
+                              "elapsed_time" = elapsed_time)
+    result_filename <- paste0(output_dir, "longitudinal_simulation_results_estimator_", estimator,
+                              "_treatment_rule_", treatment.rule, "_r_", r, "_n_", n, "_J_", J,
+                              "_n_folds_", n.folds, "_scale_continuous_", scale.continuous, "_use_SL_", use.SL, ".rds")
+    saveRDS(iteration_results, result_filename)
+    print(paste0("Replicate ", r, " finished in ", round(elapsed_time, 1), " minutes; failures: ",
+                 paste(names(failures), failures, sep = "=", collapse = ", ")))
+    return(iteration_results)
   }
   
   int.static <-c(node("A", t = 0:t.end, distr = "rconst", # Static: Everyone gets quetiap (if bipolar=2), halo (if schizophrenia=3), ari (if MDD=1) and stays on it
@@ -2980,6 +3083,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   Chat_tmle  <- C_preds_cuml_bounded
   
+  # (est is a time x rule matrix: est[t, ]; CP/CIW at time t+1 use CI[[t+1]] and the truth at t+1)
   print("Calculating bias, CP, CIW wrt to est at each t")
   
   # Fix bias calculation with better NA handling
@@ -2988,8 +3092,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     true_survival <- 1 - sapply(Y.true, "[[", t)
     
     # Check if we have estimates for this time point
-    if(t <= length(tmle_est_var$est) && !is.null(tmle_est_var$est[[t]])) {
-      est_survival <- tmle_est_var$est[[t]]
+    if(t <= nrow(tmle_est_var$est)) {
+      est_survival <- tmle_est_var$est[t, ]
       # Calculate bias (true - estimated)
       bias <- true_survival - est_survival
       return(bias)
@@ -3006,10 +3110,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     true_survival <- 1 - sapply(Y.true, "[[", t+1)
     
     # Check if we have CI information for this time point
-    if(t <= length(tmle_est_var$CI) && !is.null(tmle_est_var$CI[[t]])) {
+    if((t+1) <= length(tmle_est_var$CI) && !is.null(tmle_est_var$CI[[t+1]])) {
       # Extract lower and upper bounds
-      lower_ci <- tmle_est_var$CI[[t]][1,]
-      upper_ci <- tmle_est_var$CI[[t]][2,]
+      lower_ci <- tmle_est_var$CI[[t+1]][1,]
+      upper_ci <- tmle_est_var$CI[[t+1]][2,]
       
       # Calculate coverage (1 if CI covers true value, 0 otherwise)
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
@@ -3024,10 +3128,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   # Fix CI width calculation
   CIW_tmle <- lapply(1:(t.end-1), function(t) {
     # Check if we have CI information for this time point
-    if(t <= length(tmle_est_var$CI) && !is.null(tmle_est_var$CI[[t]])) {
+    if((t+1) <= length(tmle_est_var$CI) && !is.null(tmle_est_var$CI[[t+1]])) {
       # Extract lower and upper bounds
-      lower_ci <- tmle_est_var$CI[[t]][1,]
-      upper_ci <- tmle_est_var$CI[[t]][2,]
+      lower_ci <- tmle_est_var$CI[[t+1]][1,]
+      upper_ci <- tmle_est_var$CI[[t+1]][2,]
       
       # Calculate CI width
       ci_width <- upper_ci - lower_ci
@@ -3045,8 +3149,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     true_survival <- 1 - sapply(Y.true, "[[", t)
     
     # Check if we have estimates for this time point
-    if(t <= length(tmle_est_var_bin$est) && !is.null(tmle_est_var_bin$est[[t]])) {
-      est_survival <- tmle_est_var_bin$est[[t]]
+    if(t <= nrow(tmle_est_var_bin$est)) {
+      est_survival <- tmle_est_var_bin$est[t, ]
       # Calculate bias
       bias <- true_survival - est_survival
       return(bias)
@@ -3062,10 +3166,10 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     true_survival <- 1 - sapply(Y.true, "[[", t+1)
     
     # Check if we have CI information for this time point
-    if(t <= length(tmle_est_var_bin$CI) && !is.null(tmle_est_var_bin$CI[[t]])) {
+    if((t+1) <= length(tmle_est_var_bin$CI) && !is.null(tmle_est_var_bin$CI[[t+1]])) {
       # Calculate coverage
-      lower_ci <- tmle_est_var_bin$CI[[t]][1,]
-      upper_ci <- tmle_est_var_bin$CI[[t]][2,]
+      lower_ci <- tmle_est_var_bin$CI[[t+1]][1,]
+      upper_ci <- tmle_est_var_bin$CI[[t+1]][2,]
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
@@ -3077,8 +3181,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   
   CIW_tmle_bin <- lapply(1:(t.end-1), function(t) {
     # Check if we have CI information for this time point
-    if(t <= length(tmle_est_var_bin$CI) && !is.null(tmle_est_var_bin$CI[[t]])) {
-      ci_width <- tmle_est_var_bin$CI[[t]][2,] - tmle_est_var_bin$CI[[t]][1,]
+    if((t+1) <= length(tmle_est_var_bin$CI) && !is.null(tmle_est_var_bin$CI[[t+1]])) {
+      ci_width <- tmle_est_var_bin$CI[[t+1]][2,] - tmle_est_var_bin$CI[[t+1]][1,]
       return(ci_width)
     } else {
       # Return NA if we don't have CI for this time point
@@ -3102,8 +3206,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   bias_gcomp <- lapply(2:t.end, function(t) {
     true_survival <- 1 - sapply(Y.true, "[[", t)
     
-    if(t <= length(gcomp_est_var$est) && !is.null(gcomp_est_var$est[[t]])) {
-      est_survival <- gcomp_est_var$est[[t]]
+    if(t <= nrow(gcomp_est_var$est)) {
+      est_survival <- gcomp_est_var$est[t, ]
       bias <- true_survival - est_survival
       return(bias)
     } else {
@@ -3115,9 +3219,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   CP_gcomp <- lapply(1:(t.end-1), function(t) {
     true_survival <- 1 - sapply(Y.true, "[[", t+1)
     
-    if(t <= length(gcomp_est_var$CI) && !is.null(gcomp_est_var$CI[[t]])) {
-      lower_ci <- gcomp_est_var$CI[[t]][1,]
-      upper_ci <- gcomp_est_var$CI[[t]][2,]
+    if((t+1) <= length(gcomp_est_var$CI) && !is.null(gcomp_est_var$CI[[t+1]])) {
+      lower_ci <- gcomp_est_var$CI[[t+1]][1,]
+      upper_ci <- gcomp_est_var$CI[[t+1]][2,]
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
@@ -3127,8 +3231,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   names(CP_gcomp) <- paste0("t=", 2:t.end)
   
   CIW_gcomp <- lapply(1:(t.end-1), function(t) {
-    if(t <= length(gcomp_est_var$CI) && !is.null(gcomp_est_var$CI[[t]])) {
-      ci_width <- gcomp_est_var$CI[[t]][2,] - gcomp_est_var$CI[[t]][1,]
+    if((t+1) <= length(gcomp_est_var$CI) && !is.null(gcomp_est_var$CI[[t+1]])) {
+      ci_width <- gcomp_est_var$CI[[t+1]][2,] - gcomp_est_var$CI[[t+1]][1,]
       return(ci_width)
     } else {
       if(length(gcomp_est_var$CI) > 0 && !is.null(gcomp_est_var$CI[[1]])) {
@@ -3150,8 +3254,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   bias_iptw <- lapply(2:t.end, function(t) {
     true_survival <- 1 - sapply(Y.true, "[[", t)
     
-    if(t <= length(iptw_est_var$est) && !is.null(iptw_est_var$est[[t]])) {
-      est_survival <- iptw_est_var$est[[t]]
+    if(t <= nrow(iptw_est_var$est)) {
+      est_survival <- iptw_est_var$est[t, ]
       bias <- true_survival - est_survival
       return(bias)
     } else {
@@ -3163,9 +3267,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   CP_iptw <- lapply(1:(t.end-1), function(t) {
     true_survival <- 1 - sapply(Y.true, "[[", t+1)
     
-    if(t <= length(iptw_est_var$CI) && !is.null(iptw_est_var$CI[[t]])) {
-      lower_ci <- iptw_est_var$CI[[t]][1,]
-      upper_ci <- iptw_est_var$CI[[t]][2,]
+    if((t+1) <= length(iptw_est_var$CI) && !is.null(iptw_est_var$CI[[t+1]])) {
+      lower_ci <- iptw_est_var$CI[[t+1]][1,]
+      upper_ci <- iptw_est_var$CI[[t+1]][2,]
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
@@ -3175,8 +3279,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   names(CP_iptw) <- paste0("t=", 2:t.end)
   
   CIW_iptw <- lapply(1:(t.end-1), function(t) {
-    if(t <= length(iptw_est_var$CI) && !is.null(iptw_est_var$CI[[t]])) {
-      ci_width <- iptw_est_var$CI[[t]][2,] - iptw_est_var$CI[[t]][1,]
+    if((t+1) <= length(iptw_est_var$CI) && !is.null(iptw_est_var$CI[[t+1]])) {
+      ci_width <- iptw_est_var$CI[[t+1]][2,] - iptw_est_var$CI[[t+1]][1,]
       return(ci_width)
     } else {
       if(length(iptw_est_var$CI) > 0 && !is.null(iptw_est_var$CI[[1]])) {
@@ -3198,8 +3302,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   bias_iptw_bin <- lapply(2:t.end, function(t) {
     true_survival <- 1 - sapply(Y.true, "[[", t)
     
-    if(t <= length(iptw_est_var_bin$est) && !is.null(iptw_est_var_bin$est[[t]])) {
-      est_survival <- iptw_est_var_bin$est[[t]]
+    if(t <= nrow(iptw_est_var_bin$est)) {
+      est_survival <- iptw_est_var_bin$est[t, ]
       bias <- true_survival - est_survival
       return(bias)
     } else {
@@ -3211,9 +3315,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   CP_iptw_bin <- lapply(1:(t.end-1), function(t) {
     true_survival <- 1 - sapply(Y.true, "[[", t+1)
     
-    if(t <= length(iptw_est_var_bin$CI) && !is.null(iptw_est_var_bin$CI[[t]])) {
-      lower_ci <- iptw_est_var_bin$CI[[t]][1,]
-      upper_ci <- iptw_est_var_bin$CI[[t]][2,]
+    if((t+1) <= length(iptw_est_var_bin$CI) && !is.null(iptw_est_var_bin$CI[[t+1]])) {
+      lower_ci <- iptw_est_var_bin$CI[[t+1]][1,]
+      upper_ci <- iptw_est_var_bin$CI[[t+1]][2,]
       coverage <- as.numeric((lower_ci <= true_survival) & (upper_ci >= true_survival))
       return(coverage)
     } else {
@@ -3223,8 +3327,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   names(CP_iptw_bin) <- paste0("t=", 2:t.end)
   
   CIW_iptw_bin <- lapply(1:(t.end-1), function(t) {
-    if(t <= length(iptw_est_var_bin$CI) && !is.null(iptw_est_var_bin$CI[[t]])) {
-      ci_width <- iptw_est_var_bin$CI[[t]][2,] - iptw_est_var_bin$CI[[t]][1,]
+    if((t+1) <= length(iptw_est_var_bin$CI) && !is.null(iptw_est_var_bin$CI[[t+1]])) {
+      ci_width <- iptw_est_var_bin$CI[[t+1]][2,] - iptw_est_var_bin$CI[[t+1]][1,]
       return(ci_width)
     } else {
       if(length(iptw_est_var_bin$CI) > 0 && !is.null(iptw_est_var_bin$CI[[1]])) {
@@ -3365,17 +3469,12 @@ J <- 6 # number of treatments
 
 t.end <- 36 # number of time points after t=0
 
-R <- 11 #128 # number of simulation runs
+R <- if(length(args) >= 5 && !is.na(suppressWarnings(as.numeric(args[5])))) as.numeric(args[5]) else 100 # number of simulation runs
 
-full_vector <- 1:R
+# target times for the "tmle" estimator: "all" (1..t.end) or a comma-separated list, e.g. "6,12,18,24,30,36"
+target.times <- if(length(args) >= 6 && args[6] != "all") as.numeric(strsplit(args[6], ",")[[1]]) else 1:t.end
 
-# Specify the values to be omitted
-completed_values <- c()
-omit_values <- c(7, 14, 17, 18, 24, 38, 39, 47, 51, 57, 64, 65, 70, 72, 73, 74, 77, 80, 81, 85, 
-              93, 96, 101, 105, 108, 113, 118, 122)
-
-# Remove the specified values from the full vector
-final_vector <- full_vector[!full_vector %in% c(completed_values,omit_values)]
+full_vector <- 1:R # every replicate is run; failed replicates are reported, not dropped by seed
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -3392,7 +3491,7 @@ debug <- FALSE
 # output directory
 simulation_version <- paste0(format(Sys.time(), "%Y%m%d"),"/")
 
-output_dir <- paste0('./outputs/', simulation_version)
+output_dir <- if(length(args) >= 7) paste0(sub("/$", "", args[7]), "/") else paste0('./outputs/', simulation_version)
 if(!dir.exists(output_dir)){
   print(paste0('create folder for outputs at: ', output_dir))
   dir.create(output_dir)
@@ -3424,7 +3523,7 @@ if(doMPI){
   
 }
 
-if(cores>1){
+if(cores>1 && estimator!="tmle"){
   library(parallel)
   library(doParallel)
   
@@ -3482,6 +3581,19 @@ if(cores>1){
   })
 }
 
+# skip replicates already saved in output_dir (resume a long run)
+done_files <- list.files(output_dir, pattern = paste0("longitudinal_simulation_results_estimator_", estimator, "_treatment_rule_all_r_\\d+_"))
+done_r <- as.numeric(sub(".*_r_(\\d+)_.*", "\\1", done_files))
+final_vector <- full_vector[!full_vector %in% done_r]
+
+if(estimator=="tmle"){ # compute (or load) the cached large-n truth once before the replicates
+  library(simcausal)
+  options(simcausal.verbose=FALSE)
+  source('./src/simcausal_fns.R')
+  source('./src/simcausal_dgp.R')
+  invisible(compute_truth(set.DAG(D, vecfun=c("StochasticFun")), t.end))
+}
+
 #####################
 # Run simulation #
 #####################
@@ -3517,15 +3629,17 @@ library_vector <- if(estimator == "tmle-lstm") {
 
 library(foreach)
 
-if(cores==1){ # run sequentially and save at each iteration
-  sim.results <- foreach(r = final_vector, .combine='cbind', .errorhandling="pass", .packages=library_vector, .verbose = FALSE) %do% {
+if(cores==1 || estimator=="tmle"){ # run replicates sequentially and save at each iteration ("tmle" parallelises within a replicate)
+  sim.results <- foreach(r = final_vector, .combine='c', .errorhandling="pass", .packages=library_vector, .verbose = FALSE) %do% {
     result <- simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
                       cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
-                      use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size)
+                      use.SL=use.SL, scale.continuous=scale.continuous, debug=debug, window_size=window_size,
+                      target.times=target.times)
+    result <- list(result)
     # Individual iteration already saved by simLong function
     result
   }
-} else if(cores>1){ # run in parallel
+} else if(cores>1){ # run replicates in parallel (tmle-lstm)
   library(parallel)
   library(doParallel)
   library(foreach)
@@ -3589,13 +3703,13 @@ if(cores==1){ # run sequentially and save at each iteration
                            result
                          }
 }
-saveRDS(sim.results, filename)
+if(length(final_vector) > 0) saveRDS(sim.results, filename) # per-replicate files are saved by simLong
 
 if(doMPI){
   closeCluster(cl) # close down MPIcluster
   mpi.finalize()
 }
 
-if(cores>1){
+if(cores>1 && estimator!="tmle"){
   stopCluster(cl)
 }

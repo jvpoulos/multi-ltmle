@@ -73,10 +73,10 @@ D <- D.base +
   node("C",                                      # monthly_censored_indicator
        t = 1:t.end,
        distr = "rbern",
-       prob =ifelse((V3[0]+(t/12))>65,1, plogis(-4 + .1 * (L1[t] - L1[t-1])**2 + 0.1 *L2[t-1] + 0.1 *L2[t]  + 0.1 * L3[t-1] + 0.1 * L3[t] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==5, -0.25, 0)) + ifelse(A[t]==1 | A[t]==2 | A[t]==4, -1, ifelse(A[(t-1)]==5, -2, 0)))), # deterministic: AGE out at 65 (medicaid -> medicare)
+       prob =ifelse((V3[0]+(t/12))>65,1, plogis(-4 + .1 * (L1[t] - L1[t-1])**2 + 0.1 *L2[t-1] + 0.1 *L2[t]  + 0.1 * L3[t-1] + 0.1 * L3[t] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==5, -0.25, 0)) + ifelse(A[t]==1 | A[t]==2 | A[t]==4, -1, ifelse(A[t]==5, -2, 0)))), # deterministic: AGE out at 65 (medicaid -> medicare)
        EFU = TRUE) + # right-censoring (EFU) 
   node("Y",                                      # diabetes
        t = 1:t.end,
        distr = "rbern",
-       prob = plogis(-4 + Y[t-1] + .1 * (L1[t] - L1[t-1])**2 + 0.1 *L2[t-1] + 0.1 *L2[t]  + 0.1 * L3[t-1] + 0.1 * L3[t] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==5, -0.25, 0)) + ifelse(A[t]==1 | A[t]==2 | A[t]==4, -1, ifelse(A[(t-1)]==5, -2, 0))),
+       prob = plogis(-4 + Y[t-1] + .1 * (L1[t] - L1[t-1])**2 + 0.1 *L2[t-1] + 0.1 *L2[t]  + 0.1 * L3[t-1] + 0.1 * L3[t] + ifelse(A[(t-1)]==1 | A[(t-1)]==2 | A[(t-1)]==4, -0.5, ifelse(A[(t-1)]==5, -0.25, 0)) + ifelse(A[t]==1 | A[t]==2 | A[t]==4, -1, ifelse(A[t]==5, -2, 0))),
        EFU = TRUE)
