@@ -1792,6 +1792,9 @@ safe_getTMLELong <- function(...) {
             rule_names <- paste0("rule_", seq_len(n_rules))
           }
           
+          # Ensure rule_names is available at the parent scope
+          assign("rule_names", rule_names, envir=parent.frame())
+          
           # Create consistent matrices for prediction and weights
           base_matrix <- matrix(0.5, nrow=n_obs, ncol=n_rules)
           colnames(base_matrix) <- rule_names
