@@ -6,7 +6,8 @@
 # SE = sd(IC_i) / sqrt(n); 95% CI = estimate +/- 1.96 SE.         #
 # G-computation with data-adaptive regressions has no valid       #
 # analytic IC; its SE uses the IC evaluated at the untargeted     #
-# fits, which ignores plug-in bias (approximate, anti-conservative).#
+# fits (approximate: conservative for correctly specified GLMs,   #
+# may undercover with data-adaptive learners due to plug-in bias).#
 ###################################################################
 
 # tmle_contrasts: list over target times (named "t=<t>") of getTMLELong() outputs, i.e. for each rule
