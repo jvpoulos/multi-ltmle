@@ -30,14 +30,8 @@ gc.collect()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+import wandb
 from datetime import datetime
-
-# Import wandb conditionally
-try:
-    import wandb
-    wandb_available = True
-except ImportError:
-    wandb_available = False
 
 
 def get_model_filenames_test(loss_fn, output_dim, is_censoring):
@@ -198,9 +192,58 @@ def masked_sparse_categorical_crossentropy(y_true, y_pred):
     return tf.reduce_sum(scce) / (n_valid + K.epsilon())
 
 
-# MaskedBinaryAccuracy removed - functionality covered by MaskedAccuracy class
+@tf.keras.utils.register_keras_serializable(package='Custom')
+class MaskedBinaryAccuracy(tf.keras.metrics.Metric):
+    def __init__(self, name='masked_accuracy', threshold=0.5, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.threshold = threshold
+        self.true_positives = self.add_weight(name='tp', initializer='zeros')
+        self.total_values = self.add_weight(name='total', initializer='zeros')
 
-# MaskedAUC removed - functionality covered by standard AUC with properly applied mask
+    @tf.function
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, -1), tf.float32)
+        
+        threshold = tf.cast(self.threshold, y_pred.dtype)
+        y_pred = tf.cast(y_pred > threshold, y_pred.dtype)
+        y_true = tf.cast(y_true > threshold, y_true.dtype)
+        
+        values = tf.cast(tf.equal(y_true, y_pred), tf.float32) * mask
+        self.true_positives.assign_add(tf.reduce_sum(values))
+        self.total_values.assign_add(tf.reduce_sum(mask))
+
+    @tf.function
+    def result(self):
+        return tf.math.divide_no_nan(self.true_positives, self.total_values)
+
+    def reset_states(self):
+        self.true_positives.assign(0.0)
+        self.total_values.assign(0.0)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"threshold": self.threshold})
+        return config
+
+@tf.keras.utils.register_keras_serializable(package='Custom')
+class MaskedAUC(tf.keras.metrics.AUC):
+    def __init__(self, name='masked_auc', multi_label=False, **kwargs):
+        super().__init__(name=name, multi_label=multi_label, **kwargs)
+        self.multi_label = multi_label
+
+    @tf.function
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, -1), tf.float32)
+        if sample_weight is not None:
+            sample_weight = sample_weight * mask
+        else:
+            sample_weight = mask
+        return super().update_state(y_true, y_pred, sample_weight)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"multi_label": self.multi_label})
+        return config
 
 @tf.keras.utils.register_keras_serializable(package='Custom')
 class MaskedAccuracy(tf.keras.metrics.Metric):
@@ -230,33 +273,24 @@ class MaskedAccuracy(tf.keras.metrics.Metric):
         return super().get_config()
 
 def clean_model_config(config):
-    """Remove metrics and loss functions from model config to ensure clean loading."""
+    """Remove metrics and loss functions from model config."""
     if isinstance(config, dict):
-        # Create a copy to avoid modifying the original during iteration
-        cleaned_config = config.copy()
-
         # Remove metrics and loss from compile config
-        if 'compile_config' in cleaned_config:
-            compile_config = cleaned_config['compile_config']
-            if isinstance(compile_config, dict):
-                # Remove problematic fields safely
-                compile_config.pop('metrics', None)
-                compile_config.pop('loss', None)
-                compile_config.pop('loss_weights', None)
-                compile_config.pop('weighted_metrics', None)
-
+        if 'compile_config' in config:
+            if 'metrics' in config['compile_config']:
+                config['compile_config']['metrics'] = []
+            if 'loss' in config['compile_config']:
+                config['compile_config']['loss'] = None
+        
         # Recursively clean nested dictionaries
-        for key, value in cleaned_config.items():
-            if isinstance(value, (dict, list)):
-                cleaned_config[key] = clean_model_config(value)
-
-        return cleaned_config
+        for key in config:
+            if isinstance(config[key], (dict, list)):
+                config[key] = clean_model_config(config[key])
     elif isinstance(config, list):
         # Recursively clean lists
-        return [clean_model_config(item) for item in config]
-    else:
-        # Return primitives unchanged
-        return config
+        config = [clean_model_config(item) for item in config]
+    
+    return config
 
 def load_model_components(base_path, loss_fn, is_censoring, gbound=None, ybound=None):
     """Load model with proper custom objects."""
@@ -305,23 +339,14 @@ def load_model_components(base_path, loss_fn, is_censoring, gbound=None, ybound=
 
 def create_temporal_split(x_data, y_data, n_pre, train_frac=0.8, val_frac=0.1):
     """Create temporally-aware train/val/test splits.
-
+    
     Args:
         x_data: Input features DataFrame
-        y_data: Target values DataFrame
+        y_data: Target values DataFrame 
         n_pre: Sequence window size
         train_frac: Fraction of sequences for training
         val_frac: Fraction of sequences for validation
     """
-
-    if not (0 < train_frac < 1):
-        raise ValueError("train_frac must be between 0 and 1")
-
-    if not (0 <= val_frac < 1):
-        raise ValueError("val_frac must be between 0 and 1")
-
-    if train_frac + val_frac >= 1:
-        raise ValueError("train_frac + val_frac must be less than 1")
     # Calculate number of complete sequences
     num_sequences = len(x_data) - n_pre + 1
     
@@ -337,20 +362,20 @@ def create_temporal_split(x_data, y_data, n_pre, train_frac=0.8, val_frac=0.1):
     train_x = x_data[:train_idx].copy()
     train_y = y_data[:train_idx].copy()
     
-    val_x = x_data[train_idx:val_idx].copy()
-    val_y = y_data[train_idx:val_idx].copy()
-
-    test_x = x_data[val_idx:].copy()
-    test_y = y_data[val_idx:].copy()
+    val_x = x_data[train_sequences:val_idx].copy()
+    val_y = y_data[train_sequences:val_idx].copy()
+    
+    test_x = x_data[val_sequences:].copy()
+    test_y = y_data[val_sequences:].copy()
     
     # Get sizes for split_info
     train_size = len(train_x)
     val_size = len(val_x)
     
     logger.info(f"\nTemporal split details:")
-    logger.info(f"Training period: samples 0 to {train_idx - 1}")
-    logger.info(f"Validation period: samples {train_idx} to {val_idx - 1}")
-    logger.info(f"Testing period: samples {val_idx} to end")
+    logger.info(f"Training period: samples 0 to {train_idx}")
+    logger.info(f"Validation period: samples {train_sequences} to {val_idx}")
+    logger.info(f"Testing period: samples {val_sequences} to end")
     logger.info(f"Sequence window size: {n_pre}")
     
     return train_x, train_y, val_x, val_y, test_x, test_y, train_size, val_size
@@ -389,18 +414,8 @@ def get_data_filenames(is_censoring, loss_fn, outcome_cols, output_dir=None):
     return f"{base}_input.csv", f"{base}_output.csv"
     
 def log_metrics(history, start_time):
-    """Log metrics to wandb if available.
-
-    Args:
-        history: Training history object
-        start_time: Training start time
-    """
-    if not wandb_available:
-        logger.info("wandb not available, skipping metrics logging")
-        return
-
     metrics_to_log = {}
-
+    
     try:
         if 'cross_entropy' in history.history:
             metrics_to_log.update({
@@ -408,7 +423,7 @@ def log_metrics(history, start_time):
                 'best_cross_entropy': float(min(history.history['cross_entropy'])),
                 'best_epoch': int(np.argmin(history.history['cross_entropy']))
             })
-
+            
         if 'val_cross_entropy' in history.history:
             metrics_to_log.update({
                 'final_val_cross_entropy': float(history.history['val_cross_entropy'][-1]),
@@ -422,7 +437,7 @@ def log_metrics(history, start_time):
                 'best_accuracy': float(min(history.history['accuracy'])),
                 'best_epoch': int(np.argmin(history.history['accuracy']))
             })
-
+            
         if 'val_accuracy' in history.history:
             metrics_to_log.update({
                 'final_val_accuracy': float(history.history['val_accuracy'][-1]),
@@ -436,7 +451,7 @@ def log_metrics(history, start_time):
                 'best_loss': float(min(history.history['loss'])),
                 'best_epoch': int(np.argmin(history.history['loss']))
             })
-
+            
         if 'val_loss' in history.history:
             metrics_to_log.update({
                 'final_val_loss': float(history.history['val_loss'][-1]),
@@ -445,46 +460,28 @@ def log_metrics(history, start_time):
             })
 
         metrics_to_log['training_time'] = time.time() - start_time
-
-        # Print key metrics to console regardless of wandb availability
-        logger.info(f"Training completed in {metrics_to_log['training_time']:.2f} seconds")
-        if 'best_loss' in metrics_to_log:
-            logger.info(f"Best loss: {metrics_to_log['best_loss']:.4f} at epoch {metrics_to_log['best_epoch']}")
-        if 'best_val_loss' in metrics_to_log:
-            logger.info(f"Best validation loss: {metrics_to_log['best_val_loss']:.4f}")
-
-        # Log to wandb if available
-        wandb.log(metrics_to_log)
-
+        
     except Exception as e:
         logger.error(f"Error collecting metrics: {str(e)}")
         logger.error(traceback.format_exc())
+    
+    wandb.log(metrics_to_log)
 
 def setup_wandb(config, validation_steps=None, train_dataset=None):
-    """Initialize WandB with configuration if available.
-
+    """Initialize WandB with configuration.
+    
     Args:
         config (dict): WandB configuration dictionary
         validation_steps (int, optional): Number of validation steps
         train_dataset: Training dataset for batch logging
-
-    Returns:
-        tuple: (run, wandb_callback) if wandb is available, or (None, dummy_callback) if not
     """
-    if not wandb_available:
-        # Return dummy objects if wandb is not available
-        logger.warning("wandb not available, returning dummy callback")
-        dummy_callback = tf.keras.callbacks.Callback()
-        return None, dummy_callback
-
-    # Initialize wandb only if available
     run = wandb.init(
         project="multi-ltmle",
         entity="jvpoulos",
         config=config,
         name=f"lstm_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
-
+    
     # Configure WandB callback with SavedModel format
     callback_config = {
         'monitor': 'val_loss',
@@ -504,17 +501,17 @@ def setup_wandb(config, validation_steps=None, train_dataset=None):
         'log_evaluation': False,
         'log_batch_frequency': None  # Disable batch logging
     }
-
+    
     # Add optional configurations if provided
     if validation_steps is not None:
         callback_config['validation_steps'] = validation_steps
-
+    
     if train_dataset is not None:
         callback_config['training_data'] = train_dataset
         callback_config['log_batch_frequency'] = 100
-
+    
     wandb_callback = wandb.keras.WandbCallback(**callback_config)
-
+    
     return run, wandb_callback
 
 class CustomNanCallback(tf.keras.callbacks.Callback):
@@ -527,47 +524,39 @@ class CustomNanCallback(tf.keras.callbacks.Callback):
                 break
 
 class CustomCallback(tf.keras.callbacks.Callback):
-    """Fixed implementation of CustomCallback with optional wandb support"""
-
-    def __init__(self, train_dataset, use_wandb=False):
+    """Fixed implementation of CustomCallback"""
+    
+    def __init__(self, train_dataset):
         super().__init__()  # Properly initialize parent class
         self._train_dataset = train_dataset
         self._start_time = time.time()
         self._epoch_start_time = None
         self._current_model = None  # Use a different name to avoid conflicts
-        self._use_wandb = use_wandb and wandb_available
-
+    
     def set_model(self, model):
         """Properly handle model setting"""
         super().set_model(model)
         self._current_model = model
-
+               
     def on_epoch_begin(self, epoch, logs=None):
         self._epoch_start_time = time.time()
-
+    
     def on_epoch_end(self, epoch, logs=None):
         if not logs:
             logs = {}
-
+                
         epoch_time = time.time() - self._epoch_start_time
-
+            
         if self._current_model is None:
             logger.warning("Model not set in CustomCallback")
             return
-
-        # Print epoch time to console regardless of wandb setting
-        logger.info(f"Epoch {epoch} completed in {epoch_time:.2f} seconds")
-
-        # Skip wandb logging if not enabled
-        if not self._use_wandb:
-            return
-
+                
         # Log metrics to WandB with safer handling
         metrics_dict = {
             'epoch': epoch,
             'epoch_time': epoch_time,
         }
-
+        
         # Safely get learning rate
         try:
             if hasattr(self._current_model.optimizer, 'learning_rate'):
@@ -578,29 +567,29 @@ class CustomCallback(tf.keras.callbacks.Callback):
                     metrics_dict['learning_rate'] = float(lr(epoch))
         except:
             logger.warning("Could not log learning rate")
-
+        
         # Add other logs safely
         for key, value in logs.items():
             if isinstance(value, (int, float)) and not np.isnan(value):
                 metrics_dict[key] = value
-
+        
         wandb.log(metrics_dict)
-
+            
         try:
             # Sample predictions with safer handling
             for x_batch in self._train_dataset.take(1):
                 if isinstance(x_batch, tuple):
                     x_batch = x_batch[0]
-
+                    
                 # Get predictions
                 sample_pred = self._current_model.predict(x_batch, verbose=0)
-
+                
                 # Remove any NaN values
                 sample_pred = np.nan_to_num(sample_pred, nan=0.0)
-
+                
                 if len(sample_pred.shape) > 2:
                     sample_pred = sample_pred.reshape(-1, sample_pred.shape[-1])
-
+                
                 # Only log if we have valid predictions
                 if np.all(np.isfinite(sample_pred)):
                     wandb.log({
@@ -611,15 +600,11 @@ class CustomCallback(tf.keras.callbacks.Callback):
                 break
         except Exception as e:
             logger.warning(f"Error in CustomCallback prediction logging: {str(e)}")
-
+    
     def on_train_batch_end(self, batch, logs=None):
         if not logs:
             logs = {}
-
-        # Skip batch logging if wandb not enabled
-        if not self._use_wandb:
-            return
-
+            
         if batch % 100 == 0:
             wandb.log({
                 'batch': batch,
@@ -1487,7 +1472,19 @@ def create_model(input_shape, output_dim, lr, dr, n_hidden, hidden_activation,
             'dtype': tf.float32
         }
 
-        # Use the MultiHeadAttention class defined earlier instead of duplicating code
+        # Multi-head self-attention layer
+        def attention_layer(queries, keys, values, mask=None):
+            # Multi-head attention with scaling
+            matmul_qk = tf.matmul(queries, keys, transpose_b=True)
+            dk = tf.cast(tf.shape(keys)[-1], tf.float32)
+            scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
+            
+            if mask is not None:
+                scaled_attention_logits += (mask * -1e9)
+            
+            attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)
+            output = tf.matmul(attention_weights, values)
+            return output, attention_weights
 
         # First LSTM + Attention block
         lstm1 = tf.keras.layers.LSTM(

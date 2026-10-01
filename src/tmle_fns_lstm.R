@@ -662,8 +662,8 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
     
     # Calculate slice indices with validation
     chunk_size <- as.integer((n_total_samples + t_end) / (t_end + 1))
-    start_idx <- max(1, min(((t-1) * chunk_size) + 1, n_total_samples))
-    end_idx <- min(max(start_idx, t * chunk_size), n_total_samples)
+    start_idx <- ((t-1) * chunk_size) + 1
+    end_idx <- min(t * chunk_size, n_total_samples)
     
     # Add validation to ensure start_idx <= end_idx
     if(start_idx > end_idx || start_idx > n_total_samples || end_idx < start_idx) {
@@ -671,19 +671,18 @@ process_predictions <- function(slice, type="A", t=NULL, t_end=NULL, n_ids=NULL,
                   start_idx, end_idx, n_total_samples))
       
       # More robust fallback calculation
-      chunk_size <- max(1, floor(n_total_samples / max(1, t_end)))
+      chunk_size <- floor(n_total_samples / max(1, t_end))
       t_adjusted <- min(t, t_end)
-      start_idx <- max(1, min(((t_adjusted-1) * chunk_size) + 1, n_total_samples))
-      end_idx <- min(max(start_idx, t_adjusted * chunk_size), n_total_samples)
+      start_idx <- 1 + (t_adjusted-1) * chunk_size
+      end_idx <- min(n_total_samples, start_idx + chunk_size - 1)
+      
+      # Final safety check
       if(start_idx > end_idx) {
-        # Absolute fallback: just use all samples
         start_idx <- 1
-        end_idx <- n_total_samples
+        end_idx <- min(n_total_samples, chunk_size)
       }
-      chunk_size <- max(1, floor(n_total_samples / max(1, t_end)))
-      t_adjusted <- min(t, t_end)
-      start_idx <- max(1, min(((t_adjusted-1) * chunk_size) + 1, n_total_samples))
     }
+    
     # Extract slice based on type of input
     if(is.vector(slice)) {
       if(start_idx <= length(slice) && end_idx <= length(slice)) {
@@ -1273,36 +1272,27 @@ process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_d
     Qs <- matrix(NA_real_, nrow=n_ids, ncol=n_rules) 
     colnames(Qs) <- names(tmle_rules)
     
-    # Process all rules using the cached predictions - optimized with fewer conditionals
-    valid_mean <- if(any(valid_rows)) mean(Y[valid_rows], na.rm=TRUE) else 0.5
-
-    # Process all rules with faster indexing and fewer conditionals
+    # Process all rules using the cached predictions
     for(i in seq_along(tmle_rules)) {
       rule <- names(tmle_rules)[i]
       lstm_preds <- all_lstm_preds[[rule]]
-
-      # Handle both null cases with a single fallback value
-      if(is.null(lstm_preds) ||
-         min(t + 1, length(lstm_preds)) < 1 ||
-         is.null(lstm_preds[[min(t + 1, length(lstm_preds))]])) {
-        Qs[,i] <- valid_mean
+      
+      if(is.null(lstm_preds)) {
+        Qs[,i] <- mean(Y[valid_rows], na.rm=TRUE)
       } else {
-        # More efficient time point indexing with safe bound check
-        t_idx <- min(t + 1, length(lstm_preds))
-        t_preds <- lstm_preds[[t_idx]]
-
-        # Ensure proper dimensions with single vector operation
-        if(length(t_preds) != n_ids) {
+        t_preds <- lstm_preds[[min(t + 1, length(lstm_preds))]]
+        
+        if(is.null(t_preds)) {
+          Qs[,i] <- mean(Y[valid_rows], na.rm=TRUE)
+        } else {
+          # Ensure proper dimensions
           t_preds <- rep(t_preds, length.out=n_ids)
-        }
-
-        # Apply bounds with vectorized operation - faster than element-wise
-        Qs[,i] <- pmin(pmax(t_preds, ybound[1]), ybound[2])
-
-        # Debug with less string concatenation for better performance
-        if(debug) {
-          mean_val <- round(mean(Qs[,i], na.rm=TRUE), 7)
-          message(sprintf("Mean Qs[,%d] at time %d: %f", i, t, mean_val))
+          
+          # IMPORTANT: Keep as event probabilities for internal calculations
+          Qs[,i] <- pmin(pmax(t_preds, ybound[1]), ybound[2])
+          
+          # Debug to confirm we're using event probabilities
+          message(paste0("Mean Qs[,", i, "] at time ", t, ": ", round(mean(Qs[,i], na.rm=TRUE), 7)))
         }
       }
     }
@@ -1339,107 +1329,56 @@ process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_d
       }
     }
     
-    # Process treatment predictions with optimized g_matrix creation
-    # Compute treatment index only once
-    t_idx <- min(t + 1, length(treatments))
-
-    # Safe retrieval of column count with fallback
-    g_mat_ncol <- if(t_idx <= length(treatments) && !is.null(treatments[[t_idx]])) {
-      ncol(treatments[[t_idx]])
-    } else {
-      py$J  # Fallback to J value
-    }
-
-    # Create g_matrix more efficiently with fewer conditional branches
-    g_matrix <- if(is.list(current_g_preds_list) && length(current_g_preds_list) > 0) {
-      # Pre-allocate result matrix just once
-      g_mat <- matrix(0, nrow=n_ids, ncol=g_mat_ncol)
-
-      # Pre-compute default value
-      default_val <- 1/g_mat_ncol
-
-      # Fill matrix in a more efficient loop with fewer conditionals
-      for(j in seq_len(g_mat_ncol)) {
-        # First check bounds to avoid potentially expensive null check
-        if(j <= length(current_g_preds_list)) {
-          pred_j <- current_g_preds_list[[j]]
-          if(!is.null(pred_j)) {
-            # Process in one vectorized operation
-            g_mat[,j] <- if(is.matrix(pred_j)) {
-              if(ncol(pred_j) > 0) {
-                # Ensure proper length in a single operation
-                rep(pred_j[,1], length.out=n_ids)
-              } else {
-                rep(default_val, n_ids)
-              }
-            } else {
-              # Ensure proper length in a single operation
-              rep(pred_j, length.out=n_ids)
-            }
-            next  # Skip to next iteration when processed
-          }
+    # Process treatment predictions in one step
+    # Optimize g_matrix creation
+    g_matrix <- if(is.list(current_g_preds_list)) {
+      # Pre-allocate matrix with correct dimensions
+      g_mat <- matrix(0, nrow=n_ids, ncol=ncol(treatments[[min(t + 1, length(treatments))]]))
+      
+      # Fill matrix efficiently by column
+      for(j in seq_len(ncol(g_mat))) {
+        if(j <= length(current_g_preds_list) && !is.null(current_g_preds_list[[j]])) {
+          pred <- matrix(current_g_preds_list[[j]], nrow=n_ids)
+          g_mat[,j] <- if(ncol(pred) > 1) pred[,1] else pred
+        } else {
+          g_mat[,j] <- rep(1/ncol(g_mat), n_ids)
         }
-        # Default case for missing or invalid data
-        g_mat[,j] <- rep(default_val, n_ids)
       }
       g_mat
     } else if(is.matrix(current_g_preds_list)) {
-      # Handle matrix format in a single operation if possible
-      if(nrow(current_g_preds_list) == n_ids && ncol(current_g_preds_list) == g_mat_ncol) {
-        # Already correctly sized - use as is
-        current_g_preds_list
+      # Efficiently handle matrix format
+      if(nrow(current_g_preds_list) != n_ids) {
+        matrix(rep(current_g_preds_list, length.out=n_ids*ncol(current_g_preds_list)), 
+               ncol=ncol(current_g_preds_list))
       } else {
-        # Resize in a single operation
-        matrix(rep(current_g_preds_list, length.out=n_ids*g_mat_ncol), ncol=g_mat_ncol)
+        current_g_preds_list 
       }
     } else {
-      # Default uniform probabilities in a single operation
-      matrix(1/g_mat_ncol, nrow=n_ids, ncol=g_mat_ncol)
+      # Default uniform probabilities
+      matrix(1/ncol(treatments[[min(t + 1, length(treatments))]]), 
+             nrow=n_ids, ncol=ncol(treatments[[min(t + 1, length(treatments))]]))
     }
     
     # Get current treatment and rules
     current_obs_treatment <- treatments[[min(t + 1, length(treatments))]]
     current_obs_rules <- obs.rules[[min(t, length(obs.rules))]]
     
-    # Create clever covariates with fully vectorized operations
-    # Ensure is_censored has proper length in single operation
-    is_censored_adj <- if(length(is_censored) != n_ids) {
-      rep(is_censored, length.out=n_ids)
-    } else {
-      is_censored
-    }
-
-    # Create not_censored mask - efficient single logical operation
-    not_censored_mask <- !is_censored_adj
-
-    # Pre-allocate clever covariates matrix
+    # Create clever covariates in one step - preallocate for efficiency
     clever_covariates <- matrix(0, nrow=n_ids, ncol=ncol(current_obs_rules))
-
-    # Handle matrix dimension mismatch with smart fallback
-    obs_rules_mat <- if(nrow(current_obs_rules) != n_ids) {
-      # Resize in single operation
-      matrix(rep(current_obs_rules, length.out=n_ids*ncol(current_obs_rules)),
-             ncol=ncol(current_obs_rules))
-    } else {
-      current_obs_rules
+    is_censored_adj <- rep(is_censored, length.out=n_ids)
+    
+    # Vectorized operation for all rules
+    for(i in seq_len(ncol(current_obs_rules))) {
+      clever_covariates[,i] <- current_obs_rules[,i] * (!is_censored_adj)
     }
-
-    # Completely vectorized clever covariate calculation
-    # Use matrix multiplication with mask for huge performance gain
-    clever_covariates <- obs_rules_mat * as.numeric(not_censored_mask)
-
-    # Pre-allocate weights matrix
+    
+    # Calculate censoring-adjusted weights efficiently
     weights <- matrix(0, nrow=n_ids, ncol=ncol(current_obs_rules))
-
-    # Calculate censoring matrix with optimized dimensions
-    # Use direct assignment instead of calculation when possible
-    C_matrix <- if(ncol(g_matrix) == 1) {
-      # No need to replicate for single column
-      as.matrix(current_c_preds)
-    } else {
-      # Optimize replicate operation using recycling
-      matrix(current_c_preds, nrow=n_ids, ncol=ncol(g_matrix))
-    }
+    
+    # Calculate censoring matrix once instead of in the loop
+    C_matrix <- matrix(rep(current_c_preds, ncol(g_matrix)), 
+                       nrow=nrow(current_c_preds),
+                       ncol=ncol(g_matrix))
     
     # Add diagnostics for censoring matrix
     message(paste0("Censoring matrix dimensions: ", nrow(C_matrix), "x", ncol(C_matrix)))
@@ -1643,291 +1582,6 @@ process_time_points_batch <- function(initial_model_for_Y, initial_model_for_Y_d
     # Create separate targeting step for binary version of TMLE
     for(i in seq_len(ncol(clever_covariates))) {
       # Create model data for binary targeting with binary-specific weights
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
-      # Ensure weights_bin exists
-      if(!exists("weights_bin") || is.null(weights_bin) || length(weights_bin) == 0) {
-        # Create default weights if missing
-        if(exists("n_ids") && is.numeric(n_ids) && n_ids > 0) {
-          weights_bin <- matrix(1/n_ids, nrow=n_ids, ncol=length(rule_names))
-          cat("Created default weights_bin with dimensions: ", paste(dim(weights_bin), collapse="x"), "\n")
-        } else if(exists("current_obs_rules") && !is.null(current_obs_rules)) {
-          weights_bin <- matrix(1/nrow(current_obs_rules), nrow=nrow(current_obs_rules), ncol=ncol(current_obs_rules))
-          cat("Created default weights_bin based on current_obs_rules dimensions\n")
-        } else {
-          # Ultimate fallback with minimal dimensions
-          weights_bin <- matrix(0.1, nrow=10, ncol=3)
-          cat("Created minimal fallback weights_bin\n")
-        }
-      }
       model_data_bin <- data.frame(
         y = pmin(pmax(if(t < t_end) QAW[,"QA"] else Y, 0.01), 0.99),
         offset = qlogis(pmax(pmin(QAW[,i+1], 0.99), 0.01)),
@@ -2879,293 +2533,3 @@ dynamic_mtp_lstm <- function(tmle_dat) {
   
   return(result)
 }
-
-# Define the function that exports all treatment mechanism functions
-`function_tmle-lstm` <- function() {
-  return(list(
-    static_mtp = static_mtp_lstm,
-    dynamic_mtp = dynamic_mtp_lstm,
-    stochastic_mtp = stochastic_mtp_lstm
-  ))
-}
-
-# Main function for LSTM-enhanced TMLE estimation
-ltmle_lstm <- function(tmle_dat, treatment.rule="all", use.SL=TRUE, scale.continuous=FALSE, 
-                     n.folds=3, cores=1, gbound=c(0.01, 1), ybound=c(0.0001, 0.9999), 
-                     window_size=7, debug=TRUE) {
-  
-  # Check and validate tmle_dat - critical for preventing downstream errors
-  if(is.null(tmle_dat) || !is.data.frame(tmle_dat) || nrow(tmle_dat) == 0) {
-    warning("Empty or invalid tmle_dat provided. Creating minimal placeholder dataset.")
-    
-    # Create minimal placeholder dataset with required columns
-    tmle_dat <- data.frame(
-      ID = 1:100,
-      t = rep(0:5, each=20),
-      L1 = rnorm(100),
-      L2 = rnorm(100),
-      L3 = rnorm(100),
-      A = sample(1:6, 100, replace=TRUE),
-      Y = rbinom(100, 1, 0.2),
-      C = rep(0, 100)
-    )
-    
-    # Add diagnosis variables
-    tmle_dat$mdd <- rbinom(100, 1, 0.4)
-    tmle_dat$bipolar <- rbinom(100, 1, 0.3)
-    tmle_dat$schiz <- rbinom(100, 1, 0.3)
-    
-    cat("Created placeholder dataset with 100 rows and 6 time points\n")
-  }
-  
-  # Validate inputs with defaults for invalid parameters
-  if(is.null(window_size) || !is.numeric(window_size) || window_size < 1) {
-    warning("Invalid window_size, using 7 as default")
-    window_size <- 7
-  }
-  
-  if(is.null(n.folds) || !is.numeric(n.folds) || n.folds < 2) {
-    warning("Invalid n.folds, using 3 as default")
-    n.folds <- 3
-  }
-  
-  if(is.null(cores) || !is.numeric(cores) || cores < 1) {
-    warning("Invalid cores, using 1 as default")
-    cores <- 1
-  }
-  
-  if(is.null(gbound) || !is.numeric(gbound) || length(gbound) != 2) {
-    warning("Invalid gbound, using c(0.01, 1) as default")
-    gbound <- c(0.01, 1)
-  }
-  
-  if(is.null(ybound) || !is.numeric(ybound) || length(ybound) != 2) {
-    warning("Invalid ybound, using c(0.0001, 0.9999) as default")
-    ybound <- c(0.0001, 0.9999)
-  }
-  
-  # Setup necessary constants and variables
-  cat("Setting up LSTM-enhanced TMLE estimation\n")
-  
-  # Detect time points with enhanced error handling
-  t_end <- try({
-    # First check if tmle_dat exists and has data
-    if(is.null(tmle_dat) || !is.data.frame(tmle_dat) || nrow(tmle_dat) == 0) {
-      warning("Empty or invalid tmle_dat provided, using default t_end=36")
-      return(36)
-    }
-    
-    # Check if 't' column exists
-    if(!("t" %in% colnames(tmle_dat))) {
-      warning("No 't' column in tmle_dat, using default t_end=36")
-      return(36)
-    }
-    
-    # Check if all values are NA or if there are no finite values
-    # Safer extraction using [["t"]] which works even if tmle_dat is a list
-    if(is.list(tmle_dat)) {
-      t_vals <- try(tmle_dat[["t"]], silent=TRUE)
-    } else {
-      warning("tmle_dat is not a list or data frame, cannot extract 't' column")
-      return(36)
-    }
-    
-    # Additional safety check for t_vals
-    if(class(t_vals) == "try-error" || is.null(t_vals) || length(t_vals) == 0) {
-      warning("Could not extract 't' values from tmle_dat, using default t_end=36")
-      return(36)
-    }
-    
-    if(all(is.na(t_vals)) || !any(is.finite(t_vals))) {
-      warning("No valid time values in tmle_dat, using default t_end=36")
-      return(36)
-    }
-    
-    # Now safe to calculate max
-    t_end_val <- max(t_vals, na.rm=TRUE)
-    
-    # Check if result is finite
-    if(!is.finite(t_end_val) || t_end_val < 0) {
-      warning("Invalid t_end value calculated: ", t_end_val, ", using default t_end=36")
-      return(36)
-    }
-    
-    return(t_end_val)
-  }, silent=TRUE)
-  
-  # Extra safety check for t_end
-  if(class(t_end) == "try-error" || is.na(t_end) || is.null(t_end) || !is.finite(t_end) || t_end < 0) {
-    warning("Could not determine valid t_end from data, using 36 as default")
-    t_end <- 36
-  }
-  
-  # Check what treatment rules to use
-  if(is.null(treatment.rule) || !(treatment.rule %in% c("all", "static", "dynamic", "stochastic"))) {
-    warning("Invalid treatment.rule, using 'all' as default")
-    treatment.rule <- "all"
-  }
-  
-  # Determine the rules to evaluate
-  if(!exists("treatment_rules") || is.null(treatment_rules)) {
-    # Create default treatment_rules if not available
-    treatment_rules <- list(
-      "static" = c("static_A1", "static_A2", "static_A3", "static_A4", "static_A5", "static_A6"),
-      "dynamic" = c("dynamic_A1", "dynamic_A2", "dynamic_A3", "dynamic_A4", "dynamic_A5", "dynamic_A6"),
-      "stochastic" = c("stochastic_A1", "stochastic_A2", "stochastic_A3", "stochastic_A4", "stochastic_A5", "stochastic_A6")
-    )
-  }
-  
-  if(treatment.rule == "all") {
-    # Use all rule types
-    rules_to_evaluate <- unlist(treatment_rules)
-  } else {
-    # Use just the selected rule type
-    rules_to_evaluate <- treatment_rules[[treatment.rule]]
-  }
-  
-  if(debug) {
-    cat("Will evaluate the following treatment rules:", paste(rules_to_evaluate, collapse=", "), "\n")
-  }
-  
-  # Set up LSTM prediction handlers
-  cat("Setting up LSTM prediction handlers\n")
-  
-  # Ensure we have valid matrix dimensions
-  n_obs <- try(nrow(tmle_dat), silent=TRUE)
-  if(class(n_obs) == "try-error" || is.null(n_obs) || !is.numeric(n_obs) || n_obs <= 0) {
-    warning("Invalid number of observations in tmle_dat, using n_obs=100 as fallback")
-    n_obs <- 100
-  }
-  
-  # Fixed value for number of treatments
-  J <- 6
-  
-  # Create time adjusted t_end (must be at least 1 for replicate to work)
-  adjusted_t_end <- max(1, t_end)
-  
-  # Ensure we have lstm_window_preds for each treatment rule
-  cat("Creating LSTM window predictions for", n_obs, "observations across", adjusted_t_end + 1, "time points\n")
-  lstm_window_preds <- list()
-  for(j in 1:J) {  # For each possible treatment
-    # Create a list of matrices with uniform probability distribution
-    # Each matrix has n_obs rows and J columns
-    # We create one matrix for each time point (0 to t_end)
-    lstm_window_preds[[j]] <- try({
-      replicate(adjusted_t_end + 1, matrix(1/J, nrow=n_obs, ncol=J), simplify=FALSE)
-    }, silent=TRUE)
-    
-    # Error handling - if replicate fails, create a minimal list
-    if(class(lstm_window_preds[[j]]) == "try-error" || is.null(lstm_window_preds[[j]])) {
-      warning("Error creating LSTM window predictions for treatment", j, ", using minimal list")
-      # Create a minimal list with just one matrix
-      lstm_window_preds[[j]] <- list(matrix(1/J, nrow=n_obs, ncol=J))
-      # Replicate this matrix for all time points
-      for(t in 1:adjusted_t_end) {
-        lstm_window_preds[[j]][[t+1]] <- lstm_window_preds[[j]][[1]]
-      }
-    }
-  }
-  
-  # Results containers
-  tmle_estimates <- numeric(length(rules_to_evaluate))
-  std_errors <- numeric(length(rules_to_evaluate))
-  ci_low <- numeric(length(rules_to_evaluate))
-  ci_high <- numeric(length(rules_to_evaluate))
-  
-  # Check if runTMLE function exists, if not define a minimal version
-  if(!exists("runTMLE", mode="function")) {
-    # Create a minimal version as fallback
-    runTMLE <- function(dat, rule_fn, rule_params, gbound, ybound, use.SL, n.folds, cores, scale.continuous) {
-      warning("Using fallback runTMLE function - this is not a full implementation")
-      # Return a dummy result
-      list(tmle=0.5, se=0.1, CI=c(0.3, 0.7))
-    }
-  }
-  
-  # Evaluate each rule
-  cat("Running TMLE estimation for", length(rules_to_evaluate), "rules\n")
-  for(i in seq_along(rules_to_evaluate)) {
-    rule_name <- rules_to_evaluate[i]
-    if(debug) cat("Evaluating rule:", rule_name, "\n")
-    
-    # Extract rule number (assuming format like static_A1)
-    rule_number <- try({
-      as.numeric(substr(rule_name, nchar(rule_name), nchar(rule_name)))
-    }, silent=TRUE)
-    
-    if(class(rule_number) == "try-error" || is.na(rule_number)) {
-      warning("Could not determine rule number from", rule_name, ", using 1 as default")
-      rule_number <- 1
-    }
-    
-    # Run the TMLE estimation for this rule
-    result <- try({
-      # Use dynamic_mtp_lstm or static_mtp_lstm depending on rule type
-      if(grepl("^static_", rule_name)) {
-        tmle_result <- runTMLE(tmle_dat, rule_fn=static_mtp_lstm, rule_params=list(j=rule_number, window_size=window_size, 
-                                                     lstm_window_preds=lstm_window_preds[[rule_number]], 
-                                                     debug=debug, t_end=t_end),
-                 gbound=gbound, ybound=ybound, use.SL=use.SL, 
-                 n.folds=n.folds, cores=cores, scale.continuous=scale.continuous)
-      } else if(grepl("^dynamic_", rule_name)) {
-        tmle_result <- runTMLE(tmle_dat, rule_fn=dynamic_mtp_lstm, rule_params=list(j=rule_number, window_size=window_size, 
-                                                     lstm_window_preds=lstm_window_preds[[rule_number]], 
-                                                     debug=debug, t_end=t_end),
-                 gbound=gbound, ybound=ybound, use.SL=use.SL, 
-                 n.folds=n.folds, cores=cores, scale.continuous=scale.continuous)
-      } else if(grepl("^stochastic_", rule_name)) {
-        tmle_result <- runTMLE(tmle_dat, rule_fn=stochastic_mtp_lstm, rule_params=list(j=rule_number, window_size=window_size, 
-                                                       lstm_window_preds=lstm_window_preds[[rule_number]], 
-                                                       debug=debug, t_end=t_end),
-                 gbound=gbound, ybound=ybound, use.SL=use.SL, 
-                 n.folds=n.folds, cores=cores, scale.continuous=scale.continuous)
-      } else {
-        # If rule is not recognized, use static as default
-        warning("Unrecognized rule type:", rule_name, ", using static rule as default")
-        tmle_result <- runTMLE(tmle_dat, rule_fn=static_mtp_lstm, rule_params=list(j=rule_number, window_size=window_size, 
-                                                     lstm_window_preds=lstm_window_preds[[rule_number]], 
-                                                     debug=debug, t_end=t_end),
-                 gbound=gbound, ybound=ybound, use.SL=use.SL, 
-                 n.folds=n.folds, cores=cores, scale.continuous=scale.continuous)
-      }
-      tmle_result
-    }, silent=TRUE)
-    
-    if(class(result) == "try-error" || is.null(result)) {
-      warning("Error running TMLE for rule:", rule_name, ". Setting to NA. Error:", conditionMessage(attr(result, "condition")))
-      tmle_estimates[i] <- NA
-      std_errors[i] <- NA
-      ci_low[i] <- NA
-      ci_high[i] <- NA
-    } else {
-      # Extract results from TMLE run
-      tmle_estimates[i] <- try(result$tmle, silent=TRUE)
-      if(class(tmle_estimates[i]) == "try-error") tmle_estimates[i] <- NA
-      
-      std_errors[i] <- try(result$se, silent=TRUE)
-      if(class(std_errors[i]) == "try-error") std_errors[i] <- NA
-      
-      # Calculate confidence intervals
-      ci_low[i] <- try(result$tmle - 1.96 * result$se, silent=TRUE)
-      if(class(ci_low[i]) == "try-error") ci_low[i] <- NA
-      
-      ci_high[i] <- try(result$tmle + 1.96 * result$se, silent=TRUE)
-      if(class(ci_high[i]) == "try-error") ci_high[i] <- NA
-    }
-    
-    if(debug) cat("Rule:", rule_name, "- Estimate:", tmle_estimates[i], "SE:", std_errors[i], "CI:", ci_low[i], "-", ci_high[i], "\n")
-  }
-  
-  # Prepare final output
-  results <- list(
-    tmle_estimates = tmle_estimates,
-    std_errors = std_errors,
-    ci_low = ci_low,
-    ci_high = ci_high,
-    parameter = paste0("E[", rules_to_evaluate, "]")
-  )
-  
-  cat("LSTM-enhanced TMLE estimation complete\n")
-  return(results)
-}
-

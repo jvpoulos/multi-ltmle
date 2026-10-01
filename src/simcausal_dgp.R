@@ -2,36 +2,8 @@
 # Define data generating process #
 #####################################
 
-# Initialize the DAG
-# Try to register vectorized functions if the version of simcausal supports it
-D <- tryCatch({
-  # First attempt with vecfun parameter (newer versions)
-  DAG.empty(vecfun = c("StochasticFun", "SimpleTransition"))
-}, error = function(e) {
-  # Fallback for older versions that don't support vecfun parameter
-  cat("Using alternative approach to register vectorized functions\n")
-  # Create basic DAG
-  dag <- DAG.empty()
-  # Try to set the vectorized functions using options
-  options(simcausal.vecfun = c("StochasticFun", "SimpleTransition"))
-  # Return the DAG
-  dag
-})
-
-# Ensure SimpleTransition is registered as a vectorized function
-try({
-  # Check if SimpleTransition is already registered
-  curr_vecfun <- getOption("simcausal.vecfun")
-  if (!("SimpleTransition" %in% curr_vecfun)) {
-    # Add SimpleTransition to the registered vectorized functions
-    new_vecfun <- unique(c(curr_vecfun, "SimpleTransition"))
-    options(simcausal.vecfun = new_vecfun)
-    cat("Updated vectorized functions:", paste(new_vecfun, collapse=","), "\n")
-  }
-})
-
-# Store original t.end for use later if needed
-original_t_end <- t.end
+# initialize the DAG
+D <- DAG.empty()
 
 # baseline data (t = 0) and follow-up data (t = 1, . . . , T)  created using structural equations
 
@@ -66,16 +38,9 @@ D.base <- D +
        distr = "rbern",
        prob = ifelse(V2[0] == 3, 0.085, ifelse(V2[0] == 2, 0.015, 0.035))) + 
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE (varies by smi condition and antidiab rx)
-       t = 0,
+       t = 0, 
        distr = "Multinom",
-       probs =  cbind(
-         ifelse(V2[0]==1 & (L3[0]>0), 1/4, 1/8),
-         ifelse(V2[0]==3 & (L1[0]>0), 1/4, 1/8),
-         1/8,
-         ifelse(V2[0]==2 & (L2[0]>0), 1/4, 1/8),
-         ifelse(V2[0]==2 & (L1[0]>0 | L2[0]>0 | L3[0]>0), 1/4, 1/8),
-         1/8
-       )) +
+       probs =  c(ifelse(V2[0]==1 & (L3[0]>0), 1/4, 1/8), ifelse(V2[0]==3 & (L1[0]>0), 1/4, 1/8), 1/8, ifelse(V2[0]==2 & (L2[0]>0), 1/4, 1/8), ifelse(V2[0]==2 & (L1[0]>0 | L2[0]>0 | L3[0]>0), 1/4, 1/8), 1/8)) + 
   node("C",                                     # monthly_censored_indicator (no censoring at baseline)
        t = 0,
        distr = "rbern",
@@ -104,30 +69,7 @@ D <- D.base +
   node("A",          # drug_group --> ARIPIPRAZOLE; HALOPERIDOL; OLANZAPINE; QUETIAPINE; RISPERIDONE; ZIPRASIDONE
        t = 1:t.end, 
        distr = "Multinom",
-       # Same probability model but with flatter structures to reduce stack usage
-       # Preserves identical DGP probabilities from the original model
-       probs = cbind(
-         # Matrix representation is more efficient for stack usage
-         # Each column represents one treatment probability:
-         
-         # 1. ARIPIPRAZOLE: base 0.01 + stay 0.94 + boost 0.01 if any L positive
-         0.01 + 0.94 * (A[(t-1)]==1) + 0.01 * ((L1[t]>0) | (L2[t]>0) | (L3[t]>0)),
-         
-         # 2. HALOPERIDOL: base 0.01 + stay 0.94 + boost 0.01 if L1 positive  
-         0.01 + 0.94 * (A[(t-1)]==2) + 0.01 * (L1[t]>0),
-         
-         # 3. OLANZAPINE: base 0.01 + stay 0.94 (no boost)
-         0.01 + 0.94 * (A[(t-1)]==3),
-         
-         # 4. QUETIAPINE: base 0.01 + stay 0.94 + boost 0.01 if L2 positive
-         0.01 + 0.94 * (A[(t-1)]==4) + 0.01 * (L2[t]>0),
-         
-         # 5. RISPERIDONE: base 0.01 + stay 0.94 + boost 0.01 if L3 positive
-         0.01 + 0.94 * (A[(t-1)]==5) + 0.01 * (L3[t]>0),
-         
-         # 6. ZIPRASIDONE: base 0.01 + stay 0.94 (no boost)
-         0.01 + 0.94 * (A[(t-1)]==6)
-       )) +
+       probs = StochasticFun(A[(t-1)], d=c(ifelse(L1[t]>0 | L2[t]>0 | L3[t]>0, 0.01, 0), ifelse(L1[t]>0, 0.01, 0), 0, ifelse(L2[t]>0, 0.01, 0), ifelse(L3[t]>0, 0.01, 0), 0), stay_prob=0.95)) +
   node("C",                                      # monthly_censored_indicator
        t = 1:t.end,
        distr = "rbern",
