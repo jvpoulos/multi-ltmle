@@ -33,38 +33,14 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
   library(latex2exp)
   
   if(estimator=='tmle-lstm'){
-    source('./src/tmle_fns_lstm.R')
-    source('./src/lstm.R')
-    verify_reticulate()
+    # LSTM learners for the treatment, censoring and outcome regressions of the LTMLE core (src/lstm.R).
+    # Python is selected here but initialised only inside the (forked) workers that fit the LSTMs.
     library(reticulate)
-    use_python("/media/jason/Dropbox/github/multi-ltmle/myenv/bin/python", required = TRUE)
-    print(py_config()) # Check Python configuration
-    
-    # Make sure process_predictions is available globally
-    if(!exists("process_predictions", envir = .GlobalEnv)) {
-      print("Ensuring process_predictions is available in global environment...")
-      # Explicitly copy the function to the global environment
-      process_predictions_temp <- process_predictions
-      assign("process_predictions", process_predictions_temp, envir = .GlobalEnv)
-    }
-    
-    np <- reticulate::import("numpy")
-    print("Checking np object:")
-    print(py_get_attr(np, "__name__"))
-    print(py_get_attr(np, "__version__"))
-    
-    library(tensorflow)
-    library(keras)
-    print(is_keras_available())
-    print(tf_version())
-    
-    wandb <- reticulate::import("wandb", delay_load = TRUE)
-    print("Checking wandb object:")
-    print(py_get_attr(wandb, "__name__"))
-    print(py_get_attr(wandb, "__version__"))
+    source('./src/lstm.R')
+    lstm_python("./myenv/bin/python")
   }
   
-  if(estimator%in%c("tmle")){
+  if(estimator%in%c("tmle", "tmle-lstm")){
     source('./src/tmle_fns.R')  
     source('./src/SL3_fns.R')
   }
@@ -159,9 +135,9 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     dev.off()
   }
   
-  if(estimator=="tmle"){
+  if(estimator %in% c("tmle", "tmle-lstm")){
     ##########################################################################
-    # Super Learner (or GLM) path, rebuilt 2026-10:                          #
+    # Super Learner / GLM ("tmle") or LSTM ("tmle-lstm") path, rebuilt 2026-10:#
     # LTMLE / IPTW / g-computation of psi_t = E[Y_t^d] under no censoring,   #
     # with multinomial or separate binomial treatment models.                #
     # The legacy SL code further below is no longer reached for "tmle".      #
@@ -173,19 +149,37 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     truth <- compute_truth(Dset, t.end) # large-n Monte Carlo truth, cached under ./data
     Odat <- sim(DAG = Dset, n = n, LTCF = "Y", rndseed = r, verbose = FALSE) # observed data (C = 1: censored)
     
+    # per-component timings: wall clock and CPU (incl. forked workers), in minutes
+    clock <- function() { pt <- proc.time(); c(wall = unname(pt["elapsed"]), cpu = sum(pt[c("user.self", "sys.self", "user.child", "sys.child")], na.rm = TRUE)) }
+    tic <- clock()
     # treatment (multinomial and binomial) and censoring models, k = 0..K
-    g_multi <- fit_treatment_models(Odat, K, arm = "multinomial", use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
-    g_bin <- fit_treatment_models(Odat, K, arm = "binomial", use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
-    g_C <- fit_censoring_models(Odat, K, use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
+    if(estimator == "tmle-lstm"){
+      # LSTM learners: TensorFlow runs only in forked workers (one TF thread each) when cores > 1,
+      # so the parent never initialises TF before forking; with cores = 1 everything runs in-process.
+      rnn_spec <- list(learner = "rnn", use_sl = FALSE, n.folds = n.folds, K = K, data_token = paste0("r", r, "_n", n),
+                       threads = 1, seed = r * 1000, hp = NULL)
+      g_tasks <- list(multinomial = function() fit_treatment_models(Odat, K, arm = "multinomial", J = J, rnn = modifyList(rnn_spec, list(seed = r * 1000 + 901))),
+                      binomial = function() fit_treatment_models(Odat, K, arm = "binomial", J = J, rnn = modifyList(rnn_spec, list(seed = r * 1000 + 902))),
+                      censoring = function() fit_censoring_models(Odat, K, J = J, rnn = modifyList(rnn_spec, list(seed = r * 1000 + 903))))
+      g_fits <- if(cores > 1) parallel::mclapply(g_tasks, function(f) f(), mc.cores = min(cores, 3), mc.preschedule = FALSE) else lapply(g_tasks, function(f) f())
+      if(any(sapply(g_fits, inherits, "try-error"))) stop("LSTM nuisance fit crashed: ", g_fits[sapply(g_fits, inherits, "try-error")][[1]])
+      g_multi <- g_fits$multinomial; g_bin <- g_fits$binomial; g_C <- g_fits$censoring
+    } else {
+      g_multi <- fit_treatment_models(Odat, K, arm = "multinomial", use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
+      g_bin <- fit_treatment_models(Odat, K, arm = "binomial", use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
+      g_C <- fit_censoring_models(Odat, K, use_sl = use.SL, n.folds = n.folds, J = J, cores = cores)
+    }
     weights_multi <- setNames(lapply(rules, function(rule) rule_weights(Odat, rule, g_multi$g, g_C$gC, K, gbound)), rules)
     weights_bin <- setNames(lapply(rules, function(rule) rule_weights(Odat, rule, g_bin$g, g_C$gC, K, gbound)), rules)
     
+    toc_g <- clock()
     # sequential regressions for every (target time, treatment model) pair; g-computation once
-    Q_spec <- list(use_sl = use.SL, n.folds = n.folds)
+    Q_spec <- if(estimator == "tmle-lstm") rnn_spec else list(use_sl = use.SL, n.folds = n.folds)
     jobs <- expand.grid(t = rev(target.times), arm = c("multinomial", "binomial"), stringsAsFactors = FALSE)
     run_job <- function(j) {
       arm <- jobs$arm[j]
-      tryCatch(getTMLELong(Q_spec, rules, ltmle_design,
+      Q_spec_j <- modifyList(Q_spec, list(arm = arm, seed = r * 1000 + j))
+      tryCatch(getTMLELong(Q_spec_j, rules, ltmle_design,
                            if(arm == "multinomial") g_multi$g else g_bin$g, g_C$gC, Odat,
                            if(arm == "multinomial") weights_multi else weights_bin,
                            gbound, ybound, jobs$t[j], gcomp = (arm == "multinomial")),
@@ -197,6 +191,8 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     RNGkind("L'Ecuyer-CMRG"); set.seed(r)
     fits <- if(cores > 1) parallel::mclapply(seq_len(nrow(jobs)), run_job, mc.cores = cores, mc.preschedule = FALSE) else lapply(seq_len(nrow(jobs)), run_job)
     fits <- lapply(fits, function(f) if(inherits(f, "try-error")) NULL else f)
+    toc_q <- clock()
+    timings <- rbind(nuisance_g_C = (toc_g - tic) / 60, outcome_recursions = (toc_q - toc_g) / 60)
     pick <- function(arm) {
       idx <- which(jobs$arm == arm)
       out <- fits[idx][order(jobs$t[idx])]
@@ -213,7 +209,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     gcomp_est_var <- TMLE_IC(contrasts_multi, Q_spec, gcomp = TRUE)
     
     # performance metrics per estimator, rule and target time (event-probability scale)
-    impl <- if(use.SL) "SL" else "GLM"
+    impl <- if(estimator == "tmle-lstm") "RNN" else if(use.SL) "SL" else "GLM"
     est_list <- list("LTMLE-%s (multi.)" = tmle_est_var, "LTMLE-%s (bin.)" = tmle_est_var_bin,
                      "IPTW-%s (multi.)" = iptw_est_var, "IPTW-%s (bin.)" = iptw_est_var_bin,
                      "G-Comp-%s" = gcomp_est_var)
@@ -249,6 +245,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
     }))
     
     fit_failures <- sum(sapply(fits, function(f) if(is.null(f)) 1 else sum(sapply(f, function(x) x$failures))))
+    lstm_epochs <- if(estimator == "tmle-lstm") list(multinomial = g_multi$epochs, binomial = g_bin$epochs, censoring = g_C$epochs, hp = g_multi$hp) else NULL
     failures <- c(g_multinomial = g_multi$failures, g_binomial = g_bin$failures, g_censoring = g_C$failures,
                   ltmle = fit_failures, jobs_failed = sum(sapply(fits, is.null)))
     elapsed_time <- difftime(Sys.time(), start_time, units = "mins")
@@ -256,7 +253,7 @@ simLong <- function(r, J=6, n=10000, t.end=36, gbound=c(0.05,1), ybound=c(0.0001
                               "n_folds" = n.folds, "use_SL" = use.SL, "gbound" = gbound, "ybound" = ybound,
                               "target_times" = target.times, "metrics" = metrics, "positivity" = positivity,
                               "failures" = failures, "truth_mc_se" = truth$mc_se[target.times, rules],
-                              "elapsed_time" = elapsed_time)
+                              "lstm_epochs" = lstm_epochs, "timings" = timings, "elapsed_time" = elapsed_time)
     result_filename <- paste0(output_dir, "longitudinal_simulation_results_estimator_", estimator,
                               "_treatment_rule_", treatment.rule, "_r_", r, "_n_", n, "_J_", J,
                               "_n_folds_", n.folds, "_scale_continuous_", scale.continuous, "_use_SL_", use.SL, ".rds")
@@ -3475,6 +3472,11 @@ R <- if(length(args) >= 5 && !is.na(suppressWarnings(as.numeric(args[5])))) as.n
 target.times <- if(length(args) >= 6 && args[6] != "all") as.numeric(strsplit(args[6], ",")[[1]]) else 1:t.end
 
 full_vector <- 1:R # every replicate is run; failed replicates are reported, not dropped by seed
+# optional 8th argument: the replicates to run, e.g. "1:25" or "26,27,28", so that disjoint ranges can run in
+# parallel processes writing to the same output_dir (replicates already saved there are skipped)
+if(length(args) >= 8 && nzchar(args[8])) {
+  full_vector <- if(grepl(":", args[8])) do.call(seq, as.list(as.integer(strsplit(args[8], ":")[[1]]))) else as.integer(strsplit(args[8], ",")[[1]])
+}
 
 scale.continuous <- FALSE # standardize continuous covariates
 
@@ -3523,7 +3525,7 @@ if(doMPI){
   
 }
 
-if(cores>1 && estimator!="tmle"){
+if(cores>1 && !estimator %in% c("tmle", "tmle-lstm")){
   library(parallel)
   library(doParallel)
   
@@ -3586,7 +3588,7 @@ done_files <- list.files(output_dir, pattern = paste0("longitudinal_simulation_r
 done_r <- as.numeric(sub(".*_r_(\\d+)_.*", "\\1", done_files))
 final_vector <- full_vector[!full_vector %in% done_r]
 
-if(estimator=="tmle"){ # compute (or load) the cached large-n truth once before the replicates
+if(estimator %in% c("tmle", "tmle-lstm")){ # compute (or load) the cached large-n truth once before the replicates
   library(simcausal)
   options(simcausal.verbose=FALSE)
   source('./src/simcausal_fns.R')
@@ -3622,14 +3624,14 @@ base_library_vector <- c(
 
 # Add LSTM-specific libraries only if needed
 library_vector <- if(estimator == "tmle-lstm") {
-  c(base_library_vector, "reticulate", "tensorflow", "keras")
+  c(base_library_vector, "reticulate")
 } else {
   base_library_vector
 }
 
 library(foreach)
 
-if(cores==1 || estimator=="tmle"){ # run replicates sequentially and save at each iteration ("tmle" parallelises within a replicate)
+if(cores==1 || estimator %in% c("tmle", "tmle-lstm")){ # run replicates sequentially and save at each iteration (both parallelise within a replicate)
   sim.results <- foreach(r = final_vector, .combine='c', .errorhandling="pass", .packages=library_vector, .verbose = FALSE) %do% {
     result <- simLong(r=r, J=J, n=n, t.end=t.end, gbound=gbound, ybound=ybound, n.folds=n.folds, 
                       cores=cores, estimator=estimator, treatment.rule=treatment.rule, 
@@ -3710,6 +3712,6 @@ if(doMPI){
   mpi.finalize()
 }
 
-if(cores>1 && estimator!="tmle"){
+if(cores>1 && !estimator %in% c("tmle", "tmle-lstm")){
   stopCluster(cl)
 }

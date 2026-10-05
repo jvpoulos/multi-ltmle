@@ -908,8 +908,15 @@ ltmle_fit <- function(X, y, type, use_sl = TRUE, n.folds = 3, J = 6) {
 # arm = "multinomial": one multinomial model per time; "binomial": J separate one-vs-rest
 # binary models per time (predictions are not renormalised). Returns a list of n x J matrices
 # (NA rows outside the risk set) and the number of failed fits.
-fit_treatment_models <- function(dat, K, arm = "multinomial", use_sl = TRUE, n.folds = 3, J = 6, cores = 1) {
+# rnn: NULL (Super Learner / GLM) or the LSTM spec built in simLong() (see src/lstm.R).
+fit_treatment_models <- function(dat, K, arm = "multinomial", use_sl = TRUE, n.folds = 3, J = 6, cores = 1, rnn = NULL) {
   n <- nrow(dat)
+  if (!is.null(rnn)) {
+    res <- tryCatch(lstm_fit_treatment(dat, K, arm, J, rnn), error = function(e) {
+      message("fit_treatment_models (LSTM, ", arm, ") failed: ", conditionMessage(e)); NULL })
+    if (is.null(res)) return(list(g = lapply(0:K, function(k) matrix(NA_real_, n, J, dimnames = list(NULL, 1:J))), failures = 1))
+    return(res)
+  }
   g <- ltmle_lapply(0:K, function(k) {
     failures <- 0
     out <- matrix(NA_real_, n, J, dimnames = list(NULL, 1:J))
@@ -936,8 +943,14 @@ fit_treatment_models <- function(dat, K, arm = "multinomial", use_sl = TRUE, n.f
 # Age (V3) is excluded: it affects only censoring (age-out at 65) and no other node, so
 # coarsening at random holds given (L, A) history alone, while conditioning on V3 would make
 # P(C_k = 0) = 0 after age 65 (a structural positivity violation).
-fit_censoring_models <- function(dat, K, use_sl = TRUE, n.folds = 3, J = 6, cores = 1) {
+fit_censoring_models <- function(dat, K, use_sl = TRUE, n.folds = 3, J = 6, cores = 1, rnn = NULL) {
   n <- nrow(dat)
+  if (!is.null(rnn)) {
+    res <- tryCatch(lstm_fit_censoring(dat, K, J, rnn), error = function(e) {
+      message("fit_censoring_models (LSTM) failed: ", conditionMessage(e)); NULL })
+    if (is.null(res)) return(list(gC = lapply(seq_len(K), function(k) rep(NA_real_, n)), failures = 1))
+    return(res)
+  }
   gC <- ltmle_lapply(seq_len(K), function(k) {
     out <- rep(NA_real_, n)
     rs <- ltmle_at_risk(dat, k)
@@ -1009,11 +1022,29 @@ process_backward_sequential <- function(tmle_dat, t, tmle_rules, essential_covar
   at_risk <- ltmle_at_risk(tmle_dat, s)
   a_obs <- as.integer(as.character(tmle_dat[[paste0("A_", s)]]))
   Z <- tmle_contrasts
+  bound <- function(p) pmin(pmax(p, ybound[1]), ybound[2])
+  if (identical(initial_model_for_Y_sl_cont$learner, "rnn")) {
+    # LSTM regression on the subject's last 12 months of history ending at s (src/lstm.R)
+    rnn_pred <- tryCatch(lstm_outcome_step(tmle_dat, s, Z, in_R, rule, initial_model_for_Y_sl_cont, J),
+                         error = function(e) { message("LSTM outcome regression failed (s=", s, ", ", rule, "): ", conditionMessage(e)); NULL })
+    if (is.null(rnn_pred)) return(NULL)
+    Q_obs <- rep(NA_real_, n); Q_d <- rep(NA_real_, n); Q_a <- NULL
+    Q_obs[in_R] <- bound(rnn_pred(in_R))
+    if (rule == "stochastic" && s > 0) {
+      Q_a <- matrix(NA_real_, n, J)
+      for (a in 1:J) Q_a[at_risk, a] <- bound(rnn_pred(at_risk, rep(a, n)))
+    } else if (rule == "stochastic") {
+      Q_d[at_risk] <- bound(rnn_pred(at_risk))  # A_0 keeps its natural distribution under the stochastic rule
+    } else {
+      d <- rule_assign(rule, s, tmle_dat$V2_0, tmle_dat[[paste0("L1_", s)]], tmle_dat[[paste0("L2_", s)]], tmle_dat[[paste0("L3_", s)]])
+      Q_d[at_risk] <- bound(rnn_pred(at_risk, d))
+    }
+    return(list(Q_obs = Q_obs, Q_d = Q_d, Q_a = Q_a, in_R = in_R, at_risk = at_risk))
+  }
   type <- if (all(Z[in_R] %in% c(0, 1))) "binary" else "continuous"
   pred <- ltmle_fit(essential_covars_Y(tmle_dat, s, A = a_obs)[in_R, , drop = FALSE], Z[in_R], type,
                     initial_model_for_Y_sl_cont$use_sl, initial_model_for_Y_sl_cont$n.folds, J)
   if (is.null(pred)) return(NULL)
-  bound <- function(p) pmin(pmax(p, ybound[1]), ybound[2])
   Q_obs <- rep(NA_real_, n)
   Q_obs[in_R] <- bound(pred(essential_covars_Y(tmle_dat, s, A = a_obs)[in_R, , drop = FALSE]))
   Q_a <- NULL
@@ -1052,6 +1083,9 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
   dat <- obs.treatment
   tstar <- t.end
   n <- nrow(dat)
+  # recursion identifiers (used by the LSTM learner to warm-start within a recursion; ignored by SL/GLM)
+  spec_tmle <- modifyList(initial_model_for_Y, list(recursion = "tmle", target = tstar))
+  spec_gcomp <- modifyList(initial_model_for_Y, list(recursion = "gcomp", target = tstar))
   if (is.null(tmle_covars_Y)) tmle_covars_Y <- ltmle_design
   out <- list()
   for (rule in tmle_rules) {
@@ -1068,7 +1102,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
       in_R <- ltmle_uncensored(dat, s)
       Y_s <- as.numeric(dat[[paste0("Y_", s)]])
       Z <- if (s == tstar) Y_t else ifelse(Y_s == 1, 1, Qstar_next)
-      step <- process_backward_sequential(dat, s, rule, tmle_covars_Y, initial_model_for_Y, ybound, Z)
+      step <- process_backward_sequential(dat, s, rule, tmle_covars_Y, spec_tmle, ybound, Z)
       if (is.null(step)) { failures <- failures + 1; ok <- FALSE; break }
       # targeting: weighted logistic fluctuation with offset logit(Q_s(observed A_s)) and weights W_s
       W_s <- rw$W[[s + 1]]
@@ -1092,7 +1126,7 @@ getTMLELong <- function(initial_model_for_Y, tmle_rules, tmle_covars_Y, g_preds_
       Qstar_next <- Qstar_d
       if (gcomp) {
         Zg <- if (s == tstar) Y_t else ifelse(Y_s == 1, 1, Qg_next)
-        step_g <- if (s == tstar) step else process_backward_sequential(dat, s, rule, tmle_covars_Y, initial_model_for_Y, ybound, Zg)
+        step_g <- if (s == tstar) step else process_backward_sequential(dat, s, rule, tmle_covars_Y, spec_gcomp, ybound, Zg)
         if (is.null(step_g)) { failures <- failures + 1; gcomp <- FALSE } else {
           # influence curve evaluated at the untargeted fits (approximate inference for g-computation)
           D_g[in_R] <- D_g[in_R] + w * (Zg[in_R] - step_g$Q_obs[in_R])
