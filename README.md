@@ -47,11 +47,7 @@ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'
 # Verify the CPU installation:
 python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))"
 ```
-+ The following Python packages are required: numpy (tested on 1.19.5), pandas (1.1.5), and wandb (0.15.12)
-```bash
-python3 -m pip install pandas
-python3 -m pip install wandb
-```
++ The following Python packages are required: numpy (tested on 2.0.2) and TensorFlow/Keras (2.18.0 / 3.7.0)
 + Additional **R** package in ***package_list.R***  are required. Make sure to install these packages in the virtual environment where python3 and Tensorflow are installed.
 
 + Ensure that the path in *use_python()* in **simulation.R** corresponds to the virtual environment python path, which you can find using
@@ -107,16 +103,19 @@ Contents
 - Provides custom learner definitions for use with the SuperLearner framework.
 
 ### **src/tmle_fns_lstm.R**
-- TMLE implementation for incorporating Long Short-Term Memory (LSTM) neural networks into the TMLE workflow.
+- Legacy LSTM-TMLE pipeline (sliding windows across subjects); no longer used. `estimator='tmle-lstm'` now runs the same LTMLE core as `'tmle'` (`src/tmle_fns.R`) with LSTM learners.
 
 ### **src/lstm.R**
-- Facilitates integration between R and Python for LSTM-based estimations. Used when `estimator='tmle-lstm'`.
+- R bridge (reticulate, in-memory arrays) to the LSTM learners used when `estimator='tmle-lstm'`: treatment models (`lstm_fit_treatment`), censoring model (`lstm_fit_censoring`) and the outcome regressions of each step of the sequential regression (`lstm_outcome_step`).
+
+### **src/utils.py**
+- LSTM model builders, hyperparameters (`HP`), per-process data and warm-start state. Sequences are per subject and unidirectional (predictions at time t use history up to t only).
 
 ### **src/train_lstm.py**
-- Python script for training LSTMs and predicting on the full dataset.
+- Fits the many-to-many treatment (multinomial softmax, or six separate sigmoid models) and censoring LSTMs, and the outcome LSTM of one sequential-regression step (12-month history window, warm-started from the previous step).
 
 ### **src/test_lstm.py**
-- Python script for predicting on new data (for the targeting step).
+- Prediction functions, including counterfactual predictions with the treatment at step s set by a rule.
 
 ### **simulation.R**
 - Simulates longitudinal data for comparing the performance of multinomial TMLE with LSTM-based approaches.
@@ -125,13 +124,14 @@ Contents
     - **treatment.rule**: Specify "static", "dynamic", "stochastic", or "all".
     - **gbound**/**ybound**: Bounds for propensity scores and initial predictions, respectively.
     - **J**: Number of treatments (`J=6`).
-    - **n**: Sample size (default is `12500`).
+    - **n**: Sample size (default is `10000`).
     - **t.end**: Number of time periods (must be between `4` and `36`).
-    - **R**: Number of simulation runs (default is `325`).
-    - **target.gwt**: Logical flag to adjust weights in the clever covariate (default is `TRUE`).
-    - **use.SL**: Logical flag to enable Super Learner (default is `TRUE`).
+    - **R**: Number of simulation runs (default is `100`; 5th argument of `run_simulation.sh`).
+    - **target.times**: Time points t at which psi_t = E[Y_t^d] is estimated (default all, `1..36`; 6th argument).
+    - **use.SL**: Logical flag to enable Super Learner (default is `TRUE`); `FALSE` uses GLM / multinomial logistic regression.
     - **scale.continuous**: Logical flag for scaling continuous variables.
-    - **n.folds**: Number of cross-validation folds for Super Learner (default is `5`).
+    - **n.folds**: Number of cross-validation folds for Super Learner (default is `3`).
+  - The true parameter values are computed once from a large Monte Carlo sample (5 x 100,000 per rule) and cached in `data/`.
 
 ### **long_sim_plots.R**
 - Aggregates and visualizes the output of `simulation.R`. Includes:
@@ -145,46 +145,7 @@ Required File Modifications
 Below is a list of files that require user modifications to match their environment or particular settings. Please ensure to make these changes before running the code.
 
 ### `simulation.R`
-- Update the Python path used by `use_python()`. Modify it to point to the Python interpreter you wish to use. For example:
-  ```r
-  use_python("./myenv/bin/python", required=TRUE)
-  ```
-
-### `train_lstm.py`
-- **If using a GPU**, configure the GPU settings by updating relevant CUDA paths to match your environment. The default settings are:
-  ```python
-  cuda_base = "/n/app/cuda/12.1-gcc-9.2.0"
-  os.environ.update({
-      'CUDA_HOME': cuda_base,
-      'CUDA_ROOT': cuda_base,
-      'CUDA_PATH': cuda_base,
-      'CUDNN_PATH': f"{cuda_base}/lib64/libcudnn.so",
-      'LD_LIBRARY_PATH': f"{cuda_base}/lib64:{cuda_base}/extras/CUPTI/lib64:{os.environ.get('LD_LIBRARY_PATH', '')}",
-      'PATH': f"{cuda_base}/bin:{os.environ.get('PATH', '')}",
-      'CUDA_DEVICE_ORDER': 'PCI_BUS_ID',
-      'CUDA_VISIBLE_DEVICES': '0,1',
-      'TF_FORCE_GPU_ALLOW_GROWTH': 'true',
-      'TF_XLA_FLAGS': '--tf_xla_enable_xla_devices',
-      'XLA_FLAGS': f'--xla_gpu_cuda_data_dir={cuda_base}',
-      'TF_GPU_THREAD_MODE': 'gpu_private',
-      'TF_GPU_THREAD_COUNT': '2',
-      'TF_CPP_MIN_LOG_LEVEL': '3'
-  })
-  ```
-
-- If no GPU is used, the script will automatically fall back to CPU-based execution. No additional changes are required in this case.
-
-### `utils.py`
-- Include your wandb username in the "entity" field in the setup_wandb() function: 
-  ```python
-    run = wandb.init(
-        project="multi-ltmle",
-        entity="username",
-        config=config,
-        name=f"lstm_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        mode="offline",  # Run offline to prevent uploads
-    )
-  ```
+- For `estimator='tmle-lstm'`, update the Python path passed to `lstm_python()` (default `"./myenv/bin/python"`) if your virtual environment is elsewhere. Python/TensorFlow are initialised only inside the forked workers that fit the LSTMs.
 
 Instructions
 ------
@@ -203,7 +164,7 @@ Instructions
 To execute simulations, use the following command:
 
 ```bash
-./run_simulation.sh [arg1] [arg2] [arg3] [arg4]
+./run_simulation.sh [arg1] [arg2] [arg3] [arg4] [R] [target_times] [output_dir]
 ```
 
 #### Arguments:
@@ -215,6 +176,10 @@ To execute simulations, use the following command:
   - `"TRUE"` or `"FALSE"`.
 - **`[arg4]`**: Logical flag for enabling MPI parallel programming:
   - `"TRUE"` or `"FALSE"`.
+- **`[R]`**: Number of simulation replicates (default `100`); replicates already saved in `output_dir` are skipped.
+- **`[target_times]`**: `"all"` or a comma-separated list such as `"6,12,18,24,30,36"`.
+- **`[output_dir]`**: Output directory (default `./outputs/YYYYMMDD`).
+- **`[replicates]`**: Optional subset of replicates such as `"1:25"`; disjoint ranges can run as parallel processes writing to the same `output_dir`.
 
 #### Examples:
 1. Using the `"tmle"` estimator with super learner enabled and no MPI, using 2 cores for parallel computation:
@@ -222,9 +187,9 @@ To execute simulations, use the following command:
    ./run_simulation.sh 'tmle' 2 'TRUE' 'FALSE'
    ```
 
-2. Using the `"tmle-lstm"` estimator, using 2 cores for parallel computation:
+2. Using the `"tmle-lstm"` estimator (LSTM treatment, censoring and outcome models), using 2 cores within each replicate, 100 replicates, target times every 6 months (resumable):
    ```bash
-   ./run_simulation.sh 'tmle-lstm' 2 'FALSE' 'FALSE'
+   ./run_simulation.sh 'tmle-lstm' 2 'TRUE' 'FALSE' 100 "6,12,18,24,30,36" ./outputs/rnn_n10000
    ```
 
 ---
@@ -241,7 +206,7 @@ Latex tables are saved to `tables/` and plots to `sim_results/`.
 Model Weights, Intermediate Results, and Visualizations
 ------
 
-This section outlines the model weights, intermediate results, and visualizations available for analysis and evaluation. The results pertain to a single simulated longitudinal dataset (r=1) for 12,500 patients, estimating counterfactual diabetes risk under three regimes: static, dynamic, and stochastic. **Data and results are saved in the `ex_outputs/` directory unless otherwise noted.**
+This section outlines the model weights, intermediate results, and visualizations available for analysis and evaluation (produced by the pre-2026 pipeline, which the 2026 audit found to be defective; kept for reference only). The results pertain to a single simulated longitudinal dataset (r=1) for 12,500 patients, estimating counterfactual diabetes risk under three regimes: static, dynamic, and stochastic. **Data and results are saved in the `ex_outputs/` directory unless otherwise noted.**
 
 #### Key Files and Descriptions:
 
