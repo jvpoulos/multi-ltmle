@@ -106,7 +106,7 @@ latex_table <- function(body, header, caption, label, align) {
 }
 caption_note <- function() paste0("Values are over ", R, " simulation runs ($n=", format(n, big.mark = "{,}"), "$) and target time points ",
                                   "$t=", paste(sort(unique(results.df$t)), collapse = ", "), "$. Coverage probability: proportion of 95\\% CIs ",
-                                  "containing the true value (Monte Carlo SE); CI widths: mean (median); absolute bias: mean $\\pm$ SD. ",
+                                  "containing the true value (Monte Carlo SE); CI widths: mean (median); absolute bias: mean $\\pm$ SD over all replicate-by-cell values. ",
                                   "G-computation intervals are approximate (influence curve evaluated at the untargeted fits).")
 by_impl <- function(s, row_fun) lapply(split(s, s$Implementation, drop = TRUE), row_fun)
 
