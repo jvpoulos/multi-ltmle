@@ -99,19 +99,25 @@ several machines.
 
 ### 2. Spot checks of single replicates
 
-A single replicate can be re-run without re-running the study, e.g. replicate 7 of the LSTM
-run:
+A single replicate can be re-run without re-running the study, e.g. replicate 7 of the SL run
+(about an hour) or of the LSTM run (about 25 minutes):
 
 ```bash
-./run_simulation.sh tmle-lstm 3 TRUE 100 "12,24,36" ./outputs/spotcheck 7
+./run_simulation.sh tmle 3 TRUE 100 "12,24,36" ./outputs/spotcheck_sl 7
+./run_simulation.sh tmle-lstm 3 TRUE 100 "12,24,36" ./outputs/spotcheck_rnn 7
 ```
 
 ```r
 f <- function(d) readRDS(list.files(d, pattern = "_r_7_", full.names = TRUE))$metrics
-all.equal(f("outputs/spotcheck"), f("outputs/rnn_n10000_t12-24-36"))
+all.equal(f("outputs/spotcheck_sl"), f("outputs/sl_n10000_t12-24-36"))
+all.equal(f("outputs/spotcheck_rnn"), f("outputs/rnn_n10000_t12-24-36"))
 ```
 
-The DGP, the LSTM learners and the outcome regressions are seeded by the replicate number.
+All random numbers are seeded by the replicate number r (the simulated data, the learners and
+the cross-validation folds), so a replicate's results do not depend on the other replicates or
+on the order in which they are run. With the SL learners, the results are identical for any
+number of cores of 2 or more; with 1 core, the learners run in the main R process and draw
+different (equally valid) random numbers.
 
 ### 3. Tables and figures
 
