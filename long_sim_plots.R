@@ -10,6 +10,8 @@
 #   tables/TableS2_results_estimator_rule.tex   Table S2 (by estimator and rule)            #
 #   tables/TableS3_positivity.tex               Table S3 (positivity diagnostic)            #
 #   tables/monte_carlo_se.csv                   Monte Carlo SEs of the summaries            #
+#   tables/TableS4_run_times.tex                Table S4 (computation time per replicate)   #
+#   tables/run_times.csv                        computation times of each replicate         #
 #   sim_results/FigureS2a_bias.png              Figure S2a (absolute bias over time)        #
 #   sim_results/FigureS2b_coverage.png          Figure S2b (coverage over time)             #
 #   sim_results/FigureS2c_ci_width.png          Figure S2c (CI width over time)             #
@@ -63,11 +65,12 @@ process_results_file <- function(file_path) {
     return(NULL)
   }
   list(metrics = result$metrics, positivity = result$positivity, failures = result$failures,
-       n = result$n, elapsed = as.numeric(result$elapsed_time, units = "mins"))
+       n = result$n, elapsed = as.numeric(result$elapsed_time, units = "mins"),
+       timings = result$timings, r = result$iteration)
 }
 
 # Combine all replicates of one estimator (de-duplicated by replicate number). Returns
-# list(metrics, positivity, failures, n, R, elapsed) or NULL if there are no results.
+# list(metrics, positivity, failures, n, R, elapsed, timings, r) or NULL if there are no results.
 combine_results <- function(base_dirs, estimator_type) {
   files <- unlist(lapply(base_dirs, find_results_files, estimator_type = estimator_type))
   files <- files[!duplicated(get_iteration(files))]
@@ -77,7 +80,8 @@ combine_results <- function(base_dirs, estimator_type) {
        positivity = do.call(rbind, lapply(res, `[[`, "positivity")),
        failures = do.call(rbind, lapply(res, `[[`, "failures")),
        n = unique(sapply(res, `[[`, "n")), R = length(res),
-       elapsed = sapply(res, `[[`, "elapsed"))
+       elapsed = sapply(res, `[[`, "elapsed"), timings = lapply(res, `[[`, "timings"),
+       r = sapply(res, `[[`, "r"))
 }
 
 results <- list(tmle = combine_results(base_dirs, "tmle"),
@@ -245,6 +249,50 @@ monte_carlo_se <- function(results_df) {
     arrange(Implementation, Estimator, Rule)
 }
 
+# Computation time of each replicate (minutes): total wall clock, and wall clock and CPU time
+# (including the forked workers) of the treatment and censoring models and of the outcome
+# regressions (backward recursion with targeting)
+run_times <- function(results) {
+  do.call(rbind, lapply(names(results), function(nm) {
+    x <- results[[nm]]
+    tm <- lapply(x$timings, function(m) if (is.null(m)) rep(NA_real_, 4) else as.vector(m))
+    tm <- do.call(rbind, tm)
+    data.frame(Implementation = if (nm == "tmle-lstm") "RNN" else
+                 unique(sub(".*-(SL|GLM).*", "\\1", x$metrics$estimator))[1],
+               r = x$r, total_wall = x$elapsed, g_C_wall = tm[, 1], Q_wall = tm[, 2],
+               g_C_cpu = tm[, 3], Q_cpu = tm[, 4])
+  }))
+}
+# Table S4: median (IQR) over replicates of the computation times, and the total over replicates
+runtime_hardware <- paste("Each replicate used 3 worker processes on a laptop with a 4-core",
+                          "Intel Core i7-8550U CPU (no GPU).")
+create_runtime_table <- function(rt) {
+  miqr <- function(x) {
+    if (all(is.na(x))) return("--")
+    q <- quantile(x, c(0.5, 0.25, 0.75), na.rm = TRUE)
+    sprintf("%.1f (%.1f--%.1f)", q[1], q[2], q[3])
+  }
+  rows <- sapply(split(rt, factor(rt$Implementation, levels = c("SL", "GLM", "RNN")),
+                       drop = TRUE), function(b) {
+    paste(b$Implementation[1], miqr(b$g_C_wall), miqr(b$Q_wall), miqr(b$total_wall),
+          miqr(b$g_C_cpu + b$Q_cpu), sprintf("%.1f", sum(b$total_wall) / 60), sep = " & ")
+  })
+  paste0("\\begin{table}[ht]\n\\centering\n\\caption{Computation time per simulation run ",
+         "(minutes; median and interquartile range over ", R, " runs with $n=",
+         format(n, big.mark = "{,}"), "$ and target time points $t=",
+         paste(sort(unique(results.df$t)), collapse = ", "), "$). Treatment and censoring ",
+         "models: multinomial and binomial treatment models and censoring models at all time ",
+         "points; outcome regressions: the backward recursions with targeting for all target ",
+         "times and rules. The LTMLE, IPTW and g-computation estimates of a run share these ",
+         "fits. CPU time includes the worker processes. ", runtime_hardware, "}\n",
+         "\\label{tab:run-times}\n\\resizebox{\\textwidth}{!}{%\n\\begin{tabular}{l|cccc|c}\n",
+         "\\hline\n & \\multicolumn{3}{c}{\\textbf{Wall clock}} & \\textbf{CPU time} & ",
+         "\\textbf{Total} \\\\\n\\textbf{Implementation} & \\textbf{Treatment, censoring} & ",
+         "\\textbf{Outcome regressions} & \\textbf{Run} & \\textbf{Run} & \\textbf{(hours)} \\\\\n",
+         "\\hline\n", paste(rows, collapse = " \\\\ \n"),
+         " \\\\ \n\\hline\n\\end{tabular}\n}\n\\end{table}\n")
+}
+
 cat("Generating LaTeX tables...\n")
 dir.create("tables", showWarnings = FALSE)
 write(create_estimator_table(results.df), file.path("tables", "Table1_results_estimator.tex"))
@@ -254,6 +302,9 @@ write(create_estimator_rule_table(results.df),
 write(create_positivity_table(results), file.path("tables", "TableS3_positivity.tex"))
 write.csv(monte_carlo_se(results.df), file.path("tables", "monte_carlo_se.csv"),
           row.names = FALSE)
+rt <- run_times(results)
+write(create_runtime_table(rt), file.path("tables", "TableS4_run_times.tex"))
+write.csv(rt, file.path("tables", "run_times.csv"), row.names = FALSE)
 cat("Tables saved to 'tables' directory.\n")
 
 # Figure S2a-c: mean absolute bias, coverage proportion (with nominal 0.95 line) and median CI

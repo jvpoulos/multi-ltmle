@@ -135,6 +135,8 @@ Information):
 | `tables/TableS2_results_estimator_rule.tex` | Table S2 |
 | `tables/TableS3_positivity.tex` | Table S3 |
 | `tables/monte_carlo_se.csv` | Monte Carlo standard errors of the summaries in Table S2 |
+| `tables/TableS4_run_times.tex` | Table S4 (computation time per replicate) |
+| `tables/run_times.csv` | Computation times of each replicate |
 | `sim_results/FigureA1_DAG.png` (`.pdf`) | Figure A1 |
 | `sim_results/FigureS1a_treatment_adherence.png`, `FigureS1b_survival_observed.png`, `FigureS1c_survival_truth.png` | Figure S1 |
 | `sim_results/FigureS2a_bias.png`, `FigureS2b_coverage.png`, `FigureS2c_ci_width.png` | Figure S2 |
@@ -172,6 +174,10 @@ of the treatment and censoring LSTMs is saved in each replicate's results (`lstm
   file while `src/simcausal_dgp.R` is unchanged (MD5 checksum) and recomputes it otherwise.
 * `tables/monte_carlo_se.csv`: Monte Carlo standard errors of the mean absolute bias, coverage
   and CI width by estimator and rule (standard deviation of the replicate means / sqrt(R)).
+* `tables/run_times.csv`: per replicate, the total wall-clock time and the wall-clock and CPU
+  time (including the worker processes) of the treatment and censoring models (`g_C_*`) and of
+  the outcome regressions (`Q_*`), in minutes, from each replicate's `timings` and
+  `elapsed_time`.
 
 ### Visualizations
 
