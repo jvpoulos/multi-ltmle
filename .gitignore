@@ -39,3 +39,26 @@ vignettes/*.pdf
 .Renviron
 
 **/.claude/settings.local.json
+
+# Local-only files (kept on disk, not part of the published code)
+CLAUDE.md
+FIXES_LOG.md
+HOW_TO_RUN.md
+README.txt
+simulation.R.original
+*.sb
+package_list.sh
+src/tmle_fns_lstm.R
+src/misc_fns.R
+ex_outputs/
+archive/
+
+# Environments, caches and generated output
+myenv
+__pycache__/
+outputs/*
+!outputs/sl_n10000_t12-24-36/
+!outputs/rnn_n10000_t12-24-36/
+outputs/*/*
+!outputs/*/longitudinal_simulation_results_*_r_*.rds
+*(Case Conflict)*

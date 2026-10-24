@@ -1,0 +1,27 @@
+\begin{table}[h]
+\centering
+\caption{Proportion of uncensored rule-followers whose estimated cumulative probability of following the rule is smaller than 0.025, for static, dynamic, and stochastic treatment rules under the SL and RNN implementations (mean over 100 simulation runs; multinomial treatment model). For the stochastic rule, the cumulative ratio of the estimated to the rule's treatment probabilities is used.}
+\label{tab:positivity}
+\begin{tabular}{l|ccc}
+\toprule
+\multicolumn{4}{l}{\textbf{Static Rule}} \\ 
+\textbf{Implementation} & $t=12$ & $t=24$ & $t=36$ \\ 
+\midrule
+SL & 0.000 & 0.009 & 0.924 \\ 
+RNN & 0.000 & 0.000 & 0.382 \\ 
+\midrule
+\multicolumn{4}{l}{\textbf{Dynamic Rule}} \\ 
+\textbf{Implementation} & $t=12$ & $t=24$ & $t=36$ \\ 
+\midrule
+SL & 0.000 & 0.000 & 0.953 \\ 
+RNN & 0.000 & 0.000 & 0.269 \\ 
+\midrule
+\multicolumn{4}{l}{\textbf{Stochastic Rule}} \\ 
+\textbf{Implementation} & $t=12$ & $t=24$ & $t=36$ \\ 
+\midrule
+SL & 0.000 & 0.000 & 0.000 \\ 
+RNN & 0.000 & 0.000 & 0.000 \\ 
+\bottomrule
+\end{tabular}
+\end{table}
+

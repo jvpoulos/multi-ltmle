@@ -1,12 +1,14 @@
 """
 Prediction with the LSTM learners (rebuilt 2026-10).
 
-  predict_sequence(model, x)                    many-to-many probabilities at every (subject, t)
-  outcome_window(s, rows, a_override)           ICE input: last HP["outcome_window"] months of each
-                                                subject's own history ending at s, left-padded with zeros
-                                                (masked) when s < window - 1; treatment at s optionally
-                                                replaced (counterfactual prediction under a rule)
-  predict_outcome_step(key, s, rows, a_override) Q_s predictions from the fit stored under `key`
+  predict_sequence(model, x)
+      many-to-many probabilities at every (subject, t)
+  outcome_window(s, rows, a_override)
+      ICE input: last HP["outcome_window"] months of each subject's own history ending at s,
+      left-padded with zeros (masked) when s < window - 1; treatment at s optionally replaced
+      (counterfactual prediction under a rule)
+  predict_outcome_step(key, s, rows, a_override)
+      Q_s predictions from the fit stored under `key`
 """
 
 import numpy as np
@@ -26,7 +28,8 @@ def outcome_window(s, rows, a_override=None):
     W = int(HP["outcome_window"])
     k0 = max(0, s - W + 1)
     L = s - k0 + 1
-    feats = np.concatenate([d["base"][rows, k0:s + 1, :], d["A_onehot"][rows, k0:s + 1, :]], axis=-1)
+    feats = np.concatenate([d["base"][rows, k0:s + 1, :], d["A_onehot"][rows, k0:s + 1, :]],
+                           axis=-1)
     if a_override is not None:
         F = d["base"].shape[-1]
         feats[:, -1, F:] = utils.onehot(np.asarray(a_override).reshape(-1), d["J"])

@@ -3,15 +3,17 @@ Training of the LSTM learners for the LTMLE nuisance regressions (rebuilt 2026-1
 
   fit_treatment(arm)   g_t(a | history), t = 0..K, one many-to-many model per replicate:
                        arm = "multinomial" -> one softmax model over the J treatments;
-                       arm = "binomial"    -> J separate sigmoid models (one-vs-rest), not renormalised.
+                       arm = "binomial"    -> J separate sigmoid models (one-vs-rest), not
+                                              renormalised.
   fit_censoring()      P(C_t = 0 | history, A_t), t = 1..K, one many-to-many sigmoid model.
   fit_outcome_step()   one iterated-conditional-expectation (ICE) regression at step s:
-                       pseudo-outcome Z_s in [0, 1] on the last HP["outcome_window"] months of history
-                       ending at s (soft-label binary cross-entropy), warm-started from the previous
-                       step of the same recursion.
+                       pseudo-outcome Z_s in [0, 1] on the last HP["outcome_window"] months of
+                       history ending at s (soft-label binary cross-entropy), warm-started from
+                       the previous step of the same recursion.
 
 Losses are masked to the relevant risk sets with per-time sample weights; no class weighting is
-used, so predicted probabilities stay calibrated. Early stopping uses a subject-level validation split.
+used, so predicted probabilities stay calibrated. Early stopping uses a subject-level validation
+split.
 """
 
 import numpy as np
@@ -70,7 +72,8 @@ def _treatment_inputs():
 
 def _censoring_inputs():
     d = STATE["data"]
-    base_no_age = np.delete(d["base"], 5, axis=-1)  # column 5 is V3 (age); see fit_censoring_models()
+    # column 5 is V3 (age); see fit_censoring_models()
+    base_no_age = np.delete(d["base"], 5, axis=-1)
     return np.concatenate([base_no_age, utils.lagged(d["A_onehot"]), d["A_onehot"]], axis=-1)
 
 
@@ -116,15 +119,16 @@ def fit_censoring():
     p = float((y[..., 0] * w).sum() / max(w.sum(), 1.0))
     utils.set_seed(utils.sub_seed("censoring"))
     model = utils.build_sequence_model(T, F, 1, "sigmoid", out_bias=[utils.logit(p)])
-    ep = _fit(model, x, y, w, rows, utils.sub_seed("split", "censoring"), HP["seq_max_epochs"], HP["seq_patience"])
+    ep = _fit(model, x, y, w, rows, utils.sub_seed("split", "censoring"), HP["seq_max_epochs"],
+              HP["seq_patience"])
     return test_lstm.predict_sequence(model, x)[..., 0], np.asarray([ep], dtype="int32")
 
 
 def _calibrate_intercept(model, x, z, iters=25):
-    """Shift the output-layer bias (logit scale) so that the mean prediction among the fitted subjects
-    equals the mean pseudo-outcome, as the intercept of a logistic regression guarantees. Without it,
-    early-stopped networks warm-started from the previous (shorter-horizon) step can drift in level
-    across the backward recursion."""
+    """Shift the output-layer bias (logit scale) so that the mean prediction among the fitted
+    subjects equals the mean pseudo-outcome, as the intercept of a logistic regression guarantees.
+    Without it, early-stopped networks warm-started from the previous (shorter-horizon) step can
+    drift in level across the backward recursion."""
     if len(z) == 0:
         return
     p = np.clip(test_lstm.predict_sequence(model, x)[:, 0].astype("float64"), 1e-7, 1 - 1e-7)
@@ -144,7 +148,8 @@ def _calibrate_intercept(model, x, z, iters=25):
 
 
 def outcome_model():
-    """One compiled outcome model per process; its weights are swapped between fits (no retracing)."""
+    """One compiled outcome model per process; its weights are swapped between fits (no
+    retracing)."""
     if STATE["outcome_model"] is None:
         d = STATE["data"]
         F = d["base"].shape[-1] + d["J"]
@@ -185,7 +190,8 @@ def fit_outcome_step(key, fallback_key, s, rows, z):
     idx = np.arange(len(rows))
     _calibrate_intercept(model, x, z)  # warm start: move to the level of the new pseudo-outcome
     ep = _fit(model, x, y, wt, idx, utils.sub_seed("split", key, s), max_epochs, patience)
-    _calibrate_intercept(model, x, z)  # mean prediction = mean pseudo-outcome among the fitted subjects
+    # mean prediction = mean pseudo-outcome among the fitted subjects
+    _calibrate_intercept(model, x, z)
     weights = model.get_weights()
     STATE["warm"][key] = weights
     STATE["fit_cache"][cache_key] = weights

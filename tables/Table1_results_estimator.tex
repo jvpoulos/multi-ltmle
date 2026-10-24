@@ -1,0 +1,25 @@
+\begin{table}[ht]
+\centering
+\caption{Performance metrics by estimator, aggregated across time points and treatment rules. Values are over 100 simulation runs ($n=10{,}000$) and target time points $t=12, 24, 36$. Coverage probability: proportion of 95\% CIs containing the true value (Monte Carlo SE); CI widths: mean (median); absolute bias: mean $\pm$ SD over all replicate-by-cell values. G-computation intervals are approximate (influence curve evaluated at the untargeted fits).}
+\label{tab:results-estimator}
+\resizebox{0.8\textwidth}{!}{%
+\begin{tabular}{l|c|c|c}
+\hline
+\textbf{Estimator} & \textbf{Coverage prob.} & \textbf{CI Widths} & \textbf{Abs. Bias} \\
+\hline
+G-Comp-SL & $0.586$ (0.016) & $0.0351$ (0.0273) & $0.0208 \pm 0.0178$ \\ 
+IPTW-SL (bin.) & $0.921$ (0.009) & $0.0324$ (0.0250) & $0.0074 \pm 0.0085$ \\ 
+IPTW-SL (multi.) & $0.809$ (0.013) & $0.0322$ (0.0249) & $0.0092 \pm 0.0093$ \\ 
+LTMLE-SL (bin.) & $0.933$ (0.008) & $0.0329$ (0.0267) & $0.0063 \pm 0.0067$ \\ 
+LTMLE-SL (multi.) & $0.943$ (0.008) & $0.0344$ (0.0272) & $0.0064 \pm 0.0068$ \\ 
+\hline
+G-Comp-RNN & $0.929$ (0.009) & $0.0299$ (0.0249) & $0.0054 \pm 0.0042$ \\ 
+IPTW-RNN (bin.) & $0.899$ (0.010) & $0.0343$ (0.0260) & $0.0087 \pm 0.0118$ \\ 
+IPTW-RNN (multi.) & $0.901$ (0.010) & $0.0341$ (0.0259) & $0.0084 \pm 0.0090$ \\ 
+LTMLE-RNN (bin.) & $0.906$ (0.010) & $0.0499$ (0.0257) & $0.0067 \pm 0.0069$ \\ 
+LTMLE-RNN (multi.) & $0.913$ (0.009) & $0.0297$ (0.0248) & $0.0064 \pm 0.0066$ \\ 
+\hline
+\end{tabular}
+}
+\end{table}
+

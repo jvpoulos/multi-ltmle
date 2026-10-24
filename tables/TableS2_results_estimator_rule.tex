@@ -1,0 +1,45 @@
+\begin{table}[ht]
+\centering
+\caption{Performance metrics by estimator and treatment rule, aggregated across time points. Values are over 100 simulation runs ($n=10{,}000$) and target time points $t=12, 24, 36$. Coverage probability: proportion of 95\% CIs containing the true value (Monte Carlo SE); CI widths: mean (median); absolute bias: mean $\pm$ SD over all replicate-by-cell values. G-computation intervals are approximate (influence curve evaluated at the untargeted fits).}
+\label{tab:results-estimator-rule}
+\resizebox{0.8\textwidth}{!}{%
+\begin{tabular}{ll|c|c|c}
+\hline
+\multicolumn{2}{c|}{\textbf{Group}} & \textbf{Coverage prob.} & \textbf{CI Widths} & \textbf{Abs. Bias} \\
+\hline
+G-Comp-SL & Static & $0.903$ (0.017) & $0.0542$ (0.0511) & $0.0190 \pm 0.0088$ \\ 
+G-Comp-SL & Dynamic & $0.013$ (0.007) & $0.0337$ (0.0305) & $0.0380 \pm 0.0178$ \\ 
+G-Comp-SL & Stochastic & $0.840$ (0.021) & $0.0175$ (0.0179) & $0.0054 \pm 0.0042$ \\ 
+IPTW-SL (bin.) & Static & $0.883$ (0.019) & $0.0443$ (0.0424) & $0.0116 \pm 0.0106$ \\ 
+IPTW-SL (bin.) & Dynamic & $0.930$ (0.015) & $0.0342$ (0.0322) & $0.0070 \pm 0.0080$ \\ 
+IPTW-SL (bin.) & Stochastic & $0.950$ (0.013) & $0.0186$ (0.0190) & $0.0037 \pm 0.0031$ \\ 
+IPTW-SL (multi.) & Static & $0.813$ (0.022) & $0.0442$ (0.0420) & $0.0131 \pm 0.0120$ \\ 
+IPTW-SL (multi.) & Dynamic & $0.933$ (0.014) & $0.0343$ (0.0322) & $0.0071 \pm 0.0081$ \\ 
+IPTW-SL (multi.) & Stochastic & $0.680$ (0.027) & $0.0179$ (0.0183) & $0.0075 \pm 0.0055$ \\ 
+LTMLE-SL (bin.) & Static & $0.963$ (0.011) & $0.0502$ (0.0478) & $0.0088 \pm 0.0078$ \\ 
+LTMLE-SL (bin.) & Dynamic & $0.920$ (0.016) & $0.0317$ (0.0300) & $0.0065 \pm 0.0072$ \\ 
+LTMLE-SL (bin.) & Stochastic & $0.917$ (0.016) & $0.0169$ (0.0174) & $0.0037 \pm 0.0030$ \\ 
+LTMLE-SL (multi.) & Static & $0.973$ (0.009) & $0.0540$ (0.0510) & $0.0090 \pm 0.0079$ \\ 
+LTMLE-SL (multi.) & Dynamic & $0.920$ (0.016) & $0.0316$ (0.0301) & $0.0065 \pm 0.0071$ \\ 
+LTMLE-SL (multi.) & Stochastic & $0.937$ (0.014) & $0.0175$ (0.0179) & $0.0036 \pm 0.0029$ \\ 
+\hline
+G-Comp-RNN & Static & $1.000$ (0.000) & $0.0436$ (0.0425) & $0.0053 \pm 0.0040$ \\ 
+G-Comp-RNN & Dynamic & $0.967$ (0.010) & $0.0288$ (0.0272) & $0.0056 \pm 0.0045$ \\ 
+G-Comp-RNN & Stochastic & $0.820$ (0.022) & $0.0171$ (0.0175) & $0.0053 \pm 0.0040$ \\ 
+IPTW-RNN (bin.) & Static & $0.933$ (0.014) & $0.0479$ (0.0454) & $0.0110 \pm 0.0110$ \\ 
+IPTW-RNN (bin.) & Dynamic & $0.920$ (0.016) & $0.0371$ (0.0347) & $0.0093 \pm 0.0106$ \\ 
+IPTW-RNN (bin.) & Stochastic & $0.843$ (0.021) & $0.0181$ (0.0183) & $0.0059 \pm 0.0130$ \\ 
+IPTW-RNN (multi.) & Static & $0.947$ (0.013) & $0.0471$ (0.0451) & $0.0104 \pm 0.0094$ \\ 
+IPTW-RNN (multi.) & Dynamic & $0.913$ (0.016) & $0.0372$ (0.0343) & $0.0097 \pm 0.0110$ \\ 
+IPTW-RNN (multi.) & Stochastic & $0.843$ (0.021) & $0.0178$ (0.0183) & $0.0051 \pm 0.0043$ \\ 
+LTMLE-RNN (bin.) & Static & $0.940$ (0.014) & $0.1012$ (0.0455) & $0.0093 \pm 0.0081$ \\ 
+LTMLE-RNN (bin.) & Dynamic & $0.893$ (0.018) & $0.0298$ (0.0285) & $0.0067 \pm 0.0074$ \\ 
+LTMLE-RNN (bin.) & Stochastic & $0.883$ (0.019) & $0.0187$ (0.0175) & $0.0041 \pm 0.0034$ \\ 
+LTMLE-RNN (multi.) & Static & $0.947$ (0.013) & $0.0436$ (0.0424) & $0.0087 \pm 0.0075$ \\ 
+LTMLE-RNN (multi.) & Dynamic & $0.897$ (0.018) & $0.0283$ (0.0272) & $0.0066 \pm 0.0073$ \\ 
+LTMLE-RNN (multi.) & Stochastic & $0.897$ (0.018) & $0.0171$ (0.0176) & $0.0040 \pm 0.0034$ \\ 
+\hline
+\end{tabular}
+}
+\end{table}
+
