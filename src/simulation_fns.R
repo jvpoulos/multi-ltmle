@@ -44,6 +44,9 @@ simLong <- function(r, Dset, output_dir, J = 6, n = 10000, t.end = 36, gbound = 
   truth <- compute_truth(Dset, t.end) # large-n Monte Carlo truth, cached under ./data
   # observed data (C = 1: censored)
   Odat <- sim(DAG = Dset, n = n, LTCF = "Y", rndseed = r, verbose = FALSE)
+  # simcausal::sim() re-seeds the RNG at random when it finishes, so seed the learners here
+  RNGkind("L'Ecuyer-CMRG")
+  set.seed(r)
 
   # per-component timings: wall clock and CPU (incl. forked workers), in minutes
   clock <- function() {
