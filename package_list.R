@@ -1,8 +1,8 @@
 ############################################################################################
 # Installs the R packages used by the simulation code (run once: Rscript package_list.R).  #
-# The results in the paper were produced with R 4.3.3 and the package versions listed in   #
+# The results in the paper were produced with R 4.5.2 and the package versions listed in   #
 # session_info.txt; the three packages installed from GitHub are pinned to the commits     #
-# used.                                                                                     #
+# used.                                                                                    #
 ############################################################################################
 
 repos <- "https://cloud.r-project.org"
