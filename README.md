@@ -1,251 +1,218 @@
 # multi-ltmle
 
-Simulation code for Longitudinal TMLE (LTMLE) with multi-valued treatments. 
+Simulation code for longitudinal targeted minimum loss-based estimation (LTMLE) with
+multi-valued treatment regimes, using Super Learner (SL) or recurrent neural networks (LSTMs)
+as learners for the outcome, treatment and censoring models.
 
-Please cite the following paper if you use this repo:
+Please cite the following paper if you use this repository:
 
 ```
-@article{doi:10.1002/sim.10003,
-  title={Targeted learning in observational studies with multi-valued treatments: An evaluation of antipsychotic drug treatment safety.},
-  author={Poulos, Jason and Horvitz-Lennon, Marcela and Zelevinsky, Katya and Cristea-Platon, Tudor and Huijskens, Thomas and Tyagi, Pooja and Yan, Jiaju and Diaz, Jordi and Normand, Sharon-Lise},
-  journal={Statistics in Medicine},
-  year={2024},
-   publisher={Wiley Online Library}
+@unpublished{poulos2026doubly,
+  title  = {Doubly-robust causal inference for multi-valued treatment regimes with recurrent
+            neural networks},
+  author = {Poulos, Jason},
+  year   = {2026},
+  note   = {Working paper}
 }
 ```
 
-Prerequsites
+The simulation compares, for static, dynamic and stochastic treatment rules, the cumulative
+event probability psi_t = E[Y_t^d] at months t = 12, 24 and 36 estimated by
+
+* LTMLE with a multinomial treatment model or with separate binomial (one-vs-rest) models,
+* Hajek IPTW with either treatment model, and
+* sequential g-computation,
+
+each with SL learners (`estimator = 'tmle'`) or LSTM learners (`estimator = 'tmle-lstm'`),
+over 100 simulated datasets of n = 10 000 patients.
+
+Requirements
 ------
 
-* **R** (tested on 4.0.1 using a 6.2.0 GCC compiler)
-+ Required **R** packages located in ***package_list.R***
-+ The result of sessionInfo() is in ***session_info.txt***
+The results in the paper were produced on Ubuntu 26.04.1 (x86_64, a laptop with a 4-core Intel
+Core i7-8550U CPU, no GPU) with
 
-* For use of 'tmle-lstm' as an estimator: **R** (4.3.3), **python3** (3.10.12), and **TensorFlow** (2.18.0)
-
-+ Instructions for installing Tensorflow on Linux (documentation [here](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/) and [here](https://www.tensorflow.org/install/pip#linux))
-```bash
-# Create virtual environment within directory
-cd multi-ltmle
-
-# Manually set up a virtual environment
-python3.10 -m ensurepip --upgrade  # Ensure pip is installed/upgraded
-python3.10 -m pip install virtualenv  # Install virtualenv if not already available
-virtualenv myenv  # Create a virtual environment named 'myenv'
-source myenv/bin/activate  # Activate the new environment
-
-# Install TensorFlow
-python3 -m pip install --upgrade pip  # Upgrade pip to the latest version
-# For GPU users:
-pip install tensorflow[and-cuda]
-# For CPU users:
-pip install tensorflow
-
-# Verify the GPU installation:
-python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
-
-# Verify the CPU installation:
-python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))"
-```
-+ The following Python packages are required: numpy (tested on 2.0.2) and TensorFlow/Keras (2.18.0 / 3.7.0)
-+ Additional **R** package in ***package_list.R***  are required. Make sure to install these packages in the virtual environment where python3 and Tensorflow are installed.
-
-+ Ensure that the path in *use_python()* in **simulation.R** corresponds to the virtual environment python path, which you can find using
-```bash
-which python
-```
-
-+ **Test with R and Reticulate**  
-   Load the `reticulate` library and bind to the shared Python:
-   ```r
-   library(reticulate)
-   use_python("./myenv/bin/python", required = TRUE)
-   py_config()
-   ```
-
-+ **Important Notes**  
-   - If the shared library is still not found, adjust the `LD_LIBRARY_PATH` as required:
-     ```bash
-     export LD_LIBRARY_PATH=/path/to/libpython3.10.so:$LD_LIBRARY_PATH
-     ```
-   - For consistent performance, ensure all dependencies align with the Python version used in your virtual environment.
-
-Contents
-------
-
-### **package_list.R**
-- Installs required **R** packages.
-  - **doMPI**: Logical flag. When `TRUE`, installs packages required for MPI parallel processing (defaults to `FALSE`).
-  - **keras**: Logical flag. When `TRUE`, installs packages required for Keras/TensorFlow (defaults to `TRUE`).
-
-### **src/misc_fns.R**
-- Includes miscellaneous functions:
-  - Bounding predicted probabilities.
-  - Generating various distributions.
-  - A function for forest plot visualization.
-
-### **src/simcausal_fns.R**
-- Defines distribution functions for the *simcausal* software.
-
-### **src/simcausal_dgp.R**
-- Defines the data-generating process for the *simcausal* software.
-
-### **src/plotDAG_improved.R**
-- Improved DAG plotting function from the *simcausal* software.
-
-### **src/tmle_fns.R**
-- Defines treatment rule functions used for Targeted Maximum Likelihood Estimation (TMLE).
-
-### **src/tmle_IC.R**
-- Implements influence curve (IC)-based methods for variance estimation in TMLE.
-
-### **src/SL3_fns.R**
-- Provides custom learner definitions for use with the SuperLearner framework.
-
-### **src/tmle_fns_lstm.R**
-- Legacy LSTM-TMLE pipeline (sliding windows across subjects); no longer used. `estimator='tmle-lstm'` now runs the same LTMLE core as `'tmle'` (`src/tmle_fns.R`) with LSTM learners.
-
-### **src/lstm.R**
-- R bridge (reticulate, in-memory arrays) to the LSTM learners used when `estimator='tmle-lstm'`: treatment models (`lstm_fit_treatment`), censoring model (`lstm_fit_censoring`) and the outcome regressions of each step of the sequential regression (`lstm_outcome_step`).
-
-### **src/utils.py**
-- LSTM model builders, hyperparameters (`HP`), per-process data and warm-start state. Sequences are per subject and unidirectional (predictions at time t use history up to t only).
-
-### **src/train_lstm.py**
-- Fits the many-to-many treatment (multinomial softmax, or six separate sigmoid models) and censoring LSTMs, and the outcome LSTM of one sequential-regression step (12-month history window, warm-started from the previous step).
-
-### **src/test_lstm.py**
-- Prediction functions, including counterfactual predictions with the treatment at step s set by a rule.
-
-### **simulation.R**
-- Simulates longitudinal data for comparing the performance of multinomial TMLE with LSTM-based approaches.
-  - **Key parameters**:
-    - **estimator**: Choose between `'tmle'` or `'tmle-lstm'`.
-    - **treatment.rule**: Specify "static", "dynamic", "stochastic", or "all".
-    - **gbound**/**ybound**: Bounds for propensity scores and initial predictions, respectively.
-    - **J**: Number of treatments (`J=6`).
-    - **n**: Sample size (default is `10000`).
-    - **t.end**: Number of time periods (must be between `4` and `36`).
-    - **R**: Number of simulation runs (default is `100`; 5th argument of `run_simulation.sh`).
-    - **target.times**: Time points t at which psi_t = E[Y_t^d] is estimated (default all, `1..36`; 6th argument).
-    - **use.SL**: Logical flag to enable Super Learner (default is `TRUE`); `FALSE` uses GLM / multinomial logistic regression.
-    - **scale.continuous**: Logical flag for scaling continuous variables.
-    - **n.folds**: Number of cross-validation folds for Super Learner (default is `3`).
-  - The true parameter values are computed once from a large Monte Carlo sample (5 x 100,000 per rule) and cached in `data/`.
-
-### **long_sim_plots.R**
-- Aggregates and visualizes the output of `simulation.R`. Includes:
-  - Counterfactual risk estimations.
-  - Bias, coverage, and confidence interval widths.
-
-
-Required File Modifications
-------
-
-Below is a list of files that require user modifications to match their environment or particular settings. Please ensure to make these changes before running the code.
-
-### `simulation.R`
-- For `estimator='tmle-lstm'`, update the Python path passed to `lstm_python()` (default `"./myenv/bin/python"`) if your virtual environment is elsewhere. Python/TensorFlow are initialised only inside the forked workers that fit the LSTMs.
-
-Instructions
-------
-
-### 1. Install Required R Packages and Set Up Environment
-- Run the following command to install the required **R** packages:
+* **R** 4.5.2 and the package versions in `session_info.txt` (output of `sessionInfo()` from
+  the simulation run). Install the packages with `Rscript package_list.R`, which installs the
+  CRAN packages and pins the three GitHub packages to the commits used:
+  `sl3` 1.4.5 (`tlverse/sl3@0e8f236`), `simcausal` 0.5.5 (`osofr/simcausal@bce5ad7`) and
+  `Rsolnp` 1.16 (`jvpoulos/Rsolnp@16049fb`).
+* **Python** 3.10.12 with the packages in `requirements.txt` (TensorFlow 2.18.0, Keras 3.7.0,
+  NumPy 2.0.2), needed only for the LSTM learners. The code expects a virtual environment in
+  `./myenv`:
   ```bash
-  Rscript package_list.R
+  python3.10 -m venv myenv
+  source myenv/bin/activate
+  pip install -r requirements.txt
   ```
-- Follow the Python installation instructions provided in the **Prerequisites** section. 
-- Ensure you start **R** within the virtual environment where Python 3 and TensorFlow are installed.
+  Python is called from R through `reticulate` (`src/lstm.R`); TensorFlow runs on the CPU.
 
----
+All commands below are run from the repository root. No manual edits of the code are needed.
 
-### 2. Run Simulations
-To execute simulations, use the following command:
+Files
+------
+
+| File | Contents |
+|------|----------|
+| `run_simulation.sh` | Runs the simulation study (calls `simulation.R`). |
+| `simulation.R` | Driver: settings, packages, the replicate loop; skips replicates already saved. |
+| `long_sim_plots.R` | Tables and figures of the paper from the saved per-replicate results. |
+| `diagnostic_gcomp_sl.R` | Diagnostic of the bias of G-Comp-SL under the dynamic rule (simulation results). |
+| `package_list.R` | Installs the R packages (GitHub packages pinned to the commits used). |
+| `requirements.txt` | Python packages for the LSTM learners. |
+| `session_info.txt` | `sessionInfo()` of the R session that produced the results. |
+| `src/simulation_fns.R` | `simLong()`: simulates one dataset and applies all estimators (one replicate). |
+| `src/simcausal_dgp.R` | Data-generating process (DGP) as a `simcausal` DAG. |
+| `src/simcausal_fns.R` | Distribution functions of the DGP, the treatment rules and the large-n truth (`compute_truth()`). |
+| `src/tmle_fns.R` | LTMLE core: treatment and censoring models, clever-covariate weights, the backward recursion (LTMLE, IPTW, g-computation). |
+| `src/tmle_IC.R` | Influence-curve-based standard errors and confidence intervals. |
+| `src/SL3_fns.R` | Super Learner libraries and metalearners (`sl3`). |
+| `src/lstm.R` | R bridge to the LSTM learners. |
+| `src/utils.py`, `src/train_lstm.py`, `src/test_lstm.py` | LSTM architectures and hyperparameters (`HP`), training, and prediction. |
+| `src/plotDAG_improved.R` | DAG plot of the DGP (Figure A1). |
+| `data/truth_t_36_n_1e+05_seeds_5.rds` | Cached true values psi_t (see below). |
+| `outputs/sl_n10000_t12-24-36/`, `outputs/rnn_n10000_t12-24-36/` | Per-replicate results of the simulation runs in the paper (100 replicates each). |
+| `tables/` | Tables generated by `long_sim_plots.R` from `outputs/`. |
+| `sim_results/` | Figures generated by `long_sim_plots.R` from `outputs/`. |
+
+Reproducing the results
+------
+
+### 1. Simulation runs (optional; intermediate results are included)
 
 ```bash
-./run_simulation.sh [arg1] [arg2] [arg3] [arg4] [R] [target_times] [output_dir]
+./run_simulation.sh tmle 3 TRUE 100 "12,24,36" ./outputs/sl_n10000_t12-24-36
+./run_simulation.sh tmle-lstm 3 TRUE 100 "12,24,36" ./outputs/rnn_n10000_t12-24-36
 ```
 
-#### Arguments:
-- **`[arg1]`**: Specifies the estimator. Options:
-  - `"tmle"`: Targeted Maximum Likelihood Estimation ('tmle').
-  - `"tmle-lstm"`: Targeted Maximum Likelihood Estimation with Long Short-Term Memory ('tmle-lstm').
-- **`[arg2]`**: Number of cores to use (>1 for parallel computation)
-- **`[arg3]`**: Logical flag to indicate whether super learner estimation should be used:
-  - `"TRUE"` or `"FALSE"`.
-- **`[arg4]`**: Logical flag for enabling MPI parallel programming:
-  - `"TRUE"` or `"FALSE"`.
-- **`[R]`**: Number of simulation replicates (default `100`); replicates already saved in `output_dir` are skipped.
-- **`[target_times]`**: `"all"` or a comma-separated list such as `"6,12,18,24,30,36"`.
-- **`[output_dir]`**: Output directory (default `./outputs/YYYYMMDD`).
-- **`[replicates]`**: Optional subset of replicates such as `"1:25"`; disjoint ranges can run as parallel processes writing to the same `output_dir`.
+Arguments: estimator (`tmle` = SL learners, `tmle-lstm` = LSTM learners), cores used within a
+replicate, use SL (`TRUE`; `FALSE` uses GLM / multinomial logistic regression, `tmle` only),
+number of replicates R, target times (`all` = 1..36, or a comma-separated list), output
+directory, and optionally a subset of replicates (e.g. `1:25` or `7`).
 
-#### Examples:
-1. Using the `"tmle"` estimator with super learner enabled and no MPI, using 2 cores for parallel computation:
-   ```bash
-   ./run_simulation.sh 'tmle' 2 'TRUE' 'FALSE'
-   ```
+Each replicate r is saved as its own `.rds` file in the output directory. A run that is
+interrupted resumes where it stopped (replicates already saved are skipped), and disjoint
+ranges of replicates can run as separate processes writing to the same directory.
 
-2. Using the `"tmle-lstm"` estimator (LSTM treatment, censoring and outcome models), using 2 cores within each replicate, 100 replicates, target times every 6 months (resumable):
-   ```bash
-   ./run_simulation.sh 'tmle-lstm' 2 'TRUE' 'FALSE' 100 "6,12,18,24,30,36" ./outputs/rnn_n10000
-   ```
+On the 4-core laptop above, with 3 cores per replicate, a replicate took a median of 56 minutes
+with SL (95 hours for 100 replicates) and 25 minutes with LSTMs (43 hours). To reduce the run
+time, run fewer replicates (R), fewer target times, or ranges of replicates in parallel on
+several machines.
 
----
+### 2. Spot checks of single replicates
 
-### 3. Plot Simulation Results
-To create tables and plot results from simulations:
+A single replicate can be re-run without re-running the study, e.g. replicate 7 of the SL run
+(about an hour) or of the LSTM run (about 25 minutes):
+
 ```bash
-Rscript long_sim_plots.R 'outputs/20250328' 'outputs/20250404'
+./run_simulation.sh tmle 3 TRUE 100 "12,24,36" ./outputs/spotcheck_sl 7
+./run_simulation.sh tmle-lstm 3 TRUE 100 "12,24,36" ./outputs/spotcheck_rnn 7
 ```
-Latex tables are saved to `tables/` and plots to `sim_results/`.
 
----
+```r
+f <- function(d) readRDS(list.files(d, pattern = "_r_7_", full.names = TRUE))$metrics
+all.equal(f("outputs/spotcheck_sl"), f("outputs/sl_n10000_t12-24-36"))
+all.equal(f("outputs/spotcheck_rnn"), f("outputs/rnn_n10000_t12-24-36"))
+```
+
+All random numbers are seeded by the replicate number r (the simulated data, the learners and
+the cross-validation folds), so a replicate's results do not depend on the other replicates or
+on the order in which they are run. With the SL learners, the results are identical for any
+number of cores of 2 or more; with 1 core, the learners run in the main R process and draw
+different (equally valid) random numbers.
+
+### 3. Tables and figures
+
+```bash
+Rscript long_sim_plots.R outputs/sl_n10000_t12-24-36 outputs/rnn_n10000_t12-24-36 --dgp-figures
+```
+
+This takes under a minute and writes (file name = number in the paper; "S" = Supporting
+Information):
+
+| Output | In the paper |
+|--------|--------------|
+| `tables/Table1_results_estimator.tex` | Table 1 |
+| `tables/Table2_results_rule.tex` | Table 2 |
+| `tables/TableS2_results_estimator_rule.tex` | Table S2 |
+| `tables/TableS3_positivity.tex` | Table S3 |
+| `tables/monte_carlo_se.csv` | Monte Carlo standard errors of the summaries in Table S2 |
+| `tables/TableS4_run_times.tex` | Table S4 (computation time per replicate) |
+| `tables/run_times.csv` | Computation times of each replicate |
+| `sim_results/FigureA1_DAG.png` (`.pdf`) | Figure A1 |
+| `sim_results/FigureS1a_treatment_adherence.png`, `FigureS1b_survival_observed.png`, `FigureS1c_survival_truth.png` | Figure S1 |
+| `sim_results/FigureS2a_bias.png`, `FigureS2b_coverage.png`, `FigureS2c_ci_width.png` | Figure S2 |
+
+Figure 1 (estimator diagram) is drawn in LaTeX, and Table S1 lists the learner
+hyperparameters set in `src/SL3_fns.R` and `HP` in `src/utils.py`. The DGP figures
+(`--dgp-figures`) simulate one dataset (replicate 1) and use the cached truth.
+
+### 4. Diagnostic of G-Comp-SL
+
+```bash
+Rscript diagnostic_gcomp_sl.R 1 36 dynamic
+```
+
+This repeats the g-computation recursion for the dynamic rule at t = 36 in replicate 1, once with
+SL and once with main-terms logistic regressions as the outcome models (about 2 minutes, one
+core), and writes `tables/gcomp_sl_diagnostic_steps.csv` (per backward step: SL ensemble
+weights, mean pseudo-outcome, and the mean change in predicted risk from setting the treatment
+to the rule under each learner) and `tables/gcomp_sl_diagnostic_summary.csv` (the two estimates,
+the truth, the mean ensemble weights and the ratio of the changes in predicted risk, SL to
+logistic regression).
 
 Model Weights, Intermediate Results, and Visualizations
 ------
 
-This section outlines the model weights, intermediate results, and visualizations available for analysis and evaluation (produced by the pre-2026 pipeline, which the 2026 audit found to be defective; kept for reference only). The results pertain to a single simulated longitudinal dataset (r=1) for 12,500 patients, estimating counterfactual diabetes risk under three regimes: static, dynamic, and stochastic. **Data and results are saved in the `ex_outputs/` directory unless otherwise noted.**
+### Model weights
 
-#### Key Files and Descriptions:
+The LSTMs (treatment, censoring and outcome models) are refit in memory for every replicate,
+and their weights are not saved. The
+architectures and hyperparameters are in `HP` in `src/utils.py`; the number of training epochs
+of the treatment and censoring LSTMs is saved in each replicate's results (`lstm_epochs`).
+The Super Learners are also refit in every replicate and not saved; for the g-computation
+outcome regressions of one replicate, `diagnostic_gcomp_sl.R` saves the ensemble weights (see
+above).
 
-1. **Simulated Dataset**
-   - Long format dataset: `tmle_dat_long_R_1_n_10000_J_6.rds`
+### Intermediate results
 
-2. **Intermediate Simulation Results**
-   - LTMLE-SL: `intermediate_results_sl.rds`
-   - LTMLE-RNN: `intermediate_results_lstm.rds` 
+* `outputs/sl_n10000_t12-24-36/` and `outputs/rnn_n10000_t12-24-36/`: one file per replicate,
+  `longitudinal_simulation_results_estimator_<tmle|tmle-lstm>_treatment_rule_all_r_<r>_n_10000_J_6_n_folds_3_scale_continuous_FALSE_use_SL_TRUE.rds`,
+  a list with
+  * `metrics`: one row per estimator, rule and target time with the estimate (`est`), its
+    standard error (`se`), the true value (`truth`), the 95% CI (`lower`, `upper`), `bias`,
+    `abs_bias`, CI coverage (`cover`) and width (`ciw`);
+  * `positivity`: per treatment model, rule and target time, the numbers of uncensored subjects
+    at risk and of rule-followers, and the share of followers whose estimated cumulative
+    probability of following the rule is below 0.025;
+  * `failures` (failed model fits), `timings`, `elapsed_time`, `lstm_epochs` and the settings
+    (`n`, `J`, `t.end`, `target_times`, `gbound`, `ybound`, `n_folds`, `use_SL`).
+* `data/truth_t_36_n_1e+05_seeds_5.rds`: the true psi_t for t = 1..36 under each rule, the mean
+  over 5 counterfactual samples of 100 000 patients simulated under the rule (seeds
+  1 000 001 to 1 000 005), with its Monte Carlo standard error. `compute_truth()` reuses this
+  file while `src/simcausal_dgp.R` is unchanged (MD5 checksum) and recomputes it otherwise.
+* `tables/monte_carlo_se.csv`: Monte Carlo standard errors of the mean absolute bias, coverage
+  and CI width by estimator and rule (standard deviation of the replicate means / sqrt(R)).
+* `tables/run_times.csv`: per replicate, the total wall-clock time and the wall-clock and CPU
+  time (including the worker processes) of the treatment and censoring models (`g_C_*`) and of
+  the outcome regressions (`Q_*`), in minutes, from each replicate's `timings` and
+  `elapsed_time`.
 
-3. **Validation Predictions**
-   - Binary `C` predictions: `lstm_bin_C_preds.npy`, `lstm_bin_C_preds_info.npz`
-   - Categorical `A` predictions: `lstm_cat_A_preds.npy`, `lstm_cat_A_preds_info.npz`
-   - Binary `A` predictions: `lstm_bin_A_preds.npy`, `lstm_bin_A_preds_info.npz`
-   - Binary `Y` predictions: `lstm_bin_Y_preds.npy`, `lstm_bin_Y_preds_info.npz`
+### Visualizations
 
-4. **Test Predictions**
-   - Binary `C` predictions: `test_bin_C_preds.npy`, `test_bin_C_preds_info.npz`
-   - Categorical `A` predictions: `test_cat_A_preds.npy`, `test_cat_A_preds_info.npz`
-   - Binary `A` predictions: `test_bin_A_preds.npy`, `test_bin_A_preds_info.npz`
-   - Binary `Y` predictions: `test_bin_Y_preds.npy`, `test_bin_Y_preds_info.npz`
+DAG of the DGP for t = 0..3 (Figure A1):
 
-5. **Model Weights**
-   - Model info. and weights for RNN models with multiple binary and categorical treatments:
-     - `lstm_bin_A_model.json`, `lstm_bin_A_model.meta.json`, `lstm_bin_A_model.weights.h5`
-     - `lstm_cat_A_model.h5`
-     - `lstm_bin_C_model.h5`
-     - `lstm_bin_Y_model.h5`
+![DAG](sim_results/FigureA1_DAG.png)
 
-6. **Descriptive Plots**
-   - Graphical outputs summarizing the simulation and analysis:
-     - Directed Acyclic Graph (DAG):  
-       ![DAG Plot](./ex_outputs/DAG_plot_latex_cropped.png)
-     - Treatment adherence:  
-       ![Adherence Plot](./ex_outputs/treatment_adherence_10000.png)
-     - Survival plots:
-       - Observed:  
-         ![Observed Survival Plot](./ex_outputs/survival_plot_observed_10000.png)
-       - Truth:  
-         ![Truth Survival Plot](./ex_outputs/survival_plot_truth_10000.png)
-        - LTMLE-RNN (multi.) estimates:  
-         ![LTMLE-RNN (multi.) Survival Plot](./ex_outputs/survival_plot_tmle_estimates_10000_tmle-lstm.png)
+Treatment-rule adherence and observed and counterfactual outcomes in one simulated dataset
+(Figure S1):
+
+| Adherence | Observed outcomes | Counterfactual outcomes |
+|-----------|-------------------|-------------------------|
+| ![Adherence](sim_results/FigureS1a_treatment_adherence.png) | ![Observed](sim_results/FigureS1b_survival_observed.png) | ![Truth](sim_results/FigureS1c_survival_truth.png) |
+
+Absolute bias, coverage and CI width of the estimators over time (Figure S2):
+
+![Bias](sim_results/FigureS2a_bias.png)
+![Coverage](sim_results/FigureS2b_coverage.png)
+![CI width](sim_results/FigureS2c_ci_width.png)

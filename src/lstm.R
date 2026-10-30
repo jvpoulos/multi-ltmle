@@ -10,38 +10,44 @@
 lstm_env <- new.env()
 
 # Select the project's Python interpreter without initialising Python.
+# python: path to the Python executable of the virtual environment. Returns TRUE invisibly.
 lstm_python <- function(python = "./myenv/bin/python") {
   reticulate::use_python(python, required = TRUE)
   invisible(TRUE)
 }
 
 # Python modules for this process; (re)configures threads, seed and hyperparameters.
-# spec: list(threads, seed, hp) as built in simLong().
+# spec: list(threads, seed, hp) as built in simLong(). Returns list(utils, train, test).
 lstm_modules <- function(spec) {
   if (is.null(lstm_env$mods) || !identical(lstm_env$pid, Sys.getpid())) {
     if (!is.null(lstm_env$pid) && !identical(lstm_env$pid, Sys.getpid())) {
-      warning("lstm_modules: Python was initialised in the parent process before forking; TensorFlow is not fork-safe")
+      warning("lstm_modules: Python was initialised in the parent process before forking; ",
+              "TensorFlow is not fork-safe")
     }
     mods <- list(utils = reticulate::import_from_path("utils", path = "src"),
                  train = reticulate::import_from_path("train_lstm", path = "src"),
                  test = reticulate::import_from_path("test_lstm", path = "src"))
-    if (!grepl("src", mods$utils$`__file__`)) stop("lstm_modules: imported a 'utils' module from outside src/")
+    if (!grepl("src", mods$utils$`__file__`)) {
+      stop("lstm_modules: imported a 'utils' module from outside src/")
+    }
     lstm_env$mods <- mods
     lstm_env$pid <- Sys.getpid()
     lstm_env$seed <- NULL
   }
   seed <- as.integer(if (is.null(spec$seed)) 1 else spec$seed)
   if (!identical(lstm_env$seed, seed)) {
-    lstm_env$mods$utils$configure(threads = as.integer(if (is.null(spec$threads)) 1 else spec$threads),
-                                  seed = seed, hp = spec$hp)
+    threads <- as.integer(if (is.null(spec$threads)) 1 else spec$threads)
+    lstm_env$mods$utils$configure(threads = threads, seed = seed, hp = spec$hp)
     lstm_env$seed <- seed
   }
   lstm_env$mods
 }
 
-# Per-subject arrays (n x T x F, T = K + 1) of the inputs used by all LSTM learners:
+# dat: wide simulated data (simcausal); K: last time point; t.end: follow-up length.
+# Returns per-subject arrays (n x T x F, T = K + 1) of the inputs used by all LSTM learners:
 # V1 one-hot (3), V2 one-hot (2), V3 (median/IQR scaled), log1p(L1_t), L2_t, L3_t, t / t.end.
-# Unobserved values (after censoring or an event) are 0 and are never used for fitting (risk-set masks).
+# Unobserved values (after censoring or an event) are 0 and are never used for fitting
+# (risk-set masks).
 lstm_arrays <- function(dat, K, t.end = 36) {
   n <- nrow(dat)
   T <- K + 1
@@ -62,6 +68,8 @@ lstm_arrays <- function(dat, K, t.end = 36) {
 }
 
 # Send one replicate's arrays to Python (once per process and data token).
+# dat: wide simulated data; spec: LSTM spec from simLong(); J: number of treatments.
+# Returns the Python modules (see lstm_modules()).
 lstm_set_data <- function(dat, spec, J = 6) {
   mods <- lstm_modules(spec)
   if (!identical(lstm_env$data_token, spec$data_token)) {
@@ -73,7 +81,10 @@ lstm_set_data <- function(dat, spec, J = 6) {
 }
 
 # Treatment models g_k(a | history), k = 0..K, from one many-to-many LSTM (multinomial arm) or
-# J separate many-to-many sigmoid LSTMs (binomial arm). Same output format as fit_treatment_models().
+# J separate many-to-many sigmoid LSTMs (binomial arm). Same output format as
+# fit_treatment_models().
+# arm: "multinomial" or "binomial"; spec: LSTM spec from simLong(). Returns list(g = list of n x J
+# probability matrices for k = 0..K (NA outside the risk set), failures, epochs, hp).
 lstm_fit_treatment <- function(dat, K, arm, J, spec) {
   mods <- lstm_set_data(dat, spec, J)
   res <- mods$train$fit_treatment(arm)
@@ -90,6 +101,7 @@ lstm_fit_treatment <- function(dat, K, arm, J, spec) {
 
 # Censoring model P(C_k = 0 | history, A_k), k = 1..K, from one many-to-many LSTM (age excluded,
 # as in fit_censoring_models()). Same output format as fit_censoring_models().
+# Returns list(gC = list of length-n vectors of P(C_k = 0 | .) for k = 1..K, failures, epochs).
 lstm_fit_censoring <- function(dat, K, J, spec) {
   mods <- lstm_set_data(dat, spec, J)
   res <- mods$train$fit_censoring()
@@ -112,18 +124,12 @@ lstm_outcome_step <- function(dat, s, Z, fit_rows, rule, spec, J = 6) {
   key <- paste(spec$arm, spec$recursion, rule, spec$target, sep = "|")
   fallback <- paste(spec$arm, "tmle", rule, spec$target, sep = "|")
   idx <- which(fit_rows)
-  mods$train$fit_outcome_step(key, fallback, as.integer(s), as.integer(idx - 1L), as.numeric(Z[idx]))
+  mods$train$fit_outcome_step(key, fallback, as.integer(s), as.integer(idx - 1L),
+                              as.numeric(Z[idx]))
   function(rows, a = NULL) {
     ridx <- which(rows)
     if (length(ridx) == 0) return(numeric(0))
     a_py <- if (is.null(a)) NULL else as.integer(a[ridx])
     as.numeric(mods$test$predict_outcome_step(key, as.integer(s), as.integer(ridx - 1L), a_py))
   }
-}
-
-# Legacy interface (sliding windows across subjects, cached predictions); removed in the 2026-10 rebuild.
-lstm <- function(data, outcome, covariates, t_end, window_size, out_activation, loss_fn, output_dir, J, ybound, gbound,
-                 inference=FALSE, is_censoring=FALSE, debug=TRUE, batch_models=FALSE, batch_rules=NULL) {
-  stop("lstm(): the legacy LSTM interface was removed; use simLong(estimator = 'tmle-lstm'), which fits the ",
-       "treatment, censoring and outcome LSTMs through lstm_fit_treatment(), lstm_fit_censoring() and lstm_outcome_step()")
 }

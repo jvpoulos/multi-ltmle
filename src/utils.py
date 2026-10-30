@@ -10,7 +10,8 @@ causally masked, so a prediction at time t depends on history up to t only.
 
 Arrays sent from R (T = K + 1 time points t = 0..K):
   base   (n, T, F)  baseline and covariate features at each t:
-                    V1 one-hot (3), V2 one-hot (2), V3 (robust-scaled), log1p(L1_t), L2_t, L3_t, t / t_end
+                    V1 one-hot (3), V2 one-hot (2), V3 (robust-scaled), log1p(L1_t), L2_t,
+                    L3_t, t / t_end
   A      (n, T)     observed treatment 1..J (0 if unobserved)
   C      (n, T)     censoring indicator (1 = censored, 0 = uncensored, 0 if unobserved)
   at_risk(n, T)     1 if uncensored through t-1 and no event through t-1
@@ -24,7 +25,8 @@ import warnings
 import numpy as np
 
 # the last-time-step slice of the (left-padded) outcome window drops the padding mask on purpose
-warnings.filterwarnings("ignore", message=".*does not support masking and will therefore destroy the mask.*")
+warnings.filterwarnings(
+    "ignore", message=".*does not support masking and will therefore destroy the mask.*")
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
@@ -32,7 +34,8 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 HP = {
     "units": 32,                 # LSTM units per layer
     "dense_units": 16,           # pre-output dense layer (ReLU)
-    "input_skip": True,          # residual (skip) connection from the current month's inputs to the output head
+    # residual (skip) connection from the current month's inputs to the output head
+    "input_skip": True,
     "dropout": 0.1,
     "weight_decay": 1e-4,        # AdamW
     "clipnorm": 1.0,
@@ -154,8 +157,8 @@ def split_rows(rows, frac, seed):
 
 def _optimizer(learning_rate):
     keras = STATE["keras"]
-    return keras.optimizers.AdamW(learning_rate=float(learning_rate), weight_decay=HP["weight_decay"],
-                                  clipnorm=HP["clipnorm"])
+    return keras.optimizers.AdamW(learning_rate=float(learning_rate),
+                                  weight_decay=HP["weight_decay"], clipnorm=HP["clipnorm"])
 
 
 def _lstm_stack(x, n_layers, attention):
@@ -170,7 +173,8 @@ def _lstm_stack(x, n_layers, attention):
         h2 = layers.LSTM(HP["units"], return_sequences=True)(h)
         h = layers.LayerNormalization()(layers.Add()([h, h2]))
     if attention:
-        att = layers.MultiHeadAttention(num_heads=1, key_dim=HP["units"])(h, h, use_causal_mask=True)
+        att = layers.MultiHeadAttention(num_heads=1, key_dim=HP["units"])(
+            h, h, use_causal_mask=True)
         h = layers.LayerNormalization()(layers.Add()([h, att]))
     if HP["dropout"] > 0:
         h = layers.Dropout(HP["dropout"])(h)
@@ -185,10 +189,12 @@ def build_sequence_model(T, F, n_out, activation, out_bias=None):
     h = _lstm_stack(inp, HP["seq_n_lstm_layers"], HP["seq_attention"])
     h = layers.Dense(HP["dense_units"], activation="relu")(h)
     if HP["input_skip"]:
-        h = layers.Concatenate()([h, inp])  # shallow features of month t alongside the deep representation
+        # shallow features of month t alongside the deep representation
+        h = layers.Concatenate()([h, inp])
     init = keras.initializers.Constant(out_bias) if out_bias is not None else "zeros"
     # zero output kernel: training starts from the marginal frequencies (calibrated in the large)
-    out = layers.Dense(n_out, activation=activation, kernel_initializer="zeros", bias_initializer=init)(h)
+    out = layers.Dense(n_out, activation=activation, kernel_initializer="zeros",
+                       bias_initializer=init)(h)
     model = keras.Model(inp, out)
     loss = "categorical_crossentropy" if activation == "softmax" else "binary_crossentropy"
     model.compile(optimizer=_optimizer(HP["seq_learning_rate"]), loss=loss)
@@ -201,21 +207,25 @@ def build_outcome_model(W, F):
     keras = STATE["keras"]
     layers = keras.layers
     inp = keras.Input(shape=(W, F))
-    h = _lstm_stack(layers.Masking(mask_value=0.0)(inp), HP["outcome_n_lstm_layers"], HP["outcome_attention"])
+    h = _lstm_stack(layers.Masking(mask_value=0.0)(inp), HP["outcome_n_lstm_layers"],
+                    HP["outcome_attention"])
     last = layers.Lambda(lambda z: z[:, -1, :])(h)
     last = layers.Dense(HP["dense_units"], activation="relu")(last)
     if HP["input_skip"]:
-        # shallow features of month s (covariates and treatment at s) alongside the deep representation
+        # shallow features of month s (covariates and treatment at s) alongside the deep
+        # representation
         last = layers.Concatenate()([last, layers.Lambda(lambda z: z[:, -1, :])(inp)])
     out = layers.Dense(1, activation="sigmoid", kernel_initializer="zeros")(last)
     model = keras.Model(inp, out)
-    model.compile(optimizer=_optimizer(HP["outcome_learning_rate"]), loss=keras.losses.BinaryCrossentropy())
+    model.compile(optimizer=_optimizer(HP["outcome_learning_rate"]),
+                  loss=keras.losses.BinaryCrossentropy())
     return model
 
 
 def reset_optimizer(model):
-    """Restore the optimizer state (iteration count, moments; learning rate unchanged) captured right
-    after the optimizer was built, so each fit starts fresh without recompiling the model."""
+    """Restore the optimizer state (iteration count, moments; learning rate unchanged) captured
+    right after the optimizer was built, so each fit starts fresh without recompiling the
+    model."""
     opt = model.optimizer
     if getattr(model, "_opt_init_values", None) is None:
         opt.build(model.trainable_variables)
@@ -234,7 +244,8 @@ def predict_in_chunks(model, x):
     b = int(HP["predict_batch"])
     for i in range(0, x.shape[0], b):
         out.append(np.asarray(model(x[i:i + b], training=False)))
-    return np.concatenate(out, axis=0) if out else np.zeros((0,) + tuple(model.output_shape[1:]), dtype="float32")
+    return (np.concatenate(out, axis=0) if out
+            else np.zeros((0,) + tuple(model.output_shape[1:]), dtype="float32"))
 
 
 def hash_arrays(*arrays):

@@ -1,46 +1,22 @@
-######################
-# Install packages   #
-######################
+############################################################################################
+# Installs the R packages used by the simulation code (run once: Rscript package_list.R).  #
+# The results in the paper were produced with R 4.3.3 and the package versions listed in   #
+# session_info.txt; the three packages installed from GitHub are pinned to the commits     #
+# used.                                                                                     #
+############################################################################################
 
-packages <- c("ggplot2","nnet","tmle","MASS","data.table","SuperLearner","reshape2","origami","tictoc","weights","grid","car","latex2exp","progressr","future","ltmle","gtools","readr","reporttools")
+repos <- "https://cloud.r-project.org"
 
-super.learner <- TRUE
-dependencies <- FALSE # data.table, stringi, HMisc dependencies might be needed for SuperLearner libraries
-if(super.learner){
-  packages <- c(packages, c("glmnet","ranger","rpart","nnls","xgboost"))
-}
-if(dependencies){
-  remove.packages("data.table")                         # First remove the current version
-  install.packages("data.table", type = "source", repos = "https://Rdatatable.gitlab.io/data.table")
-  install.packages("stringi", dependencies=TRUE, INSTALL_opts = c('--no-lock'))
+# CRAN packages: simulation (simulation.R, src/) and tables/figures (long_sim_plots.R)
+cran <- c("data.table", "dplyr", "ggplot2", "glmnet", "gtools", "igraph", "latex2exp", "MASS",
+          "nnet", "origami", "progressr", "purrr", "ranger", "readr", "remotes", "reticulate",
+          "tidyr")
+install.packages(setdiff(cran, rownames(installed.packages())), repos = repos)
 
-  install.packages(c("HMisc",packages),repos = "http://cran.us.r-project.org")
-} else{
-  install.packages(packages,repos = "http://cran.us.r-project.org")
-}
-
-# development packages
-install.packages("https://cran.r-project.org/src/contrib/Archive/imputeMissings/imputeMissings_0.0.3.tar.gz")
-remotes::install_github("tlverse/sl3")
-remotes::install_github("jvpoulos/Rsolnp") # v1.16
-
-devtools::install_github('osofr/simcausal', build_vignettes = FALSE)
-
-# doMPI
-doMPI <- FALSE
-if(doMPI){
-  install.packages("Rmpi", repos = "http://cran.us.r-project.org")
-  install.packages("doMPI", dependencies=TRUE, repos = "http://cran.us.r-project.org")
-}else{
-  install.packages("parallel", repos = "http://cran.us.r-project.org")
-  install.packages("doParallel", repos = "http://cran.us.r-project.org")
-  install.packages("foreach", repos = "http://cran.us.r-project.org")
-}
-
-# keras/TensorFlow
-keras <- TRUE
-if(keras){
-  install.packages("tensorflow", repos = "http://cran.us.r-project.org")
-  install.packages("keras", repos = "http://cran.us.r-project.org")
-  install.packages("reticulate", repos = "http://cran.us.r-project.org")
-}
+# GitHub packages, pinned to the commits used for the paper
+remotes::install_github("jvpoulos/Rsolnp@16049fb5c426766177f8b442bc9619033deefd2f",
+                        upgrade = "never") # Rsolnp 1.16 (fork)
+remotes::install_github("osofr/simcausal@bce5ad71eb90c0cc7d5ac37c4065ffd0ef1f8e15",
+                        upgrade = "never", build_vignettes = FALSE) # simcausal 0.5.5
+remotes::install_github("tlverse/sl3@0e8f2365bcbe54010b8120c04a7a2dcfc8119227",
+                        upgrade = "never") # sl3 1.4.5

@@ -2,11 +2,13 @@
 # simcausal functions #
 #######################
 
-# definition: left-truncated normal distribution
+# Distribution functions used in the DGP (src/simcausal_dgp.R); each takes the number of draws n
+# and returns a vector of n draws.
 
+# definition: left-truncated normal distribution
 RnormTrunc <- function(n, mean, sd, minval = 0, maxval = 10000,
                        min.low = 0, max.low = 50, min.high = 5000, max.high = 10000)
-{                                                                                      
+{
   out <- rnorm(n = n, mean = mean, sd = sd)
   minval <- minval[1]; min1 <- min.low[1]; max1 <- max.low[1]
   maxval <- maxval[1]; min2 <- min.high[1]; max2 <- max.high[1]
@@ -18,7 +20,7 @@ RnormTrunc <- function(n, mean, sd, minval = 0, maxval = 10000,
 }
 
 # definition: negative binomial
-NegBinom <- function(n, mu){                                                                                      
+NegBinom <- function(n, mu){
   rnbinom(n=n, size=1, mu=mu)
 }
 
@@ -36,7 +38,7 @@ Multinom <- function(n,probs){
     probs <- matrix(nrow = n, ncol = length(probs), byrow = TRUE)
   }
   if (is.vector(probs) && !is.na(n) && n > 0) {
-    probs <- matrix(data = probs, nrow = n, ncol = length(probs), 
+    probs <- matrix(data = probs, nrow = n, ncol = length(probs),
                     byrow = TRUE)
   }
   x <- t(apply(probs, 1, function(x) rmultinom(1, 1, x)))
@@ -44,7 +46,8 @@ Multinom <- function(n,probs){
   return(as.factor(drop(x)))
 }
 
-# stochastic treatment rule function
+# stochastic treatment rule: n x J matrix of probabilities of the next treatment given the
+# previous one (condition), staying with probability stay_prob; d: additive adjustment
 StochasticFun <- function(condition, d, stay_prob=0.95) {
   condition[is.na(condition)] <- 0
   n <- length(condition)
@@ -52,27 +55,27 @@ StochasticFun <- function(condition, d, stay_prob=0.95) {
     d <- matrix(d, n, length(d), byrow = TRUE)
   }
   J <- ncol(d)
-  
+
   # Create a matrix with higher stay probability and lower switch probability
   switch_prob <- (1 - stay_prob) / (J - 1)  # Adjusted switch probability
-  
+
   # Create a matrix for the probabilities of staying vs. switching
   probs_matrix <- matrix(switch_prob, n, J, byrow = TRUE)
   for (j in 1:J) {
     probs_matrix[, j] <- ifelse(condition == j, stay_prob, switch_prob)
   }
-  
+
   # Apply the stochastic adjustments d
   res <- probs_matrix + d
-  
+
   # Ensure that no probabilities exceed 1 after the adjustment
   res[res > 1] <- 1
-  
+
   # Replace any resulting NAs with a very small number
   if (any(is.na(res))) {
     res[is.na(res)] <- .Machine$double.eps
   }
-  
+
   return(res)
 }
 ###################################################################
@@ -114,7 +117,8 @@ rule_interventions <- function(t.end) {
                node("C", t = 1:t.end, distr = "rbern", prob = 0)),
     dynamic = c(node("A", t = 0, distr = "rconst", const = 5),
                 node("A", t = 1:t.end, distr = "rconst",
-                     const = ifelse((L1[t] > 0 | L2[t] > 0 | L3[t] > 0), ifelse(V2[0]==3, 2, ifelse(V2[0]==2, 4, 1)), 5)),
+                     const = ifelse((L1[t] > 0 | L2[t] > 0 | L3[t] > 0),
+                                    ifelse(V2[0]==3, 2, ifelse(V2[0]==2, 4, 1)), 5)),
                 node("C", t = 1:t.end, distr = "rbern", prob = 0)),
     stochastic = c(node("A", t = 1:t.end, distr = "Multinom",
                         probs = StochasticFun(A[(t-1)], d = c(0, 0, 0, 0, 0, 0))),
@@ -123,10 +127,13 @@ rule_interventions <- function(t.end) {
 }
 
 # True counterfactual cumulative incidence E[Y_t^d], t = 1..t.end, for each rule, from a large
-# Monte Carlo sample (n_truth subjects per seed) computed once and cached on disk.
-compute_truth <- function(Dset, t.end, n_truth = 1e5, n_seeds = 5, cache_dir = "./data", seed_offset = 1e6,
-                          dgp_file = "./src/simcausal_dgp.R") {
-  cache_file <- file.path(cache_dir, paste0("truth_t_", t.end, "_n_", n_truth, "_seeds_", n_seeds, ".rds"))
+# Monte Carlo sample (n_truth subjects per seed) computed once and cached on disk. The cache is
+# reused only if src/simcausal_dgp.R is unchanged (MD5 checksum).
+# Returns list(truth, mc_se = t.end x rule matrices, n_truth, n_seeds, dgp_md5).
+compute_truth <- function(Dset, t.end, n_truth = 1e5, n_seeds = 5, cache_dir = "./data",
+                          seed_offset = 1e6, dgp_file = "./src/simcausal_dgp.R") {
+  cache_file <- file.path(cache_dir, paste0("truth_t_", t.end, "_n_", n_truth, "_seeds_",
+                                            n_seeds, ".rds"))
   dgp_md5 <- unname(tools::md5sum(dgp_file))
   if (file.exists(cache_file)) {
     cached <- readRDS(cache_file)
@@ -136,21 +143,27 @@ compute_truth <- function(Dset, t.end, n_truth = 1e5, n_seeds = 5, cache_dir = "
   if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
   interventions <- rule_interventions(t.end)
   rules <- names(interventions)
-  draws <- array(NA_real_, dim = c(n_seeds, t.end, length(rules)), dimnames = list(NULL, paste0("t=", 1:t.end), rules))
+  draws <- array(NA_real_, dim = c(n_seeds, t.end, length(rules)),
+                 dimnames = list(NULL, paste0("t=", 1:t.end), rules))
   for (rule in rules) {
     D_rule <- Dset + action("rule", nodes = interventions[[rule]])
     D_rule <- set.targetE(D_rule, outcome = "Y", t = 1:t.end, param = "rule")
     for (s in seq_len(n_seeds)) {
-      cf <- sim(DAG = D_rule, actions = "rule", n = n_truth, LTCF = "Y", rndseed = seed_offset + s, verbose = FALSE)
+      cf <- sim(DAG = D_rule, actions = "rule", n = n_truth, LTCF = "Y", rndseed = seed_offset + s,
+                verbose = FALSE)
       draws[s, , rule] <- eval.target(D_rule, data = cf)$res
       if (s == 1 && rule != "stochastic") {
         # check that the simcausal intervention matches the shared rule implementation
         dat <- cf[["rule"]]
         for (k in 0:t.end) {
           at_risk <- if (k == 0) rep(TRUE, nrow(dat)) else dat[[paste0("Y_", k - 1)]] == 0
-          d_k <- rule_assign(rule, k, dat$V2_0, dat[[paste0("L1_", k)]], dat[[paste0("L2_", k)]], dat[[paste0("L3_", k)]])
+          d_k <- rule_assign(rule, k, dat$V2_0, dat[[paste0("L1_", k)]], dat[[paste0("L2_", k)]],
+                             dat[[paste0("L3_", k)]])
           mismatch <- sum(as.integer(as.character(dat[[paste0("A_", k)]]))[at_risk] != d_k[at_risk])
-          if (mismatch > 0) stop("compute_truth: simcausal '", rule, "' intervention differs from rule_assign() at t=", k)
+          if (mismatch > 0) {
+            stop("compute_truth: simcausal '", rule, "' intervention differs from rule_assign() ",
+                 "at t=", k)
+          }
         }
       }
       rm(cf); gc()
@@ -158,7 +171,8 @@ compute_truth <- function(Dset, t.end, n_truth = 1e5, n_seeds = 5, cache_dir = "
   }
   truth <- apply(draws, c(2, 3), mean)
   truth_mc_se <- apply(draws, c(2, 3), sd) / sqrt(n_seeds)
-  out <- list(truth = truth, mc_se = truth_mc_se, n_truth = n_truth, n_seeds = n_seeds, dgp_md5 = dgp_md5)
+  out <- list(truth = truth, mc_se = truth_mc_se, n_truth = n_truth, n_seeds = n_seeds,
+              dgp_md5 = dgp_md5)
   saveRDS(out, cache_file)
   out
 }

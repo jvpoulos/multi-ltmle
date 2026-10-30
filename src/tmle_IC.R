@@ -10,12 +10,16 @@
 # may undercover with data-adaptive learners due to plug-in bias).#
 ###################################################################
 
-# tmle_contrasts: list over target times (named "t=<t>") of getTMLELong() outputs, i.e. for each rule
-#   list(psi, ic, psi_iptw, ic_iptw, psi_gcomp). Legacy inputs (elements with $Qstar matrices, as produced
-#   by the tmle-lstm path) return point estimates only, with NA standard errors.
-# Returns list(est, se = matrices [target time x rule], CI = list over times of 2 x rule matrices).
-TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, iptw=FALSE, gcomp=FALSE,
-                    estimator="tmle", basic_only=FALSE, variance_estimates=NULL, diagnostics=FALSE) {
+# tmle_contrasts: list over target times (named "t=<t>") of getTMLELong() outputs, i.e. for each
+#   rule list(psi, ic, psi_iptw, ic_iptw, psi_gcomp, ic_gcomp).
+# initial_model_for_Y, time.censored, estimator, basic_only, variance_estimates, diagnostics:
+#   unused (kept for compatibility of the call signature).
+# iptw / gcomp: return the IPTW or g-computation estimates instead of LTMLE.
+# Returns list(est, se = matrices [target time x rule], CI = list over times of 2 x rule
+#   matrices).
+TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored = NULL, iptw = FALSE,
+                    gcomp = FALSE, estimator = "tmle", basic_only = FALSE,
+                    variance_estimates = NULL, diagnostics = FALSE) {
   if (is.null(tmle_contrasts) || length(tmle_contrasts) == 0) {
     stop("TMLE_IC: tmle_contrasts is empty")
   }
@@ -28,17 +32,13 @@ TMLE_IC <- function(tmle_contrasts, initial_model_for_Y, time.censored=NULL, ipt
   for (i in seq_along(tmle_contrasts)) {
     x <- tmle_contrasts[[i]]
     if (is.null(x)) next
-    if (!is.null(x$Qstar) || !is.null(x$Qstar_iptw) || !is.null(x$Qstar_gcomp)) {
-      # legacy (tmle-lstm) format: no influence curve available, so no valid standard error
-      Q <- if (gcomp) x$Qstar_gcomp else if (iptw) x$Qstar_iptw else x$Qstar
-      if (!is.null(Q)) est[i, seq_len(min(ncol(Q), 3))] <- colMeans(Q, na.rm = TRUE)[seq_len(min(ncol(Q), 3))]
-      next
-    }
     for (rule in intersect(rules, names(x))) {
       r <- x[[rule]]
       if (gcomp) {
         est[i, rule] <- r$psi_gcomp
-        if (!is.null(r$ic_gcomp) && !anyNA(r$ic_gcomp)) se[i, rule] <- sd(r$ic_gcomp) / sqrt(length(r$ic_gcomp))
+        if (!is.null(r$ic_gcomp) && !anyNA(r$ic_gcomp)) {
+          se[i, rule] <- sd(r$ic_gcomp) / sqrt(length(r$ic_gcomp))
+        }
       } else if (iptw) {
         est[i, rule] <- r$psi_iptw
         if (!anyNA(r$ic_iptw)) se[i, rule] <- sd(r$ic_iptw) / sqrt(length(r$ic_iptw))

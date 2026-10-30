@@ -1,0 +1,4 @@
+# Python 3.10.12 packages for the LSTM learners (estimator 'tmle-lstm'); see README.md
+tensorflow==2.18.0
+keras==3.7.0
+numpy==2.0.2
