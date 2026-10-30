@@ -29,9 +29,10 @@ over 100 simulated datasets of n = 10 000 patients.
 Requirements
 ------
 
-The results in the paper were produced on Ubuntu 24.04.2 (x86_64, 4-core CPU, no GPU) with
+The results in the paper were produced on Ubuntu 26.04.1 (x86_64, a laptop with a 4-core Intel
+Core i7-8550U CPU, no GPU) with
 
-* **R** 4.3.3 and the package versions in `session_info.txt` (output of `sessionInfo()` from
+* **R** 4.5.2 and the package versions in `session_info.txt` (output of `sessionInfo()` from
   the simulation run). Install the packages with `Rscript package_list.R`, which installs the
   CRAN packages and pins the three GitHub packages to the commits used:
   `sl3` 1.4.5 (`tlverse/sl3@0e8f236`), `simcausal` 0.5.5 (`osofr/simcausal@bce5ad7`) and
@@ -56,6 +57,7 @@ Files
 | `run_simulation.sh` | Runs the simulation study (calls `simulation.R`). |
 | `simulation.R` | Driver: settings, packages, the replicate loop; skips replicates already saved. |
 | `long_sim_plots.R` | Tables and figures of the paper from the saved per-replicate results. |
+| `diagnostic_gcomp_sl.R` | Diagnostic of the bias of G-Comp-SL under the dynamic rule (simulation results). |
 | `package_list.R` | Installs the R packages (GitHub packages pinned to the commits used). |
 | `requirements.txt` | Python packages for the LSTM learners. |
 | `session_info.txt` | `sessionInfo()` of the R session that produced the results. |
@@ -92,8 +94,8 @@ Each replicate r is saved as its own `.rds` file in the output directory. A run 
 interrupted resumes where it stopped (replicates already saved are skipped), and disjoint
 ranges of replicates can run as separate processes writing to the same directory.
 
-On the 4-core laptop above, with 3 cores per replicate, a replicate took a median of 58 minutes
-with SL (101 hours for 100 replicates) and 26 minutes with LSTMs (44 hours). To reduce the run
+On the 4-core laptop above, with 3 cores per replicate, a replicate took a median of 56 minutes
+with SL (95 hours for 100 replicates) and 25 minutes with LSTMs (43 hours). To reduce the run
 time, run fewer replicates (R), fewer target times, or ranges of replicates in parallel on
 several machines.
 
@@ -145,6 +147,20 @@ Figure 1 (estimator diagram) is drawn in LaTeX, and Table S1 lists the learner
 hyperparameters set in `src/SL3_fns.R` and `HP` in `src/utils.py`. The DGP figures
 (`--dgp-figures`) simulate one dataset (replicate 1) and use the cached truth.
 
+### 4. Diagnostic of G-Comp-SL
+
+```bash
+Rscript diagnostic_gcomp_sl.R 1 36 dynamic
+```
+
+This repeats the g-computation recursion for the dynamic rule at t = 36 in replicate 1, once with
+SL and once with main-terms logistic regressions as the outcome models (about 2 minutes, one
+core), and writes `tables/gcomp_sl_diagnostic_steps.csv` (per backward step: SL ensemble
+weights, mean pseudo-outcome, and the mean change in predicted risk from setting the treatment
+to the rule under each learner) and `tables/gcomp_sl_diagnostic_summary.csv` (the two estimates,
+the truth, the mean ensemble weights and the ratio of the changes in predicted risk, SL to
+logistic regression).
+
 Model Weights, Intermediate Results, and Visualizations
 ------
 
@@ -154,6 +170,9 @@ The LSTMs (treatment, censoring and outcome models) are refit in memory for ever
 and their weights are not saved. The
 architectures and hyperparameters are in `HP` in `src/utils.py`; the number of training epochs
 of the treatment and censoring LSTMs is saved in each replicate's results (`lstm_epochs`).
+The Super Learners are also refit in every replicate and not saved; for the g-computation
+outcome regressions of one replicate, `diagnostic_gcomp_sl.R` saves the ensemble weights (see
+above).
 
 ### Intermediate results
 
