@@ -4,15 +4,17 @@ Simulation code for longitudinal targeted minimum loss-based estimation (LTMLE) 
 multi-valued treatment regimes, using Super Learner (SL) or recurrent neural networks (LSTMs)
 as learners for the outcome, treatment and censoring models.
 
-Please cite the following paper if you use this repository:
+Please cite the following paper ([arXiv:2611.08077](https://arxiv.org/abs/2611.08077)) if you use this repository:
 
 ```
-@unpublished{poulos2026doubly,
-  title  = {Doubly-robust causal inference for multi-valued treatment regimes with recurrent
-            neural networks},
-  author = {Poulos, Jason},
-  year   = {2026},
-  note   = {Working paper}
+@misc{poulos2026doublyrobustcausalinferencemultivalued,
+      title={Doubly-robust causal inference for multi-valued treatment regimes with recurrent neural networks},
+      author={Jason Poulos},
+      year={2026},
+      eprint={2611.08077},
+      archivePrefix={arXiv},
+      primaryClass={stat.ME},
+      url={https://arxiv.org/abs/2611.08077},
 }
 ```
 
